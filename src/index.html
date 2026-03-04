@@ -1,0 +1,1306 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>Honey, I Shrunk The Vids</title>
+  <link rel="stylesheet" href="css/app.css" />
+</head>
+<body>
+  <div id="app">
+    <!-- ═══ Main area: split panel (§4.1) ═══ -->
+    <div id="main-area">
+      <!-- ─── Left panel: file queue (§5) ─── -->
+      <div id="left-panel">
+        <div class="panel-header">File Queue</div>
+        <div id="queue-container" style="position:relative;">
+          <div id="drop-overlay">Drop files or folders here</div>
+          <table id="queue-table">
+            <thead>
+              <tr>
+                <th>Filename</th>
+                <th>Resolution</th>
+                <th>Source Bitrate</th>
+                <th>Target Bitrate</th>
+                <th>Status</th>
+              </tr>
+            </thead>
+            <tbody id="queue-body"></tbody>
+          </table>
+        </div>
+        <div id="queue-buttons">
+          <button class="btn" id="btn-add-files">Add Files</button>
+          <button class="btn" id="btn-add-folder">Add Folder</button>
+          <button class="btn" id="btn-clear-all">Clear All</button>
+        </div>
+      </div>
+
+      <!-- ─── Splitter ─── -->
+      <div id="splitter"></div>
+
+      <!-- ─── Right panel: settings tabs (§6, §7) ─── -->
+      <div id="right-panel">
+        <div class="tab-bar">
+          <button class="tab-btn active" data-tab="encoding">Encoding Settings</button>
+          <button class="tab-btn" data-tab="output">Output Settings</button>
+        </div>
+
+        <!-- ═══ Tab 1: Encoding Settings (§6) ═══ -->
+        <div class="tab-content active" id="tab-encoding">
+          <div class="section-header">Video</div>
+
+          <div class="form-row">
+            <label for="sel-codec">Codec</label>
+            <select id="sel-codec">
+              <option value="HEVC">HEVC</option>
+              <option value="H.264">H.264</option>
+            </select>
+            <label for="sel-encoder" style="min-width:auto;">Encoder</label>
+            <select id="sel-encoder"></select>
+          </div>
+          <div class="status-text" id="encoder-status">Detecting encoders…</div>
+
+          <div class="form-row">
+            <label for="num-bitrate">Target bitrate (Mbps)</label>
+            <input type="number" id="num-bitrate" min="1" max="50" value="5" />
+          </div>
+
+          <div class="form-row">
+            <label>QP I / P</label>
+            <input type="number" id="num-qp-i" min="0" max="51" value="20" style="width:55px;" />
+            <input type="number" id="num-qp-p" min="0" max="51" value="22" style="width:55px;" />
+          </div>
+
+          <div class="form-row">
+            <label for="txt-pixfmt">Pixel format</label>
+            <input type="text" id="txt-pixfmt" value="yuv420p" readonly style="width:90px;flex:none;" />
+          </div>
+
+          <div class="checkbox-row">
+            <input type="checkbox" id="chk-hdr" />
+            <label for="chk-hdr">10-bit HDR — uncheck to encode HDR source as SDR</label>
+          </div>
+
+          <div class="section-header">Audio</div>
+
+          <div class="form-row">
+            <label for="sel-audio-codec">Audio codec</label>
+            <select id="sel-audio-codec">
+              <option value="AC3">AC3</option>
+              <option value="EAC3">EAC3</option>
+              <option value="AAC">AAC</option>
+              <option value="Copy">Copy</option>
+            </select>
+          </div>
+
+          <div class="form-row">
+            <label for="num-audio-cap">Audio cap (kbps)</label>
+            <input type="number" id="num-audio-cap" min="128" max="1536" step="32" value="640" />
+          </div>
+
+          <div class="section-header" style="margin-top:18px;">Theme</div>
+          <div class="form-row">
+            <label for="sel-theme">Theme</label>
+            <select id="sel-theme"></select>
+          </div>
+        </div><!-- /tab-encoding -->
+
+        <!-- ═══ Tab 2: Output Settings (§7) ═══ -->
+        <div class="tab-content" id="tab-output">
+          <div class="section-header">Output</div>
+
+          <div class="form-row">
+            <label for="txt-output-folder">Output folder</label>
+            <input type="text" id="txt-output-folder" value="output" />
+            <button class="btn" id="btn-browse-output">Browse</button>
+          </div>
+
+          <div class="form-row">
+            <label for="sel-container">Container</label>
+            <select id="sel-container">
+              <option value="mkv">MKV</option>
+              <option value="mp4">MP4</option>
+            </select>
+          </div>
+
+          <div class="checkbox-row">
+            <input type="checkbox" id="chk-overwrite" />
+            <label for="chk-overwrite">Overwrite existing output files</label>
+          </div>
+
+          <div class="checkbox-row">
+            <input type="checkbox" id="chk-delete-source" />
+            <label for="chk-delete-source">Delete source files after successful encode</label>
+          </div>
+
+          <div class="section-header" style="margin-top:18px;">Logging &amp; Notifications</div>
+
+          <div class="checkbox-row">
+            <input type="checkbox" id="chk-save-log" />
+            <label for="chk-save-log">Save log to output folder</label>
+          </div>
+
+          <div class="checkbox-row">
+            <input type="checkbox" id="chk-toast" />
+            <label for="chk-toast">Show system notification on batch completion</label>
+          </div>
+
+          <div class="section-header" style="margin-top:18px;">Post-Batch Action</div>
+
+          <div class="form-row">
+            <label for="sel-post-action">Action</label>
+            <select id="sel-post-action">
+              <option value="None">None</option>
+              <option value="Shutdown">Shutdown</option>
+              <option value="Sleep">Sleep</option>
+              <option value="Log Out">Log Out</option>
+              <option value="Custom Command">Custom Command</option>
+            </select>
+          </div>
+
+          <div class="form-row" id="row-custom-command" style="display:none;">
+            <label for="txt-custom-command">Command</label>
+            <input type="text" id="txt-custom-command" placeholder="e.g. my-script.sh" />
+          </div>
+
+          <div class="form-row">
+            <label for="num-countdown">Countdown (seconds)</label>
+            <input type="number" id="num-countdown" min="0" max="3600" value="0" />
+          </div>
+        </div><!-- /tab-output -->
+
+      </div><!-- /right-panel -->
+    </div><!-- /main-area -->
+
+    <!-- ═══ Bottom bar (§12) ═══ -->
+    <div id="bottom-bar">
+      <div id="status-file">No job running</div>
+      <div id="status-cmd"></div>
+      <div id="progress-bar-container">
+        <div id="progress-bar"></div>
+      </div>
+      <div id="bottom-buttons">
+        <button class="btn btn-primary" id="btn-start" disabled>Start</button>
+        <button class="btn" id="btn-cancel-current" disabled>Cancel Current</button>
+        <button class="btn" id="btn-cancel-all" disabled>Cancel All</button>
+        <button class="btn" id="btn-dry-run" disabled>Dry Run</button>
+        <button class="btn" id="btn-pause" disabled>Pause</button>
+      </div>
+    </div>
+
+    <!-- ═══ Log drawer toggle & drawer (§11) ═══ -->
+    <button id="log-toggle">
+      <span id="log-toggle-arrow">&#x25B2;</span> Log Console
+    </button>
+    <div id="log-drawer">
+      <div id="log-content"></div>
+    </div>
+
+    <!-- ═══ Context menu (§5.5) ═══ -->
+    <div id="context-menu">
+      <div class="ctx-item" id="ctx-remove-selected">Remove selected</div>
+      <div class="ctx-item" id="ctx-clear-completed">Clear completed</div>
+      <div class="ctx-item" id="ctx-clear-all">Clear all</div>
+    </div>
+
+    <!-- ═══ Modal: Overwrite prompt (§7.3) ═══ -->
+    <div class="modal-overlay" id="modal-overwrite">
+      <div class="modal-box">
+        <div class="modal-title">File Already Exists</div>
+        <div class="modal-body" id="overwrite-body">Output file already exists. Overwrite?</div>
+        <div class="modal-buttons">
+          <button class="btn" id="ow-yes">Yes</button>
+          <button class="btn" id="ow-no">No</button>
+          <button class="btn btn-primary" id="ow-always">Always</button>
+        </div>
+      </div>
+    </div>
+
+    <!-- ═══ Modal: Fallback prompt (§10.6) ═══ -->
+    <div class="modal-overlay" id="modal-fallback">
+      <div class="modal-box">
+        <div class="modal-title">Hardware Encoder Failed</div>
+        <div class="modal-body" id="fallback-body">Fall back to software encoding for this file and continue?</div>
+        <div class="modal-buttons">
+          <button class="btn btn-primary" id="fb-yes">Yes</button>
+          <button class="btn" id="fb-no">No</button>
+        </div>
+      </div>
+    </div>
+
+    <!-- ═══ Modal: Delete-source confirmation (§7.4) ═══ -->
+    <div class="modal-overlay" id="modal-delete-confirm">
+      <div class="modal-box">
+        <div class="modal-title">Delete Source Files</div>
+        <div class="modal-body">"Delete source" is enabled. Source files will be permanently deleted after each successful encode. Continue?</div>
+        <div class="modal-buttons">
+          <button class="btn btn-primary" id="dc-yes">Continue</button>
+          <button class="btn" id="dc-no">Cancel</button>
+        </div>
+      </div>
+    </div>
+
+    <!-- ═══ Modal: Post-batch countdown (§7.6) ═══ -->
+    <div class="modal-overlay" id="modal-countdown">
+      <div class="modal-box">
+        <div class="modal-title">Post-Batch Action</div>
+        <div class="modal-body" id="countdown-body">Performing action in <strong id="countdown-value">0</strong> seconds…</div>
+        <div class="modal-buttons">
+          <button class="btn" id="cd-cancel">Cancel</button>
+        </div>
+      </div>
+    </div>
+	
+	<!-- ═══ Modal: ffmpeg missing ═══ -->
+    <div class="modal-overlay" id="modal-ffmpeg-missing">
+      <div class="modal-box">
+        <div class="modal-title">ffmpeg Not Found</div>
+        <div class="modal-body" id="ffmpeg-missing-body">
+          ffmpeg and ffprobe are required but were not found on your system.
+          Would you like to download them automatically? (~80 MB)
+        </div>
+        <div class="modal-buttons">
+          <button class="btn btn-primary" id="ffmpeg-dl-yes">Download</button>
+          <button class="btn" id="ffmpeg-dl-no">Not Now</button>
+        </div>
+      </div>
+    </div>
+
+  </div><!-- /app -->
+
+  <script>
+    // ═══════════════════════════════════════════════════════════════
+    //  HISTV Tauri Frontend — app.js (inline)
+    // ═══════════════════════════════════════════════════════════════
+    const { invoke } = window.__TAURI__.core;
+    const { listen, emit } = window.__TAURI__.event;
+
+    // Dialog helper — wraps the Tauri v2 dialog plugin.
+    // With withGlobalTauri: true, plugins may expose their API on a global,
+    // or we can invoke the plugin command directly.
+    async function dialogOpen(opts) {
+      try {
+        if (window.__TAURI_PLUGIN_DIALOG__ && window.__TAURI_PLUGIN_DIALOG__.open) {
+          return await window.__TAURI_PLUGIN_DIALOG__.open(opts);
+        }
+      } catch (_) { /* fall through */ }
+      return invoke('plugin:dialog|open', opts);
+    }
+
+    // ── State ──────────────────────────────────────────────────────
+    let queueData = [];                // mirrors backend queue
+    let videoEncoders = [];            // EncoderInfo[]
+    let audioEncoders = [];            // string[]
+    let themes = [];                   // Theme[]
+    let selectedRows = new Set();      // indices of selected rows
+    let batchRunning = false;
+    let encoderDetectionDone = false;
+    let saveDebounce = null;
+
+    // ── DOM refs ───────────────────────────────────────────────────
+    const $ = (s) => document.querySelector(s);
+    const $$ = (s) => document.querySelectorAll(s);
+
+    const queueBody       = $('#queue-body');
+    const dropOverlay     = $('#drop-overlay');
+    const selCodec        = $('#sel-codec');
+    const selEncoder      = $('#sel-encoder');
+    const encoderStatus   = $('#encoder-status');
+    const numBitrate      = $('#num-bitrate');
+    const numQpI          = $('#num-qp-i');
+    const numQpP          = $('#num-qp-p');
+    const txtPixFmt       = $('#txt-pixfmt');
+    const chkHdr          = $('#chk-hdr');
+    const selAudioCodec   = $('#sel-audio-codec');
+    const numAudioCap     = $('#num-audio-cap');
+    const selTheme        = $('#sel-theme');
+    const txtOutputFolder = $('#txt-output-folder');
+    const selContainer    = $('#sel-container');
+    const chkOverwrite    = $('#chk-overwrite');
+    const chkDeleteSource = $('#chk-delete-source');
+    const chkSaveLog      = $('#chk-save-log');
+    const chkToast        = $('#chk-toast');
+    const selPostAction   = $('#sel-post-action');
+    const txtCustomCmd    = $('#txt-custom-command');
+    const numCountdown    = $('#num-countdown');
+    const rowCustomCmd    = $('#row-custom-command');
+    const statusFile      = $('#status-file');
+    const statusCmd       = $('#status-cmd');
+    const progressBar     = $('#progress-bar');
+    const btnStart        = $('#btn-start');
+    const btnCancelCur    = $('#btn-cancel-current');
+    const btnCancelAll    = $('#btn-cancel-all');
+    const btnDryRun       = $('#btn-dry-run');
+    const btnPause        = $('#btn-pause');
+    const logDrawer       = $('#log-drawer');
+    const logToggle       = $('#log-toggle');
+    const logToggleArrow  = $('#log-toggle-arrow');
+    const logContent      = $('#log-content');
+    const contextMenu     = $('#context-menu');
+
+    // ── Status icons (SVG) ─────────────────────────────────────────
+    const STATUS_ICONS = {
+      pending: '',
+      probing: '<svg class="spinner" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5"><circle cx="12" cy="12" r="10" stroke-dasharray="31.4 31.4" stroke-linecap="round"/></svg>',
+      encoding: '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><circle cx="12" cy="12" r="9"/><path d="M12 6v6l4 2"/></svg>',
+      done: '<svg viewBox="0 0 24 24" fill="none" stroke="#4ade80" stroke-width="2.5"><path d="M5 13l4 4L19 7"/></svg>',
+      failed: '<svg viewBox="0 0 24 24" fill="none" stroke="#f87171" stroke-width="2.5"><path d="M6 6l12 12M18 6L6 18"/></svg>',
+      skipped: '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M5 5l14 7-14 7V5z"/><line x1="19" y1="5" x2="19" y2="19"/></svg>',
+      cancelled: '<svg viewBox="0 0 24 24" fill="none" stroke="#fb923c" stroke-width="2.5"><circle cx="12" cy="12" r="9"/><line x1="9" y1="9" x2="15" y2="15"/></svg>',
+    };
+
+    // ═══════════════════════════════════════════════════════════════
+    //  INITIALISATION
+    // ═══════════════════════════════════════════════════════════════
+    document.addEventListener('DOMContentLoaded', async () => {
+      await loadConfig();
+      await loadThemes();
+      setupTabs();
+      setupSplitter();
+      setupQueueButtons();
+      setupSettingsListeners();
+      setupLogDrawer();
+      setupContextMenu();
+      setupDragAndDrop();
+      setupClipboardPaste();
+      setupModalButtons();
+      setupBottomButtons();
+      listenTauriEvents();
+
+      // In case encoder detection completed before listeners were ready
+      const alreadyDone = await invoke('get_encoder_detection_status');
+      if (alreadyDone) {
+        try {
+          const [ve, ae] = await invoke('get_detected_encoders');
+          videoEncoders = ve;
+          audioEncoders = ae;
+          populateEncoderDropdown();
+          const total = ve.length + ae.length;
+          encoderStatus.textContent = `${total} encoders available (${ve.length} video, ${ae.length} audio)`;
+          encoderDetectionDone = true;
+          updateBatchButtons();
+        } catch (e) {
+          console.warn('Encoder fetch error:', e);
+        }
+      }
+    });
+
+    // ── Load persisted config from backend ─────────────────────────
+    async function loadConfig() {
+      try {
+        const cfg = await invoke('get_config');
+        selCodec.value = cfg.videoCodec || 'HEVC';
+        numBitrate.value = cfg.targetBitrate || 5;
+        numQpI.value = cfg.qpI ?? 20;
+        numQpP.value = cfg.qpP ?? 22;
+        chkHdr.checked = cfg.hdr || false;
+        updatePixFmt();
+        selAudioCodec.value = cfg.audioCodec || 'AC3';
+        numAudioCap.value = cfg.audioBitrateCap || 640;
+        txtOutputFolder.value = cfg.outputFolder || 'output';
+        selContainer.value = cfg.outputContainer || 'mkv';
+        chkOverwrite.checked = cfg.overwrite || false;
+        chkDeleteSource.checked = cfg.deleteSource || false;
+        chkSaveLog.checked = cfg.saveLog || false;
+        chkToast.checked = cfg.showToast || false;
+        selPostAction.value = cfg.postAction || 'None';
+        toggleCustomCommand();
+        txtCustomCmd.value = cfg.customCommand || '';
+        numCountdown.value = cfg.postCountdown || 0;
+        if (cfg.logDrawerOpen) {
+          logDrawer.classList.add('open');
+          logToggleArrow.textContent = '\u25BC';
+        }
+      } catch (e) {
+        console.warn('Could not load config:', e);
+      }
+    }
+
+    // ── Persist config (debounced) ─────────────────────────────────
+    function scheduleConfigSave() {
+      if (saveDebounce) clearTimeout(saveDebounce);
+      saveDebounce = setTimeout(async () => {
+        try {
+          await invoke('save_config', {
+            config: {
+              theme: selTheme.value || 'Default Dark',
+              outputFolder: txtOutputFolder.value,
+              outputContainer: selContainer.value,
+              overwrite: chkOverwrite.checked,
+              deleteSource: chkDeleteSource.checked,
+              saveLog: chkSaveLog.checked,
+              showToast: chkToast.checked,
+              postAction: selPostAction.value,
+              postCountdown: parseInt(numCountdown.value, 10) || 0,
+              customCommand: txtCustomCmd.value,
+              videoCodec: selCodec.value,
+              targetBitrate: parseInt(numBitrate.value, 10) || 5,
+              qpI: parseInt(numQpI.value, 10) || 20,
+              qpP: parseInt(numQpP.value, 10) || 22,
+              hdr: chkHdr.checked,
+              audioCodec: selAudioCodec.value,
+              audioBitrateCap: parseInt(numAudioCap.value, 10) || 640,
+              logDrawerOpen: logDrawer.classList.contains('open'),
+            }
+          });
+        } catch (e) {
+          console.warn('Config save failed:', e);
+        }
+      }, 600);
+    }
+
+    // ═══════════════════════════════════════════════════════════════
+    //  THEMING (§3)
+    // ═══════════════════════════════════════════════════════════════
+    async function loadThemes() {
+      try {
+        themes = await invoke('get_themes');
+        selTheme.innerHTML = '';
+        for (const t of themes) {
+          const opt = document.createElement('option');
+          opt.value = t.name;
+          opt.textContent = t.name;
+          selTheme.appendChild(opt);
+        }
+        // Restore saved theme
+        const cfg = await invoke('get_config');
+        if (cfg.theme && themes.find(t => t.name === cfg.theme)) {
+          selTheme.value = cfg.theme;
+        }
+        applyTheme(selTheme.value);
+      } catch (e) {
+        console.warn('Could not load themes:', e);
+      }
+    }
+
+    function applyTheme(name) {
+      const theme = themes.find(t => t.name === name);
+      if (!theme) return;
+      const root = document.documentElement;
+      for (const [key, value] of Object.entries(theme.colors)) {
+        root.style.setProperty(`--${key}`, value);
+      }
+    }
+
+    selTheme.addEventListener('change', () => {
+      applyTheme(selTheme.value);
+      scheduleConfigSave();
+    });
+
+    // ═══════════════════════════════════════════════════════════════
+    //  TABS
+    // ═══════════════════════════════════════════════════════════════
+    function setupTabs() {
+      for (const btn of $$('.tab-btn')) {
+        btn.addEventListener('click', () => {
+          $$('.tab-btn').forEach(b => b.classList.remove('active'));
+          $$('.tab-content').forEach(c => c.classList.remove('active'));
+          btn.classList.add('active');
+          $(`#tab-${btn.dataset.tab}`).classList.add('active');
+        });
+      }
+    }
+
+    // ═══════════════════════════════════════════════════════════════
+    //  SPLITTER (§4.1)
+    // ═══════════════════════════════════════════════════════════════
+    function setupSplitter() {
+      const splitter = $('#splitter');
+      const leftPanel = $('#left-panel');
+      const mainArea = $('#main-area');
+      let dragging = false;
+
+      splitter.addEventListener('mousedown', (e) => {
+        dragging = true;
+        splitter.classList.add('dragging');
+        e.preventDefault();
+      });
+
+      document.addEventListener('mousemove', (e) => {
+        if (!dragging) return;
+        const rect = mainArea.getBoundingClientRect();
+        const offset = e.clientX - rect.left;
+        const minLeft = 220;
+        const maxLeft = rect.width - 320 - 5; // 320 = right-panel min-width, 5 = splitter
+        const clamped = Math.max(minLeft, Math.min(maxLeft, offset));
+        leftPanel.style.flex = 'none';
+        leftPanel.style.width = clamped + 'px';
+      });
+
+      document.addEventListener('mouseup', () => {
+        if (dragging) {
+          dragging = false;
+          splitter.classList.remove('dragging');
+        }
+      });
+    }
+
+    // ═══════════════════════════════════════════════════════════════
+    //  FILE QUEUE (§5)
+    // ═══════════════════════════════════════════════════════════════
+
+    // ── Render queue table ──
+    function renderQueue() {
+      queueBody.innerHTML = '';
+      for (let i = 0; i < queueData.length; i++) {
+        const item = queueData[i];
+        const tr = document.createElement('tr');
+        const statusLower = (item.status || 'pending').toLowerCase();
+        tr.className = `status-${statusLower}`;
+        if (selectedRows.has(i)) tr.classList.add('selected');
+        tr.dataset.index = i;
+
+        // Filename
+        const tdName = document.createElement('td');
+        tdName.title = item.fullPath || item.fileName;
+        tdName.textContent = item.fileName;
+        tr.appendChild(tdName);
+
+        // Resolution
+        const tdRes = document.createElement('td');
+        tdRes.textContent = (item.videoWidth && item.videoHeight)
+          ? `${item.videoWidth}x${item.videoHeight}` : '';
+        tr.appendChild(tdRes);
+
+        // Source bitrate
+        const tdSrc = document.createElement('td');
+        tdSrc.textContent = item.videoBitrateMbps > 0
+          ? `${item.videoBitrateMbps.toFixed(2)} Mbps` : '';
+        tr.appendChild(tdSrc);
+
+        // Target bitrate (§5.7)
+        const tdTgt = document.createElement('td');
+        tdTgt.textContent = computeTargetBitrateLabel(item);
+        tr.appendChild(tdTgt);
+
+        // Status badge
+        const tdStatus = document.createElement('td');
+        const badge = document.createElement('span');
+        badge.className = 'status-badge';
+        const icon = STATUS_ICONS[statusLower] || '';
+        if (icon) {
+          const iconSpan = document.createElement('span');
+          iconSpan.className = 'status-icon';
+          iconSpan.innerHTML = icon;
+          badge.appendChild(iconSpan);
+        }
+        badge.appendChild(document.createTextNode(item.status || 'Pending'));
+        tdStatus.appendChild(badge);
+        tr.appendChild(tdStatus);
+
+        // Row click selection
+        tr.addEventListener('click', (e) => {
+          if (e.shiftKey && selectedRows.size > 0) {
+            const last = Math.max(...selectedRows);
+            const lo = Math.min(last, i);
+            const hi = Math.max(last, i);
+            for (let r = lo; r <= hi; r++) selectedRows.add(r);
+          } else if (e.ctrlKey || e.metaKey) {
+            if (selectedRows.has(i)) selectedRows.delete(i);
+            else selectedRows.add(i);
+          } else {
+            selectedRows.clear();
+            selectedRows.add(i);
+          }
+          renderQueue();
+        });
+
+        queueBody.appendChild(tr);
+      }
+	  updateBatchButtons();
+    }
+
+    // ── Target bitrate label (§5.7) ──
+    function computeTargetBitrateLabel(item) {
+      const target = parseFloat(numBitrate.value) || 5;
+      const qpI = parseInt(numQpI.value, 10) || 20;
+      const qpP = parseInt(numQpP.value, 10) || 22;
+      const mbps = item.videoBitrateMbps;
+      if (!mbps || mbps <= 0) return '?';
+
+      const targetCodecFamily = selCodec.value === 'H.264' ? 'h264' : 'hevc';
+      const sourceCodec = (item.videoCodec || '').toLowerCase();
+      const isSameCodec = sourceCodec === targetCodecFamily;
+
+      if (mbps > target) {
+        return `${target}Mbps (VBR)`;
+      } else if (isSameCodec) {
+        return 'Copy';
+      } else {
+        return `CQP (${qpI}/${qpP})`;
+      }
+    }
+
+    // ── Update all target bitrate labels ──
+    function refreshTargetBitrates() {
+      const rows = queueBody.querySelectorAll('tr');
+      rows.forEach((tr, i) => {
+        if (i < queueData.length) {
+          const td = tr.children[3];
+          if (td) td.textContent = computeTargetBitrateLabel(queueData[i]);
+        }
+      });
+    }
+
+    // ── Add files via backend ──
+    async function addFilesToQueue(paths) {
+      if (!paths || paths.length === 0) return;
+      try {
+        const added = await invoke('add_files_to_queue', { paths });
+        // Re-fetch full queue to stay in sync
+        queueData = await invoke('get_queue');
+        renderQueue();
+        // Probe newly-added items
+        for (const item of added) {
+          const idx = queueData.findIndex(q => q.fullPath === item.fullPath);
+          if (idx >= 0 && queueData[idx].status === 'Pending') {
+            probeFileAt(idx);
+          }
+        }
+      } catch (e) {
+        console.error('addFilesToQueue error:', e);
+      }
+    }
+
+    // ── Probe a single file (async, non-blocking) ──
+    async function probeFileAt(index) {
+      try {
+        await invoke('probe_file', { index });
+        queueData = await invoke('get_queue');
+        renderQueue();
+        checkHdrAuto();
+      } catch (e) {
+        console.warn(`Probe failed for index ${index}:`, e);
+        queueData = await invoke('get_queue');
+        renderQueue();
+      }
+    }
+
+    // ── Auto-check HDR if any file is HDR (§6.1) ──
+    function checkHdrAuto() {
+      const anyHdr = queueData.some(item => item.isHdr);
+      if (anyHdr && !chkHdr.checked) {
+        chkHdr.checked = true;
+        updatePixFmt();
+        scheduleConfigSave();
+      }
+    }
+
+    // ── HDR checkbox → pixel format (§6.1) ──
+    function updatePixFmt() {
+      txtPixFmt.value = chkHdr.checked ? 'p010le' : 'yuv420p';
+    }
+
+    // ── Queue buttons ──
+    function setupQueueButtons() {
+      $('#btn-add-files').addEventListener('click', async () => {
+        try {
+          const selected = await dialogOpen({
+            multiple: true,
+            filters: [{
+              name: 'Video Files',
+              extensions: ['mkv','mp4','avi','ts','m2ts','wmv','mov','webm']
+            }]
+          });
+          if (selected) {
+            const paths = Array.isArray(selected) ? selected : [selected];
+            await addFilesToQueue(paths);
+          }
+        } catch (e) {
+          console.error('File dialog error:', e);
+        }
+      });
+
+      $('#btn-add-folder').addEventListener('click', async () => {
+        try {
+          const folder = await dialogOpen({ directory: true });
+          if (folder) {
+            await addFilesToQueue([folder]);
+          }
+        } catch (e) {
+          console.error('Folder dialog error:', e);
+        }
+      });
+
+      $('#btn-clear-all').addEventListener('click', async () => {
+        if (batchRunning) return;
+        try {
+          await invoke('clear_all_queue');
+          queueData = [];
+          selectedRows.clear();
+          renderQueue();
+        } catch (e) {
+          console.error('Clear all error:', e);
+        }
+      });
+    }
+
+    // ── Drag-and-drop (§5.1) ──
+    function setupDragAndDrop() {
+      const container = $('#queue-container');
+      let dragCounter = 0;
+
+      // Tauri v2 file drop events
+      listen('tauri://drag-enter', () => {
+        dragCounter++;
+        dropOverlay.classList.add('visible');
+      });
+
+      listen('tauri://drag-leave', () => {
+        dragCounter--;
+        if (dragCounter <= 0) {
+          dragCounter = 0;
+          dropOverlay.classList.remove('visible');
+        }
+      });
+
+      listen('tauri://drag-drop', async (event) => {
+        dragCounter = 0;
+        dropOverlay.classList.remove('visible');
+        const paths = event.payload?.paths || event.payload;
+        if (Array.isArray(paths) && paths.length > 0) {
+          await addFilesToQueue(paths);
+        }
+      });
+
+      // Also handle native browser drag events as a fallback
+      container.addEventListener('dragover', (e) => {
+        e.preventDefault();
+        dropOverlay.classList.add('visible');
+      });
+
+      container.addEventListener('dragleave', () => {
+        dropOverlay.classList.remove('visible');
+      });
+
+      container.addEventListener('drop', (e) => {
+        e.preventDefault();
+        dropOverlay.classList.remove('visible');
+      });
+    }
+
+    // ── Clipboard paste (§5.1 / §15.4) ──
+    function setupClipboardPaste() {
+      document.addEventListener('keydown', async (e) => {
+        if ((e.ctrlKey || e.metaKey) && e.key === 'v') {
+          // Only paste into the queue area
+          const active = document.activeElement;
+          if (active && (active.tagName === 'INPUT' || active.tagName === 'TEXTAREA')) return;
+          e.preventDefault();
+          try {
+            const text = await navigator.clipboard.readText();
+            if (text) {
+              const paths = text.split(/[\r\n]+/).map(s => s.trim()).filter(Boolean);
+              if (paths.length > 0) await addFilesToQueue(paths);
+            }
+          } catch (err) {
+            console.warn('Clipboard paste failed:', err);
+          }
+        }
+      });
+    }
+
+    // ═══════════════════════════════════════════════════════════════
+    //  SETTINGS LISTENERS
+    // ═══════════════════════════════════════════════════════════════
+    function setupSettingsListeners() {
+      // Codec change → repopulate encoder dropdown, refresh target bitrates
+      selCodec.addEventListener('change', () => {
+        populateEncoderDropdown();
+        refreshTargetBitrates();
+        scheduleConfigSave();
+      });
+
+      selEncoder.addEventListener('change', () => {
+        refreshTargetBitrates();
+        scheduleConfigSave();
+      });
+
+      numBitrate.addEventListener('change', () => {
+        refreshTargetBitrates();
+        scheduleConfigSave();
+      });
+
+      numQpI.addEventListener('change', () => {
+        refreshTargetBitrates();
+        scheduleConfigSave();
+      });
+
+      numQpP.addEventListener('change', () => {
+        refreshTargetBitrates();
+        scheduleConfigSave();
+      });
+
+      chkHdr.addEventListener('change', () => {
+        updatePixFmt();
+        scheduleConfigSave();
+      });
+
+      // Simple save-on-change for remaining controls
+      const simpleSaveControls = [
+        selAudioCodec, numAudioCap, txtOutputFolder, selContainer,
+        chkOverwrite, chkDeleteSource, chkSaveLog, chkToast,
+        selPostAction, txtCustomCmd, numCountdown
+      ];
+      for (const el of simpleSaveControls) {
+        el.addEventListener('change', scheduleConfigSave);
+      }
+
+      // Post-action: show/hide custom command row
+      selPostAction.addEventListener('change', toggleCustomCommand);
+    }
+
+    function toggleCustomCommand() {
+      rowCustomCmd.style.display = selPostAction.value === 'Custom Command' ? 'flex' : 'none';
+    }
+
+    // ═══════════════════════════════════════════════════════════════
+    //  ENCODER DETECTION (§8)
+    // ═══════════════════════════════════════════════════════════════
+    function populateEncoderDropdown() {
+      const family = selCodec.value === 'H.264' ? 'h264' : 'hevc';
+      const matching = videoEncoders.filter(e => e.codecFamily === family);
+      const prevValue = selEncoder.value;
+      selEncoder.innerHTML = '';
+      for (const enc of matching) {
+        const opt = document.createElement('option');
+        opt.value = enc.name;
+        opt.textContent = enc.name + (enc.isHardware ? ' (HW)' : ' (SW)');
+        selEncoder.appendChild(opt);
+      }
+      // Restore previous selection if still valid, otherwise keep first
+      if (matching.find(e => e.name === prevValue)) {
+        selEncoder.value = prevValue;
+      }
+    }
+
+    // ═══════════════════════════════════════════════════════════════
+    //  LOG DRAWER (§11)
+    // ═══════════════════════════════════════════════════════════════
+    function setupLogDrawer() {
+      logToggle.addEventListener('click', () => {
+        const isOpen = logDrawer.classList.toggle('open');
+        logToggleArrow.textContent = isOpen ? '\u25BC' : '\u25B2';
+        scheduleConfigSave();
+      });
+    }
+
+    function appendLog(msg) {
+      const line = document.createElement('div');
+      line.textContent = msg;
+      logContent.appendChild(line);
+      logContent.scrollTop = logContent.scrollHeight;
+    }
+
+    // ═══════════════════════════════════════════════════════════════
+    //  CONTEXT MENU (§5.5)
+    // ═══════════════════════════════════════════════════════════════
+    function setupContextMenu() {
+      const container = $('#queue-container');
+
+      container.addEventListener('contextmenu', (e) => {
+        e.preventDefault();
+        // Disable all items during batch
+        $$('.ctx-item').forEach(el => {
+          el.classList.toggle('disabled', batchRunning);
+        });
+        contextMenu.style.left = e.clientX + 'px';
+        contextMenu.style.top = e.clientY + 'px';
+        contextMenu.classList.add('visible');
+      });
+
+      document.addEventListener('click', () => {
+        contextMenu.classList.remove('visible');
+      });
+
+      $('#ctx-remove-selected').addEventListener('click', async () => {
+        if (batchRunning || selectedRows.size === 0) return;
+        try {
+          await invoke('remove_queue_items', { indices: Array.from(selectedRows) });
+          selectedRows.clear();
+          queueData = await invoke('get_queue');
+          renderQueue();
+        } catch (e) {
+          console.error('Remove selected error:', e);
+        }
+      });
+
+      $('#ctx-clear-completed').addEventListener('click', async () => {
+        if (batchRunning) return;
+        try {
+          await invoke('clear_completed');
+          selectedRows.clear();
+          queueData = await invoke('get_queue');
+          renderQueue();
+        } catch (e) {
+          console.error('Clear completed error:', e);
+        }
+      });
+
+      $('#ctx-clear-all').addEventListener('click', async () => {
+        if (batchRunning) return;
+        try {
+          await invoke('clear_all_queue');
+          queueData = [];
+          selectedRows.clear();
+          renderQueue();
+        } catch (e) {
+          console.error('Clear all error:', e);
+        }
+      });
+    }
+
+    // ═══════════════════════════════════════════════════════════════
+    //  BOTTOM BAR BUTTONS (§12)
+    // ═══════════════════════════════════════════════════════════════
+    function setupBottomButtons() {
+      btnStart.addEventListener('click', startBatch);
+      btnCancelCur.addEventListener('click', () => invoke('cancel_current'));
+      btnCancelAll.addEventListener('click', () => invoke('cancel_all'));
+      btnDryRun.addEventListener('click', dryRun);
+      btnPause.addEventListener('click', togglePause);
+
+      // Browse output folder
+      $('#btn-browse-output').addEventListener('click', async () => {
+        try {
+          const folder = await dialogOpen({ directory: true });
+          if (folder) {
+            txtOutputFolder.value = folder;
+            scheduleConfigSave();
+          }
+        } catch (e) {
+          console.error('Browse output error:', e);
+        }
+      });
+    }
+
+    function updateBatchButtons() {
+      const hasPending = queueData.some(i => (i.status || '').toLowerCase() === 'pending');
+      btnStart.disabled = !encoderDetectionDone || batchRunning || !hasPending;
+      btnDryRun.disabled = !encoderDetectionDone || batchRunning || !hasPending;
+      btnCancelCur.disabled = !batchRunning;
+      btnCancelAll.disabled = !batchRunning;
+      btnPause.disabled = !batchRunning;
+    }
+
+    // ── Start batch (§10.1) ──
+    async function startBatch() {
+      // Delete-source confirmation (§7.4)
+      if (chkDeleteSource.checked) {
+        const confirmed = await showDeleteConfirm();
+        if (!confirmed) return;
+      }
+
+      try {
+        await invoke('start_batch', {
+          settings: {
+            outputFolder: txtOutputFolder.value,
+            outputContainer: selContainer.value,
+            targetBitrate: parseFloat(numBitrate.value) || 5,
+            qpI: parseInt(numQpI.value, 10) || 20,
+            qpP: parseInt(numQpP.value, 10) || 22,
+            videoEncoder: selEncoder.value,
+            codecFamily: selCodec.value,
+            audioEncoder: selAudioCodec.value.toLowerCase(),
+            audioBitrateCap: parseInt(numAudioCap.value, 10) || 640,
+            pixFmt: txtPixFmt.value,
+            overwrite: chkOverwrite.checked,
+            deleteSource: chkDeleteSource.checked,
+            saveLog: chkSaveLog.checked,
+            showToast: chkToast.checked,
+            postAction: selPostAction.value,
+            postCountdown: parseInt(numCountdown.value, 10) || 0,
+          }
+        });
+      } catch (e) {
+        appendLog('ERROR: ' + e);
+      }
+    }
+
+    // ── Dry run (§14) ──
+    async function dryRun() {
+      appendLog('[dry-run] Probing all unprobed files...');
+      for (let i = 0; i < queueData.length; i++) {
+        const status = (queueData[i].status || '').toLowerCase();
+        if (status === 'pending' && queueData[i].videoBitrateMbps <= 0) {
+          await probeFileAt(i);
+        }
+      }
+      appendLog('[dry-run] Complete.');
+    }
+
+    // ── Pause / Resume (§10.5) ──
+    async function togglePause() {
+      try {
+        const paused = await invoke('toggle_pause');
+        btnPause.textContent = paused ? 'Resume' : 'Pause';
+      } catch (e) {
+        console.error('Toggle pause error:', e);
+      }
+    }
+
+    // ═══════════════════════════════════════════════════════════════
+    //  MODAL DIALOGS
+    // ═══════════════════════════════════════════════════════════════
+    function setupModalButtons() {
+      // Overwrite prompt (§7.3)
+      $('#ow-yes').addEventListener('click', () => {
+        invoke('respond_overwrite', { response: 'yes' });
+        $('#modal-overwrite').classList.remove('visible');
+      });
+      $('#ow-no').addEventListener('click', () => {
+        invoke('respond_overwrite', { response: 'no' });
+        $('#modal-overwrite').classList.remove('visible');
+      });
+      $('#ow-always').addEventListener('click', () => {
+        invoke('respond_overwrite', { response: 'always' });
+        $('#modal-overwrite').classList.remove('visible');
+      });
+
+      // Fallback prompt (§10.6)
+      $('#fb-yes').addEventListener('click', () => {
+        invoke('respond_fallback', { response: 'yes' });
+        $('#modal-fallback').classList.remove('visible');
+      });
+      $('#fb-no').addEventListener('click', () => {
+        invoke('respond_fallback', { response: 'no' });
+        $('#modal-fallback').classList.remove('visible');
+      });
+
+      // Delete-source confirmation
+      // Handled via promise below
+
+      // Countdown cancel
+      $('#cd-cancel').addEventListener('click', () => {
+        clearCountdownTimer();
+        $('#modal-countdown').classList.remove('visible');
+      });
+    }
+
+    // ── Delete-source confirmation (returns promise) ──
+    function showDeleteConfirm() {
+      return new Promise((resolve) => {
+        const modal = $('#modal-delete-confirm');
+        modal.classList.add('visible');
+        const yesBtn = $('#dc-yes');
+        const noBtn = $('#dc-no');
+        function cleanup() {
+          modal.classList.remove('visible');
+          yesBtn.removeEventListener('click', onYes);
+          noBtn.removeEventListener('click', onNo);
+        }
+        function onYes() { cleanup(); resolve(true); }
+        function onNo()  { cleanup(); resolve(false); }
+        yesBtn.addEventListener('click', onYes);
+        noBtn.addEventListener('click', onNo);
+      });
+    }
+
+    // ── Post-batch countdown (§7.6) ──
+    let countdownInterval = null;
+
+    function startCountdown(action, seconds) {
+      if (seconds <= 0) {
+        executePostAction(action);
+        return;
+      }
+      let remaining = seconds;
+      const modal = $('#modal-countdown');
+      const body = $('#countdown-body');
+      const valueEl = $('#countdown-value');
+      body.innerHTML = `<strong>${action}</strong> in <strong id="countdown-value">${remaining}</strong> seconds...`;
+      modal.classList.add('visible');
+
+      countdownInterval = setInterval(() => {
+        remaining--;
+        const v = modal.querySelector('#countdown-value');
+        if (v) v.textContent = remaining;
+        if (remaining <= 0) {
+          clearCountdownTimer();
+          modal.classList.remove('visible');
+          executePostAction(action);
+        }
+      }, 1000);
+    }
+
+    function clearCountdownTimer() {
+      if (countdownInterval) {
+        clearInterval(countdownInterval);
+        countdownInterval = null;
+      }
+    }
+
+    async function executePostAction(action) {
+      try {
+        if (action === 'Custom Command') {
+          // Custom command is handled differently — just log it for now
+          appendLog(`[post-batch] Executing custom command: ${txtCustomCmd.value}`);
+          // The backend could handle this, but for custom we'd invoke a separate command
+        } else {
+          await invoke('execute_post_batch_action', { action });
+        }
+      } catch (e) {
+        appendLog(`[post-batch] Error: ${e}`);
+      }
+    }
+
+    // ═══════════════════════════════════════════════════════════════
+    //  TAURI EVENT LISTENERS
+    // ═══════════════════════════════════════════════════════════════
+
+    // Window close protection during batch (§16.4)
+    window.addEventListener('beforeunload', (e) => {
+      if (batchRunning) {
+        e.preventDefault();
+        e.returnValue = '';
+      }
+    });
+
+    function listenTauriEvents() {
+      // Encoder detection complete
+      listen('encoder-detection-done', async () => {
+        encoderDetectionDone = true;
+        try {
+          const [ve, ae] = await invoke('get_detected_encoders');
+          videoEncoders = ve;
+          audioEncoders = ae;
+          populateEncoderDropdown();
+          const total = ve.length + ae.length;
+          encoderStatus.textContent = `${total} encoders available (${ve.length} video, ${ae.length} audio)`;
+        } catch (e) {
+          encoderStatus.textContent = 'Encoder detection failed';
+        }
+        updateBatchButtons();
+		});
+		
+		// ffmpeg not found — prompt to download
+      listen('ffmpeg-missing', () => {
+        encoderStatus.textContent = 'ffmpeg not found';
+        const modal = document.querySelector('#modal-ffmpeg-missing');
+        const body = document.querySelector('#ffmpeg-missing-body');
+        modal.classList.add('active');
+
+        document.querySelector('#ffmpeg-dl-yes').onclick = async () => {
+          modal.classList.remove('active');
+          encoderStatus.textContent = 'Downloading ffmpeg...';
+          try {
+            await invoke('download_ffmpeg');
+            // encoder-detection-done event will fire automatically after download
+          } catch (e) {
+            encoderStatus.textContent = 'Download failed: ' + e;
+            body.textContent = 'Download failed: ' + e + '. You can install ffmpeg manually and restart the app.';
+            modal.classList.add('active');
+          }
+        };
+
+        document.querySelector('#ffmpeg-dl-no').onclick = () => {
+          modal.classList.remove('active');
+          encoderStatus.textContent = 'ffmpeg not found - install ffmpeg and restart';
+        };
+      });
+
+      // Download progress updates
+      listen('ffmpeg-download-progress', (event) => {
+        encoderStatus.textContent = event.payload;
+      });
+
+      // Log messages
+      listen('log', (event) => {
+        appendLog(event.payload);
+      });
+
+      // ffmpeg stderr lines
+      listen('ffmpeg-stderr', (event) => {
+        appendLog(event.payload);
+      });
+
+      // Queue item updated (status change)
+      listen('queue-item-updated', async () => {
+        queueData = await invoke('get_queue');
+        renderQueue();
+        updateBatchButtons();
+      });
+
+      // Queue item probed
+      listen('queue-item-probed', async () => {
+        queueData = await invoke('get_queue');
+        renderQueue();
+      });
+
+      // Batch started
+      listen('batch-started', () => {
+        batchRunning = true;
+        btnPause.textContent = 'Pause';
+        updateBatchButtons();
+      });
+
+      // Batch progress
+      listen('batch-progress', (event) => {
+        const { current, total } = event.payload;
+        const pct = total > 0 ? (current / total) * 100 : 0;
+        progressBar.style.width = pct + '%';
+      });
+
+      // Batch status label
+      listen('batch-status', (event) => {
+        statusFile.textContent = event.payload;
+      });
+
+      // Batch command label
+      listen('batch-command', (event) => {
+        statusCmd.textContent = event.payload;
+      });
+
+      // Batch finished
+      listen('batch-finished', (event) => {
+        batchRunning = false;
+        btnPause.textContent = 'Pause';
+        statusFile.textContent = 'No job running';
+        statusCmd.textContent = '';
+        progressBar.style.width = '0%';
+        updateBatchButtons();
+        // Re-fetch queue to get final statuses
+        invoke('get_queue').then(q => { queueData = q; renderQueue(); });
+      });
+
+      // Overwrite prompt from backend
+      listen('overwrite-prompt', (event) => {
+        const filename = event.payload;
+        $('#overwrite-body').textContent = `Output file already exists:\n${filename}\n\nOverwrite?`;
+        $('#modal-overwrite').classList.add('visible');
+      });
+
+      // Fallback prompt from backend
+      listen('fallback-prompt', (event) => {
+        const filename = event.payload;
+        $('#fallback-body').textContent =
+          `Hardware encoder failed for "${filename}".\nFall back to software encoding for this file and continue?`;
+        $('#modal-fallback').classList.add('visible');
+      });
+
+      // Toast notification (§7.7)
+      listen('toast', async (event) => {
+        try {
+          // Tauri v2 notification plugin
+          const permitted = await invoke('plugin:notification|is_permission_granted');
+          if (!permitted) {
+            await invoke('plugin:notification|request_permission');
+          }
+          await invoke('plugin:notification|notify', {
+            title: 'Honey, I Shrunk The Vids',
+            body: event.payload,
+          });
+        } catch (e) {
+          console.warn('Notification error:', e);
+        }
+      });
+
+      // Post-batch action (§7.6)
+      listen('post-batch', (event) => {
+        const { action, countdown } = event.payload;
+        startCountdown(action, countdown);
+      });
+    }
+  </script>
+</body>
+</html>

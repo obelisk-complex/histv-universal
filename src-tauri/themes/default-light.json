@@ -1,0 +1,17 @@
+{
+  "name": "Default Light",
+  "colors": {
+    "primary": "#0078D7",
+    "secondary": "#6C757D",
+    "accent": "#0078D7",
+    "neutral": "#E0E0E0",
+    "base-100": "#FFFFFF",
+    "base-200": "#F5F5F5",
+    "base-300": "#E0E0E0",
+    "base-content": "#1E1E1E",
+    "info": "#DBEAFE",
+    "success": "#DCFCE7",
+    "warning": "#FEF9C3",
+    "error": "#FEE2E2"
+  }
+}

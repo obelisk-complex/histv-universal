@@ -1,0 +1,37 @@
+{
+  "$schema": "https://raw.githubusercontent.com/tauri-apps/tauri/dev/crates/tauri-config-schema/schema.json",
+  "productName": "Honey I Shrunk The Vids",
+  "version": "1.0.0",
+  "identifier": "com.histv.encoder",
+  "build": {
+    "frontendDist": "../src"
+  },
+  "app": {
+	"withGlobalTauri": true,
+    "windows": [
+      {
+        "title": "Honey, I Shrunk The Vids",
+        "width": 1100,
+        "height": 580,
+        "minWidth": 900,
+        "minHeight": 580,
+        "center": true,
+        "resizable": true,
+        "fullscreen": false
+      }
+    ],
+    "security": {
+      "csp": "default-src 'self'; style-src 'self' 'unsafe-inline' https://cdn.jsdelivr.net; script-src 'self' 'unsafe-inline'"
+    }
+  },
+  "bundle": {
+    "externalBin": [
+      "binaries/ffmpeg",
+      "binaries/ffprobe"
+    ],
+    "resources": [
+      "themes/*"
+    ]
+  },
+  "plugins": {}
+}

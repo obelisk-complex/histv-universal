@@ -1,0 +1,464 @@
+/* ── CSS Variables — injected at runtime from theme JSON (§3.5) ── */
+:root {
+  --primary: #0078D7;
+  --secondary: #6C757D;
+  --accent: #0078D7;
+  --neutral: #2A2A2A;
+  --base-100: #1E1E1E;
+  --base-200: #282828;
+  --base-300: #373737;
+  --base-content: #DCDCDC;
+  --info: #1E3C5A;
+  --success: #19411F;
+  --warning: #463C14;
+  --error: #501E1E;
+}
+
+/* ── Reset & base ── */
+*, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; }
+
+html, body {
+  height: 100%;
+  font-family: 'Segoe UI', system-ui, -apple-system, sans-serif;
+  font-size: 13px;
+  background: var(--base-100);
+  color: var(--base-content);
+  overflow: hidden;
+  user-select: none;
+}
+
+/* ── App shell (§4.1) ── */
+#app {
+  display: flex;
+  flex-direction: column;
+  height: 100vh;
+}
+
+#main-area {
+  display: flex;
+  flex: 1;
+  min-height: 0;
+  overflow: hidden;
+}
+
+/* ── Resizable split (§4.1) ── */
+#left-panel {
+  display: flex;
+  flex-direction: column;
+  min-width: 220px;
+  flex: 1 1 55%;
+  overflow: hidden;
+  padding: 8px;
+}
+
+#splitter {
+  width: 5px;
+  background: var(--base-300);
+  cursor: col-resize;
+  flex-shrink: 0;
+  transition: background 0.15s;
+}
+#splitter:hover, #splitter.dragging { background: var(--primary); }
+
+#right-panel {
+  display: flex;
+  flex-direction: column;
+  min-width: 320px;
+  width: 480px;
+  flex-shrink: 0;
+  overflow: hidden;
+  padding: 8px;
+}
+
+/* ── Queue header ── */
+.panel-header {
+  font-size: 13px;
+  font-weight: 600;
+  margin-bottom: 6px;
+  color: var(--base-content);
+}
+
+/* ── File queue table (§5) ── */
+#queue-container {
+  flex: 1;
+  overflow: auto;
+  background: var(--base-200);
+  border: 1px solid var(--base-300);
+  border-radius: 4px;
+}
+
+#queue-table {
+  width: 100%;
+  border-collapse: collapse;
+  table-layout: fixed;
+}
+
+#queue-table thead {
+  position: sticky;
+  top: 0;
+  z-index: 2;
+}
+
+#queue-table th {
+  background: var(--base-300);
+  color: var(--base-content);
+  padding: 5px 8px;
+  font-size: 12px;
+  font-weight: 600;
+  text-align: left;
+  border-bottom: 1px solid var(--neutral);
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+/* Column widths */
+#queue-table th:nth-child(1), #queue-table td:nth-child(1) { width: 35%; }
+#queue-table th:nth-child(2), #queue-table td:nth-child(2) { width: 13%; }
+#queue-table th:nth-child(3), #queue-table td:nth-child(3) { width: 15%; }
+#queue-table th:nth-child(4), #queue-table td:nth-child(4) { width: 17%; }
+#queue-table th:nth-child(5), #queue-table td:nth-child(5) { width: 20%; }
+
+#queue-table td {
+  padding: 4px 8px;
+  font-size: 12px;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  border-bottom: 1px solid rgba(255,255,255,0.04);
+}
+
+/* Row status tints (§5.4) */
+#queue-table tr.status-pending   { background: var(--base-200); }
+#queue-table tr.status-probing   { background: var(--info); }
+#queue-table tr.status-encoding  { background: var(--warning); }
+#queue-table tr.status-done      { background: var(--success); }
+#queue-table tr.status-failed    { background: var(--error); }
+#queue-table tr.status-skipped   { background: var(--base-300); }
+#queue-table tr.status-cancelled { background: #503714; }
+
+#queue-table tr.selected { outline: 2px solid var(--accent); outline-offset: -2px; }
+
+/* Status badges */
+.status-badge {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  font-size: 11px;
+}
+.status-icon {
+  display: inline-block;
+  width: 14px;
+  height: 14px;
+  vertical-align: middle;
+}
+.status-icon svg { width: 100%; height: 100%; }
+
+/* ── Queue buttons ── */
+#queue-buttons {
+  display: flex;
+  gap: 6px;
+  padding: 6px 0 0 0;
+}
+
+/* ── Drop zone overlay ── */
+#drop-overlay {
+  display: none;
+  position: absolute;
+  inset: 0;
+  background: rgba(0, 120, 215, 0.15);
+  border: 2px dashed var(--primary);
+  border-radius: 6px;
+  z-index: 50;
+  align-items: center;
+  justify-content: center;
+  font-size: 16px;
+  font-weight: 600;
+  color: var(--primary);
+  pointer-events: none;
+}
+#drop-overlay.visible { display: flex; }
+
+/* ── Right panel tabs (§6, §7) ── */
+.tab-bar {
+  display: flex;
+  border-bottom: 2px solid var(--base-300);
+  margin-bottom: 8px;
+}
+
+.tab-btn {
+  padding: 6px 16px;
+  background: transparent;
+  border: none;
+  color: var(--secondary);
+  font-size: 13px;
+  cursor: pointer;
+  border-bottom: 2px solid transparent;
+  margin-bottom: -2px;
+  transition: color 0.15s, border-color 0.15s;
+}
+.tab-btn:hover { color: var(--base-content); }
+.tab-btn.active {
+  color: var(--primary);
+  border-bottom-color: var(--primary);
+  font-weight: 600;
+}
+
+.tab-content { display: none; flex: 1; overflow-y: auto; padding: 2px; }
+.tab-content.active { display: block; }
+
+/* ── Settings form elements ── */
+.section-header {
+  font-size: 12px;
+  font-weight: 700;
+  color: var(--primary);
+  margin: 14px 0 6px;
+  text-transform: uppercase;
+  letter-spacing: 0.5px;
+}
+.section-header:first-child { margin-top: 0; }
+
+.form-row {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  margin-bottom: 8px;
+}
+
+.form-row label {
+  min-width: 140px;
+  font-size: 12px;
+  color: var(--base-content);
+  flex-shrink: 0;
+}
+
+.form-row select,
+.form-row input[type="number"],
+.form-row input[type="text"] {
+  background: var(--base-300);
+  color: var(--base-content);
+  border: 1px solid var(--neutral);
+  border-radius: 3px;
+  padding: 4px 8px;
+  font-size: 12px;
+  font-family: inherit;
+  outline: none;
+  transition: border-color 0.15s;
+}
+.form-row select:focus,
+.form-row input:focus { border-color: var(--primary); }
+
+.form-row input[type="number"] { width: 70px; }
+.form-row input[type="text"] { flex: 1; }
+.form-row select { min-width: 110px; }
+
+input[readonly] {
+  opacity: 0.6;
+  cursor: default;
+}
+
+.checkbox-row {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  margin-bottom: 6px;
+  font-size: 12px;
+}
+.checkbox-row input[type="checkbox"] {
+  accent-color: var(--primary);
+  width: 15px;
+  height: 15px;
+}
+
+.status-text {
+  font-size: 11px;
+  font-style: italic;
+  color: var(--secondary);
+  margin-bottom: 8px;
+}
+
+/* ── Buttons ── */
+.btn {
+  padding: 5px 14px;
+  background: var(--base-300);
+  color: var(--base-content);
+  border: 1px solid var(--neutral);
+  border-radius: 3px;
+  font-size: 12px;
+  font-family: inherit;
+  cursor: pointer;
+  transition: background 0.12s, border-color 0.12s;
+  white-space: nowrap;
+}
+.btn:hover:not(:disabled) { background: var(--neutral); border-color: var(--primary); }
+.btn:disabled { opacity: 0.4; cursor: not-allowed; }
+.btn-primary {
+  background: var(--primary);
+  color: #fff;
+  border-color: var(--primary);
+}
+.btn-primary:hover:not(:disabled) { filter: brightness(1.15); }
+
+/* ── Bottom bar (§12) ── */
+#bottom-bar {
+  background: var(--base-100);
+  border-top: 1px solid var(--base-300);
+  padding: 6px 12px;
+  display: flex;
+  flex-direction: column;
+  gap: 3px;
+  flex-shrink: 0;
+}
+
+#status-file {
+  font-size: 12px;
+  font-style: italic;
+  color: var(--secondary);
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+#status-cmd {
+  font-family: 'Consolas', 'Courier New', monospace;
+  font-size: 10px;
+  color: var(--secondary);
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  max-height: 14px;
+}
+
+#progress-bar-container {
+  height: 16px;
+  background: var(--base-300);
+  border-radius: 3px;
+  overflow: hidden;
+}
+
+#progress-bar {
+  height: 100%;
+  background: var(--primary);
+  width: 0%;
+  transition: width 0.3s ease;
+  border-radius: 3px;
+}
+
+#bottom-buttons {
+  display: flex;
+  gap: 6px;
+  padding-top: 4px;
+}
+
+/* ── Log drawer (§11) ── */
+#log-drawer {
+  background: #0F0F0F;
+  border-top: 1px solid var(--base-300);
+  display: flex;
+  flex-direction: column;
+  overflow: hidden;
+  flex-shrink: 0;
+  height: 0;
+  transition: height 0.2s ease;
+}
+#log-drawer.open { height: 200px; }
+
+#log-toggle {
+  background: var(--base-300);
+  border: none;
+  color: var(--secondary);
+  padding: 2px 12px;
+  font-size: 11px;
+  cursor: pointer;
+  text-align: center;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  gap: 6px;
+  flex-shrink: 0;
+}
+#log-toggle:hover { color: var(--base-content); background: var(--neutral); }
+
+#log-content {
+  flex: 1;
+  overflow-y: auto;
+  padding: 6px 10px;
+  font-family: 'Consolas', 'Courier New', monospace;
+  font-size: 11px;
+  color: #00FF00;
+  line-height: 1.5;
+  white-space: pre-wrap;
+  word-break: break-all;
+}
+
+/* ── Context menu (§5.5) ── */
+#context-menu {
+  display: none;
+  position: fixed;
+  background: var(--base-200);
+  border: 1px solid var(--base-300);
+  border-radius: 4px;
+  padding: 4px 0;
+  z-index: 100;
+  min-width: 160px;
+  box-shadow: 0 4px 12px rgba(0,0,0,0.4);
+}
+#context-menu.visible { display: block; }
+
+.ctx-item {
+  padding: 6px 16px;
+  font-size: 12px;
+  cursor: pointer;
+  color: var(--base-content);
+}
+.ctx-item:hover { background: var(--primary); color: #fff; }
+.ctx-item.disabled { opacity: 0.4; pointer-events: none; }
+
+/* ── Modal dialogs ── */
+.modal-overlay {
+  display: none;
+  position: fixed;
+  inset: 0;
+  background: rgba(0,0,0,0.5);
+  z-index: 200;
+  align-items: center;
+  justify-content: center;
+}
+.modal-overlay.visible { display: flex; }
+
+.modal-box {
+  background: var(--base-200);
+  border: 1px solid var(--base-300);
+  border-radius: 6px;
+  padding: 20px 24px;
+  min-width: 340px;
+  max-width: 500px;
+  box-shadow: 0 8px 32px rgba(0,0,0,0.5);
+}
+.modal-title {
+  font-size: 14px;
+  font-weight: 600;
+  margin-bottom: 10px;
+  color: var(--base-content);
+}
+.modal-body {
+  font-size: 12px;
+  color: var(--secondary);
+  margin-bottom: 16px;
+  line-height: 1.5;
+}
+.modal-buttons {
+  display: flex;
+  gap: 8px;
+  justify-content: flex-end;
+}
+
+/* ── Scrollbar styling ── */
+::-webkit-scrollbar { width: 8px; height: 8px; }
+::-webkit-scrollbar-track { background: var(--base-200); }
+::-webkit-scrollbar-thumb { background: var(--base-300); border-radius: 4px; }
+::-webkit-scrollbar-thumb:hover { background: var(--neutral); }
+
+/* ── Spinner animation ── */
+@keyframes spin { to { transform: rotate(360deg); } }
+.spinner { animation: spin 1s linear infinite; }

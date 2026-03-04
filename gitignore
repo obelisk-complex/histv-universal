@@ -1,0 +1,39 @@
+# ── Rust / Cargo ──
+target/
+**/*.rs.bk
+
+# ── Node / npm (if frontend tooling is ever added) ──
+node_modules/
+dist/
+.npm
+
+# ── Tauri ──
+src-tauri/target/
+binaries/ffmpeg*
+binaries/ffprobe*
+
+# ── OS junk ──
+.DS_Store
+Thumbs.db
+Desktop.ini
+ehthumbs.db
+
+# ── IDE / editor ──
+.vscode/
+.idea/
+*.swp
+*.swo
+*~
+
+# ── Build artefacts & installers ──
+*.exe
+*.msi
+*.dmg
+*.deb
+*.AppImage
+*.nsis
+_ffmpeg_download*
+
+# ── Logs & temp ──
+*.log
+encode_log_*.txt
