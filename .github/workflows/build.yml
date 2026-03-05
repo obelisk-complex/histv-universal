@@ -64,17 +64,15 @@ jobs:
       - name: Find bundle outputs
         shell: bash
         run: |
-          echo "=== Searching entire workspace for bundle files ==="
-          find /home/runner/work -type f \( -name "*.msi" -o -name "*.deb" -o -name "*.AppImage" -o -name "*.dmg" \) 2>/dev/null || echo "None found"
-          echo "=== Looking for any target/release/bundle directory ==="
-          find /home/runner/work -type d -name "bundle" 2>/dev/null || echo "No bundle dir found"
+          echo "=== Searching for bundle files ==="
+          find "$GITHUB_WORKSPACE" -type f \( -name "*.msi" -o -name "*.deb" -o -name "*.AppImage" -o -name "*.dmg" \) 2>/dev/null || echo "None found"
 
       - name: Collect artefacts
         shell: bash
         run: |
           mkdir -p artefacts
-          find /home/runner/work -type f \( -name "*.msi" -o -name "*.deb" -o -name "*.AppImage" -o -name "*.dmg" \) -exec cp {} artefacts/ \;
-          find /home/runner/work -path "*/bundle/nsis/*" -name "*.exe" -exec cp {} artefacts/ \;
+          find "$GITHUB_WORKSPACE" -type f \( -name "*.msi" -o -name "*.deb" -o -name "*.AppImage" -o -name "*.dmg" \) -exec cp {} artefacts/ \;
+          find "$GITHUB_WORKSPACE" -path "*/bundle/nsis/*" -name "*.exe" -exec cp {} artefacts/ \;
           ls -lh artefacts/
 
       - name: Upload artefacts
