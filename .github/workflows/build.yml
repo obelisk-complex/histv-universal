@@ -57,31 +57,27 @@ jobs:
       - name: Build
         run: cargo tauri build --target ${{ matrix.target }}
 
-      - name: Upload artefacts (Windows)
-        if: matrix.label == 'windows'
-        uses: actions/upload-artifact@v4
-        with:
-          name: histv-${{ matrix.label }}
-          path: |
-            src-tauri/target/${{ matrix.target }}/release/bundle/msi/*.msi
-            src-tauri/target/${{ matrix.target }}/release/bundle/nsis/*.exe
+      - name: Find bundle outputs
+        shell: bash
+        run: |
+          echo "=== All bundle files ==="
+          find src-tauri/target -path "*/bundle/*" -type f 2>/dev/null || echo "No bundle directory found"
+          echo "=== Looking for installers ==="
+          find src-tauri/target -type f \( -name "*.msi" -o -name "*.exe" -o -name "*.deb" -o -name "*.AppImage" -o -name "*.dmg" \) 2>/dev/null || echo "None found"
 
-      - name: Upload artefacts (Linux)
-        if: matrix.label == 'linux'
-        uses: actions/upload-artifact@v4
-        with:
-          name: histv-${{ matrix.label }}
-          path: |
-            src-tauri/target/${{ matrix.target }}/release/bundle/deb/*.deb
-            src-tauri/target/${{ matrix.target }}/release/bundle/appimage/*.AppImage
+      - name: Collect artefacts
+        shell: bash
+        run: |
+          mkdir -p artefacts
+          find src-tauri/target -path "*/bundle/*" -type f \( -name "*.msi" -o -name "*.deb" -o -name "*.AppImage" -o -name "*.dmg" \) -exec cp {} artefacts/ \;
+          find src-tauri/target -path "*/bundle/nsis/*" -name "*.exe" -exec cp {} artefacts/ \;
+          ls -lh artefacts/
 
-      - name: Upload artefacts (macOS)
-        if: startsWith(matrix.label, 'macos')
+      - name: Upload artefacts
         uses: actions/upload-artifact@v4
         with:
           name: histv-${{ matrix.label }}
-          path: |
-            src-tauri/target/${{ matrix.target }}/release/bundle/dmg/*.dmg
+          path: artefacts/*
 
   release:
     needs: build
