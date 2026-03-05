@@ -382,6 +382,32 @@
         } catch (e) {
           console.warn('Encoder fetch error:', e);
         }
+      } else {
+        // In case ffmpeg-missing fired before listeners were ready
+        const ffmpegMissing = await invoke('get_ffmpeg_missing_status');
+        if (ffmpegMissing) {
+          encoderStatus.textContent = 'ffmpeg not found';
+          const modal = document.querySelector('#modal-ffmpeg-missing');
+          modal.classList.add('visible');
+
+          document.querySelector('#ffmpeg-dl-yes').onclick = async () => {
+            modal.classList.remove('visible');
+            encoderStatus.textContent = 'Downloading ffmpeg...';
+            try {
+              await invoke('download_ffmpeg');
+            } catch (e) {
+              encoderStatus.textContent = 'Download failed: ' + e;
+              const body = document.querySelector('#ffmpeg-missing-body');
+              body.textContent = 'Download failed: ' + e + '. You can install ffmpeg manually and restart the app.';
+              modal.classList.add('visible');
+            }
+          };
+
+          document.querySelector('#ffmpeg-dl-no').onclick = () => {
+            modal.classList.remove('visible');
+            encoderStatus.textContent = 'ffmpeg not found - install ffmpeg and restart';
+          };
+        }
       }
     });
 

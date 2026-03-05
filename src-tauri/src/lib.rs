@@ -23,6 +23,7 @@ pub struct AppState {
     pub detected_audio_encoders: Mutex<Vec<String>>,
     pub config: Mutex<AppConfig>,
     pub encoder_detection_done: Mutex<bool>,
+    pub ffmpeg_missing: Mutex<bool>,
     pub themes: Mutex<Vec<Theme>>,
 }
 
@@ -68,6 +69,14 @@ async fn get_encoder_detection_status(
 ) -> Result<bool, String> {
     let done = state.encoder_detection_done.lock().await;
     Ok(*done)
+}
+
+#[tauri::command]
+async fn get_ffmpeg_missing_status(
+    state: tauri::State<'_, Arc<AppState>>,
+) -> Result<bool, String> {
+    let missing = state.ffmpeg_missing.lock().await;
+    Ok(*missing)
 }
 
 #[tauri::command]
@@ -284,6 +293,7 @@ pub fn run() {
         detected_audio_encoders: Mutex::new(Vec::new()),
         config: Mutex::new(AppConfig::default()),
         encoder_detection_done: Mutex::new(false),
+        ffmpeg_missing: Mutex::new(false),
         themes: Mutex::new(Vec::new()),
     });
 
@@ -300,6 +310,7 @@ pub fn run() {
             get_config,
             save_config,
             get_encoder_detection_status,
+            get_ffmpeg_missing_status,
             get_detected_encoders,
             add_files_to_queue,
             remove_queue_items,
@@ -347,6 +358,10 @@ pub fn run() {
             tauri::async_runtime::spawn(async move {
                 // Check if ffmpeg is reachable first
                 if !ffmpeg::is_available().await {
+                    {
+                        let mut missing = state_for_detect.ffmpeg_missing.lock().await;
+                        *missing = true;
+                    }
                     let _ = handle_for_detect.emit("ffmpeg-missing", ());
                     let _ = handle_for_detect.emit("log", "[detect] ffmpeg not found — waiting for user to install or download it");
                     return;
