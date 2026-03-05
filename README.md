@@ -1,25 +1,27 @@
 # Honey, I Shrunk The Vids [Mr. Universe Edition]
 
-## Why this exists
+### Why this exists
 
 I was doing a lot of manual re-encoding down from insane source bitrates with FFMPEG, and I started wondering if I could put my Powershell script into a nice GUI. Then I wondered if I could give it a dark theme... and a file queue... and on and on and on... until finally I had it working how I wanted. Then I wondered, because Windows is awful, if I could make it platform-agnostic. And here we are. It's got a dark theme because of course and a light theme because I guess, also it's themeable because why the hell not (see [THEMES.md](https://github.com/obelisk-complex/histv-universal/blob/main/THEMES.md))
 
 The core idea hasn't changed: point it at a file or folder, let it enumerate the multimedia files, pick a target bitrate, hit Start. You don't even have to pick an output folder; by default outputs go into /output in the same folder as the application is running from.
 
-## Download
+<details>
+   <summary>Screenshots</summary>
+  
+![](https://media.piefed.ca/posts/Zh/5q/Zh5qETVk8VWnkks.png)  
 
-Grab the latest build for your system from the **[Releases page](https://github.com/obelisk-complex/histv-universal/releases)**.
+![](https://media.piefed.ca/posts/R4/aC/R4aCX6NcjH5tjqU.png)  
 
-| Platform | What to download | How to run |
-|----------|-----------------|------------|
-| **Windows** | `histv-windows.exe` | Just run it - no installation needed |
-| **Linux** | `.AppImage` | Mark it executable (`chmod +x`) and run it |
-| **macOS (Apple Silicon)** | `.dmg` (arm64) | Open the DMG and drag to Applications |
-| **macOS (Intel)** | `.dmg` (x64) | Open the DMG and drag to Applications |
+![](https://media.piefed.ca/posts/Ok/Eo/OkEohnm6jMVh1Ei.png)  
 
-**ffmpeg is required** but you don't need to install it yourself. On first launch, if ffmpeg isn't found, the app will offer to download it automatically. On macOS you can also install it via `brew install ffmpeg`.
+![](https://media.piefed.ca/posts/D4/g3/D4g317xAHJTh9Uq.png)  
 
-## What it does
+![](https://media.piefed.ca/posts/rH/p5/rHp5X4I5v7CMw6Q.png)  
+
+</details>
+
+### What it does
 
 - **Batch queue** - drag-and-drop files or folders, paste paths from the clipboard, or use the file picker
 - **Hardware encoder detection** - tests each GPU encoder (AMF, NVENC, QSV, VideoToolbox, VAAPI) with a real encode at startup, so the dropdown only shows what actually works on your hardware. Software encoding (libx265/libx264) is always available as a fallback
@@ -37,7 +39,20 @@ Grab the latest build for your system from the **[Releases page](https://github.
 - **System notifications** on batch completion
 - **Built-in ffmpeg downloader** - downloads ffmpeg with a progress indicator and stores it in your app data directory, not cluttering up your working folders
 
-## Supported platforms
+## Download
+
+Grab the latest build for your system from the **[Releases page](https://github.com/obelisk-complex/histv-universal/releases)**.
+
+| Platform | What to download | How to run |
+|----------|-----------------|------------|
+| **Windows** | `histv-windows.exe` | Just run it - no installation needed |
+| **Linux** | `.AppImage` | Mark it executable (`chmod +x`) and run it |
+| **macOS (Apple Silicon)** | `.dmg` (arm64) | Open the DMG and drag to Applications |
+| **macOS (Intel)** | `.dmg` (x64) | Open the DMG and drag to Applications |
+
+**ffmpeg is required** but you don't need to install it yourself. On first launch, if ffmpeg isn't found, the app will offer to download it automatically. On macOS you can also install it via `brew install ffmpeg`.
+
+### Supported platforms
 
 | OS | Architecture | GPU encoders |
 |----|-------------|-------------|
@@ -45,7 +60,7 @@ Grab the latest build for your system from the **[Releases page](https://github.
 | Linux | x86_64 | VAAPI, NVENC, QSV |
 | macOS | x86_64 / ARM64 | VideoToolbox |
 
-## Building from source
+### Building from source
 
 You'll need Rust (stable) and the Tauri v2 CLI. See the [Tauri prerequisites guide](https://v2.tauri.app/start/prerequisites/) for platform-specific dependencies.
 
@@ -55,7 +70,7 @@ cargo tauri dev          # development mode
 cargo tauri build        # release build
 ```
 
-## Project structure
+### Project structure
 
 ```
 ├── src/                        # Frontend (HTML + CSS + inline JS)
@@ -85,10 +100,10 @@ cargo tauri build        # release build
 └── README.md
 ```
 
-## Configuration
+### Configuration
 
 Settings are saved automatically to a JSON file in your platform's app-data directory. Everything is accessible from the Encoding Settings and Output Settings tabs in the UI.
 
-## Licence
+### Licence
 
 lol do whatever man
