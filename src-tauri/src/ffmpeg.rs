@@ -10,14 +10,14 @@
 //! 3. Bare name — falls back to the system PATH.
 
 use std::path::PathBuf;
-use std::sync::OnceLock;
+use std::sync::RwLock;
 use tauri::AppHandle;
 use tauri::Emitter;
 use tauri::Manager;
 use tokio::process::Command;
 
-static FFMPEG_PATH: OnceLock<PathBuf> = OnceLock::new();
-static FFPROBE_PATH: OnceLock<PathBuf> = OnceLock::new();
+static FFMPEG_PATH: RwLock<Option<PathBuf>> = RwLock::new(None);
+static FFPROBE_PATH: RwLock<Option<PathBuf>> = RwLock::new(None);
 
 /// Platform-specific executable extension.
 #[cfg(target_os = "windows")]
@@ -46,6 +46,40 @@ pub fn hide_window(_cmd: &mut Command) {}
 #[cfg(not(target_os = "windows"))]
 pub fn hide_window_std(_cmd: &mut std::process::Command) {}
 
+/// Return the app-data binary directory for storing downloaded ffmpeg/ffprobe.
+/// - Windows: %APPDATA%\com.histv.encoder\bin
+/// - macOS:   ~/Library/Application Support/com.histv.encoder/bin
+/// - Linux:   ~/.local/share/com.histv.encoder/bin
+pub fn app_data_bin_dir() -> Option<PathBuf> {
+    #[cfg(target_os = "windows")]
+    {
+        std::env::var("APPDATA").ok().map(|d| PathBuf::from(d).join("com.histv.encoder").join("bin"))
+    }
+    #[cfg(target_os = "macos")]
+    {
+        dirs_next().map(|d| d.join("com.histv.encoder").join("bin"))
+    }
+    #[cfg(target_os = "linux")]
+    {
+        std::env::var("XDG_DATA_HOME")
+            .ok()
+            .map(PathBuf::from)
+            .or_else(|| std::env::var("HOME").ok().map(|h| PathBuf::from(h).join(".local").join("share")))
+            .map(|d| d.join("com.histv.encoder").join("bin"))
+    }
+    #[cfg(not(any(target_os = "windows", target_os = "macos", target_os = "linux")))]
+    {
+        None
+    }
+}
+
+#[cfg(target_os = "macos")]
+fn dirs_next() -> Option<PathBuf> {
+    std::env::var("HOME")
+        .ok()
+        .map(|h| PathBuf::from(h).join("Library").join("Application Support"))
+}
+
 /// Call once during app setup to resolve and cache the binary paths.
 pub fn init(app: &AppHandle) {
     let ffmpeg_name = format!("ffmpeg{EXE_EXT}");
@@ -54,15 +88,28 @@ pub fn init(app: &AppHandle) {
     let ffmpeg = resolve_binary(app, &ffmpeg_name);
     let ffprobe = resolve_binary(app, &ffprobe_name);
 
-    let _ = FFMPEG_PATH.set(ffmpeg);
-    let _ = FFPROBE_PATH.set(ffprobe);
+    if let Ok(mut w) = FFMPEG_PATH.write() { *w = Some(ffmpeg); }
+    if let Ok(mut w) = FFPROBE_PATH.write() { *w = Some(ffprobe); }
+}
+
+/// Re-resolve the binary paths after a download.
+pub fn reinit(app: &AppHandle) {
+    let ffmpeg_name = format!("ffmpeg{EXE_EXT}");
+    let ffprobe_name = format!("ffprobe{EXE_EXT}");
+
+    let ffmpeg = resolve_binary(app, &ffmpeg_name);
+    let ffprobe = resolve_binary(app, &ffprobe_name);
+
+    if let Ok(mut w) = FFMPEG_PATH.write() { *w = Some(ffmpeg); }
+    if let Ok(mut w) = FFPROBE_PATH.write() { *w = Some(ffprobe); }
 }
 
 /// Return a `Command` that will invoke ffmpeg (console window hidden on Windows).
 pub fn ffmpeg_command() -> Command {
     let path = FFMPEG_PATH
-        .get()
-        .map(|p| p.as_os_str().to_os_string())
+        .read()
+        .ok()
+        .and_then(|r| r.as_ref().map(|p| p.as_os_str().to_os_string()))
         .unwrap_or_else(|| "ffmpeg".into());
     let mut cmd = Command::new(path);
     hide_window(&mut cmd);
@@ -72,8 +119,9 @@ pub fn ffmpeg_command() -> Command {
 /// Return a `Command` that will invoke ffprobe (console window hidden on Windows).
 pub fn ffprobe_command() -> Command {
     let path = FFPROBE_PATH
-        .get()
-        .map(|p| p.as_os_str().to_os_string())
+        .read()
+        .ok()
+        .and_then(|r| r.as_ref().map(|p| p.as_os_str().to_os_string()))
         .unwrap_or_else(|| "ffprobe".into());
     let mut cmd = Command::new(path);
     hide_window(&mut cmd);
@@ -139,7 +187,7 @@ fn download_url() -> Option<(&'static str, &'static str)> {
 }
 
 /// Download ffmpeg and ffprobe to the given directory.
-/// Emits progress events via the provided callback.
+/// Uses reqwest for cross-platform HTTP with progress reporting.
 /// Returns Ok(()) on success.
 pub async fn download_to_dir(
     target_dir: &std::path::Path,
@@ -148,54 +196,67 @@ pub async fn download_to_dir(
     let (url, archive_type) = download_url()
         .ok_or_else(|| "Automatic download is not available for this platform. Please install ffmpeg manually (e.g. via Homebrew on macOS).".to_string())?;
 
-    let _ = app.emit("ffmpeg-download-progress", "Downloading ffmpeg...");
+    let _ = app.emit("ffmpeg-download-progress", "Downloading ffmpeg... 0%");
 
     // Download to a temp file
     let tmp_path = target_dir.join(format!("_ffmpeg_download.{}", archive_type.replace('.', "_")));
 
-    // Use a child process to download — avoids needing reqwest as a dependency
-    #[cfg(target_os = "windows")]
-    {
-        // Use PowerShell's Invoke-WebRequest
-        let mut dl_cmd = tokio::process::Command::new("powershell");
-        dl_cmd.args([
-                "-NoProfile",
-                "-Command",
-                &format!(
-                    "[Net.ServicePointManager]::SecurityProtocol = [Net.SecurityProtocolType]::Tls12; Invoke-WebRequest -Uri '{}' -OutFile '{}'",
-                    url,
-                    tmp_path.to_string_lossy()
-                ),
-            ])
-            .stdout(std::process::Stdio::null())
-            .stderr(std::process::Stdio::piped());
-        hide_window(&mut dl_cmd);
-        let status = dl_cmd.status()
-            .await
-            .map_err(|e| format!("Failed to start download: {e}"))?;
+    // Stream the download with progress
+    let client = reqwest::Client::builder()
+        .redirect(reqwest::redirect::Policy::limited(10))
+        .build()
+        .map_err(|e| format!("Failed to create HTTP client: {e}"))?;
 
-        if !status.success() {
-            let _ = std::fs::remove_file(&tmp_path);
-            return Err("Download failed. Check your internet connection.".to_string());
+    let response = client.get(url).send().await
+        .map_err(|e| format!("Download request failed: {e}"))?;
+
+    if !response.status().is_success() {
+        return Err(format!("Download failed with HTTP {}", response.status()));
+    }
+
+    let total_size = response.content_length().unwrap_or(0);
+    let mut downloaded: u64 = 0;
+    let mut last_pct: u64 = 0;
+
+    let mut file = tokio::fs::File::create(&tmp_path).await
+        .map_err(|e| format!("Failed to create temp file: {e}"))?;
+
+    let mut stream = response.bytes_stream();
+    use tokio::io::AsyncWriteExt;
+    use futures_util::StreamExt;
+
+    while let Some(chunk) = stream.next().await {
+        let chunk = chunk.map_err(|e| format!("Download interrupted: {e}"))?;
+        file.write_all(&chunk).await
+            .map_err(|e| format!("Failed to write to temp file: {e}"))?;
+
+        downloaded += chunk.len() as u64;
+
+        if total_size > 0 {
+            let pct = (downloaded * 100) / total_size;
+            if pct != last_pct {
+                last_pct = pct;
+                let mb_done = downloaded as f64 / 1_048_576.0;
+                let mb_total = total_size as f64 / 1_048_576.0;
+                let _ = app.emit(
+                    "ffmpeg-download-progress",
+                    format!("Downloading ffmpeg... {pct}% ({mb_done:.1} / {mb_total:.1} MB)"),
+                );
+            }
         }
     }
 
-    #[cfg(not(target_os = "windows"))]
-    {
-        // Use curl
-        let mut dl_cmd = tokio::process::Command::new("curl");
-        dl_cmd.args(["-L", "-o", &tmp_path.to_string_lossy(), url])
-            .stdout(std::process::Stdio::null())
-            .stderr(std::process::Stdio::null());
-        hide_window(&mut dl_cmd);
-        let status = dl_cmd.status()
-            .await
-            .map_err(|e| format!("Failed to start download: {e}"))?;
+    file.flush().await
+        .map_err(|e| format!("Failed to flush temp file: {e}"))?;
+    drop(file);
 
-        if !status.success() {
-            let _ = std::fs::remove_file(&tmp_path);
-            return Err("Download failed. Check your internet connection.".to_string());
-        }
+    // Verify download size
+    let file_size = std::fs::metadata(&tmp_path)
+        .map(|m| m.len())
+        .unwrap_or(0);
+    if file_size < 1_000_000 {
+        let _ = std::fs::remove_file(&tmp_path);
+        return Err("Download appears incomplete. Check your internet connection.".to_string());
     }
 
     let _ = app.emit("ffmpeg-download-progress", "Extracting ffmpeg...");
@@ -223,17 +284,6 @@ pub async fn download_to_dir(
 
     let _ = app.emit("ffmpeg-download-progress", "Done!");
     Ok(())
-}
-
-/// Re-resolve the binary paths after a download. Call this after download_to_dir.
-pub fn reinit(app: &AppHandle) {
-    // OnceLock can't be reset, so we use a different approach:
-    // The existing OnceLock values will still point to the bare names.
-    // Since exe_dir is checked at spawn time by resolve_binary, and we can't
-    // update OnceLock, we'll just verify the binaries are findable.
-    // In practice, the app should be restarted after download, or we
-    // re-check at encoder detection time.
-    let _ = app; // placeholder — encoder detection will re-find them via PATH or exe dir
 }
 
 #[cfg(target_os = "windows")]
@@ -296,9 +346,8 @@ fn extract_from_tar_xz(tar_path: &std::path::Path, target_dir: &std::path::Path)
     Ok(())
 }
 
-/// Resolve a binary name to a full path. Checks the sidecar/resource
-/// directory first, then the executable's own directory, then gives up
-/// and returns just the bare name (so the OS PATH search takes over).
+/// Resolve a binary name to a full path. Checks multiple locations
+/// in priority order, falling back to a bare name for PATH lookup.
 fn resolve_binary(app: &AppHandle, name: &str) -> PathBuf {
     // 1. Tauri resource directory (where sidecars are placed by the bundler)
     if let Ok(resource_dir) = app.path().resource_dir() {
@@ -318,6 +367,14 @@ fn resolve_binary(app: &AppHandle, name: &str) -> PathBuf {
         }
     }
 
-    // 3. Bare name — let the OS find it on PATH
+    // 3. App-data binary directory (where we download ffmpeg to)
+    if let Some(bin_dir) = app_data_bin_dir() {
+        let candidate = bin_dir.join(name);
+        if candidate.exists() {
+            return candidate;
+        }
+    }
+
+    // 4. Bare name — let the OS find it on PATH
     PathBuf::from(name)
 }

@@ -133,8 +133,9 @@ pub fn software_fallback(codec_family: &str) -> &'static str {
 
 // ── Encoder detection (§8) ──────────────────────────────────────
 
-/// Detect available encoders by running `ffmpeg -encoders` and parsing output.
-/// No test encodes — only queries the encoder list.
+/// Detect available encoders by running `ffmpeg -encoders`, then verifying
+/// each hardware encoder with a single-frame test encode.
+/// Software encoders (libx265/libx264) skip the test — they always work.
 pub async fn detect_encoders(app: &AppHandle) -> (Vec<EncoderInfo>, Vec<String>) {
     let _ = app.emit("log", "[detect] Starting encoder detection...");
 
@@ -163,11 +164,16 @@ pub async fn detect_encoders(app: &AppHandle) -> (Vec<EncoderInfo>, Vec<String>)
 
     // Check each video encoder in priority order
     for &enc_name in HEVC_PRIORITY.iter().chain(H264_PRIORITY.iter()) {
-        // Match encoder name as a word boundary in the output
+        // Match encoder name as a word in the output
         let found = stdout.lines().any(|line| {
             line.split_whitespace()
                 .any(|token| token == enc_name)
         });
+
+        if !found {
+            let _ = app.emit("log", format!("[detect] {enc_name} not listed in ffmpeg"));
+            continue;
+        }
 
         let family = if enc_name.starts_with("hevc") || enc_name == "libx265" {
             "hevc"
@@ -176,15 +182,28 @@ pub async fn detect_encoders(app: &AppHandle) -> (Vec<EncoderInfo>, Vec<String>)
         };
         let is_hw = !enc_name.starts_with("lib");
 
-        if found {
-            let _ = app.emit("log", format!("[detect] Found {enc_name}"));
+        // Software encoders always work — skip test encode
+        if !is_hw {
+            let _ = app.emit("log", format!("[detect] {enc_name} (SW) — available"));
             video_encoders.push(EncoderInfo {
                 name: enc_name.to_string(),
                 codec_family: family.to_string(),
-                is_hardware: is_hw,
+                is_hardware: false,
+            });
+            continue;
+        }
+
+        // Hardware encoder — verify with a 1-frame test encode
+        let _ = app.emit("log", format!("[detect] {enc_name} — testing..."));
+        if test_encode(enc_name).await {
+            let _ = app.emit("log", format!("[detect] {enc_name} (HW) — works"));
+            video_encoders.push(EncoderInfo {
+                name: enc_name.to_string(),
+                codec_family: family.to_string(),
+                is_hardware: true,
             });
         } else {
-            let _ = app.emit("log", format!("[detect] {enc_name} not found"));
+            let _ = app.emit("log", format!("[detect] {enc_name} (HW) — not available (test encode failed)"));
         }
     }
 
@@ -217,6 +236,44 @@ pub async fn detect_encoders(app: &AppHandle) -> (Vec<EncoderInfo>, Vec<String>)
     );
 
     (video_encoders, audio_encoders)
+}
+
+/// Test a hardware encoder by encoding a single black frame to a temp file.
+/// Returns true if the encoder produced output successfully.
+async fn test_encode(encoder_name: &str) -> bool {
+    // Use a temp file — some hardware encoders fail with -f null
+    let tmp_dir = std::env::temp_dir();
+    let tmp_file = tmp_dir.join(format!("_histv_test_{}.mp4", encoder_name));
+    let tmp_str = tmp_file.to_string_lossy().to_string();
+
+    // 256x256 minimum — some HW encoders reject smaller resolutions
+    // nv12 pixel format — required by most hardware encoders
+    let result = ffbin::ffmpeg_command()
+        .args([
+            "-y",
+            "-f", "lavfi",
+            "-i", "color=black:s=256x256:d=0.04:r=25",
+            "-frames:v", "1",
+            "-pix_fmt", "nv12",
+            "-c:v", encoder_name,
+            &tmp_str,
+        ])
+        .stdout(std::process::Stdio::null())
+        .stderr(std::process::Stdio::piped())
+        .spawn();
+
+    let success = match result {
+        Ok(child) => match child.wait_with_output().await {
+            Ok(o) => o.status.success(),
+            Err(_) => false,
+        },
+        Err(_) => false,
+    };
+
+    // Clean up temp file regardless of outcome
+    let _ = std::fs::remove_file(&tmp_file);
+
+    success
 }
 
 fn ensure_fallback(encoders: &mut Vec<EncoderInfo>, name: &str, family: &str) {

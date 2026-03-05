@@ -258,10 +258,17 @@ async fn download_ffmpeg(
     app: tauri::AppHandle,
     state: tauri::State<'_, Arc<AppState>>,
 ) -> Result<(), String> {
-    let target_dir = ffmpeg::exe_dir()
-        .ok_or_else(|| "Could not determine application directory".to_string())?;
+    let target_dir = ffmpeg::app_data_bin_dir()
+        .ok_or_else(|| "Could not determine app data directory".to_string())?;
+
+    // Create the directory if it doesn't exist
+    std::fs::create_dir_all(&target_dir)
+        .map_err(|e| format!("Could not create directory {}: {e}", target_dir.display()))?;
 
     ffmpeg::download_to_dir(&target_dir, &app).await?;
+
+    // Re-resolve binary paths now that ffmpeg is in app-data
+    ffmpeg::reinit(&app.clone());
 
     // Re-run encoder detection now that ffmpeg is available
     let _ = app.emit("log", "[detect] ffmpeg downloaded, re-running encoder detection...");
@@ -277,6 +284,10 @@ async fn download_ffmpeg(
     {
         let mut done = state.encoder_detection_done.lock().await;
         *done = true;
+    }
+    {
+        let mut missing = state.ffmpeg_missing.lock().await;
+        *missing = false;
     }
     let _ = app.emit("encoder-detection-done", ());
     Ok(())

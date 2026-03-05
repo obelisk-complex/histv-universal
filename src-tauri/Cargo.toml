@@ -1,6 +1,6 @@
 [package]
 name = "histv"
-version = "1.0.0"
+version = "1.0.5"
 description = "Honey, I Shrunk The Vids — batch video encoder"
 authors = []
 edition = "2021"
@@ -25,6 +25,8 @@ tokio = { version = "1", features = ["full"] }
 uuid = { version = "1", features = ["v4"] }
 chrono = "0.4"
 regex = "1"
+reqwest = { version = "0.13", features = ["stream"] }
+futures-util = "0.3"
 
 [features]
 default = ["custom-protocol"]
