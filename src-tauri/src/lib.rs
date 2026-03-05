@@ -151,7 +151,7 @@ async fn probe_file(
     }
     let _ = app.emit("queue-item-updated", (index, "Probing"));
 
-    let result = probe::probe_file(&file_path).await;
+    let result = probe::probe_file(&file_path, &app).await;
 
     // Update the queue item with probe results
     {

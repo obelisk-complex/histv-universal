@@ -1,4 +1,5 @@
 use serde::{Deserialize, Serialize};
+use tauri::{AppHandle, Emitter};
 
 use crate::ffmpeg;
 
@@ -32,8 +33,9 @@ async fn run_ffprobe(args: &[&str]) -> Result<String, String> {
 /// Three-tier bitrate detection strategy (§5.6):
 /// 1. Stream header bit_rate
 /// 2. MKV stream tags (NUMBER_OF_BYTES / DURATION)
-/// 3. Packet counting fallback
-async fn detect_bitrate(file_path: &str) -> f64 {
+/// 3. Format-level bit_rate (container bitrate, less precise but widely available)
+/// 4. Packet counting fallback (sums packet sizes over the video stream)
+async fn detect_bitrate(file_path: &str, app: &AppHandle) -> f64 {
     // Tier 1: stream header
     if let Ok(raw) = run_ffprobe(&[
         "-v", "error",
@@ -44,9 +46,12 @@ async fn detect_bitrate(file_path: &str) -> f64 {
     ])
     .await
     {
-        if let Ok(bps) = raw.parse::<f64>() {
-            if bps > 0.0 {
-                return bps;
+        let trimmed = raw.trim();
+        if trimmed != "N/A" && !trimmed.is_empty() {
+            if let Ok(bps) = trimmed.parse::<f64>() {
+                if bps > 0.0 {
+                    return bps;
+                }
             }
         }
     }
@@ -71,20 +76,80 @@ async fn detect_bitrate(file_path: &str) -> f64 {
         }
     }
 
-    // Tier 3: packet counting fallback
+    // Tier 3: format-level bit_rate (container bitrate — includes all streams,
+    // but still useful as an approximation for files where stream bit_rate is absent)
     if let Ok(raw) = run_ffprobe(&[
         "-v", "error",
-        "-select_streams", "v:0",
-        "-show_entries", "stream=bit_rate",
-        "-read_intervals", "%+#99999999",
+        "-show_entries", "format=bit_rate",
         "-of", "default=noprint_wrappers=1:nokey=1",
         file_path,
     ])
     .await
     {
-        if let Ok(bps) = raw.parse::<f64>() {
-            if bps > 0.0 {
-                return bps;
+        let trimmed = raw.trim();
+        if trimmed != "N/A" && !trimmed.is_empty() {
+            if let Ok(bps) = trimmed.parse::<f64>() {
+                if bps > 0.0 {
+                    return bps;
+                }
+            }
+        }
+    }
+
+    // Tier 4: packet counting fallback — sum all video packet sizes and divide by duration
+    let _ = app.emit("log", format!("[probe] Scanning packets for bitrate (this may take a moment)... {}", file_path));
+    if let Ok(raw) = run_ffprobe(&[
+        "-v", "error",
+        "-select_streams", "v:0",
+        "-show_entries", "packet=size",
+        "-of", "default=noprint_wrappers=1:nokey=1",
+        file_path,
+    ])
+    .await
+    {
+        let total_bytes: f64 = raw
+            .lines()
+            .filter_map(|l| l.trim().parse::<f64>().ok())
+            .sum();
+
+        if total_bytes > 0.0 {
+            // Get duration
+            if let Ok(dur_raw) = run_ffprobe(&[
+                "-v", "error",
+                "-select_streams", "v:0",
+                "-show_entries", "stream=duration",
+                "-of", "default=noprint_wrappers=1:nokey=1",
+                file_path,
+            ])
+            .await
+            {
+                let dur_trimmed = dur_raw.trim();
+                if dur_trimmed != "N/A" && !dur_trimmed.is_empty() {
+                    if let Ok(dur) = dur_trimmed.parse::<f64>() {
+                        if dur > 0.0 {
+                            return (total_bytes * 8.0) / dur;
+                        }
+                    }
+                }
+            }
+
+            // If stream duration is also missing, try format duration
+            if let Ok(dur_raw) = run_ffprobe(&[
+                "-v", "error",
+                "-show_entries", "format=duration",
+                "-of", "default=noprint_wrappers=1:nokey=1",
+                file_path,
+            ])
+            .await
+            {
+                let dur_trimmed = dur_raw.trim();
+                if dur_trimmed != "N/A" && !dur_trimmed.is_empty() {
+                    if let Ok(dur) = dur_trimmed.parse::<f64>() {
+                        if dur > 0.0 {
+                            return (total_bytes * 8.0) / dur;
+                        }
+                    }
+                }
             }
         }
     }
@@ -109,7 +174,7 @@ fn parse_duration_tag(s: &str) -> Option<f64> {
 }
 
 /// Full file probe: codec, dimensions, bitrate, HDR.
-pub async fn probe_file(file_path: &str) -> Result<ProbeResult, String> {
+pub async fn probe_file(file_path: &str, app: &AppHandle) -> Result<ProbeResult, String> {
     // Probe codec and dimensions
     let video_info = run_ffprobe(&[
         "-v", "error",
@@ -138,8 +203,8 @@ pub async fn probe_file(file_path: &str) -> Result<ProbeResult, String> {
         }
     }
 
-    // Probe bitrate (three-tier)
-    let video_bitrate_bps = detect_bitrate(file_path).await;
+    // Probe bitrate (four-tier)
+    let video_bitrate_bps = detect_bitrate(file_path, app).await;
     let video_bitrate_mbps = video_bitrate_bps / 1_000_000.0;
 
     // Probe HDR colour metadata
