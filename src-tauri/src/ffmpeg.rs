@@ -25,6 +25,28 @@ const EXE_EXT: &str = ".exe";
 #[cfg(not(target_os = "windows"))]
 const EXE_EXT: &str = "";
 
+/// Apply CREATE_NO_WINDOW on Windows to suppress console flashes.
+#[cfg(target_os = "windows")]
+pub fn hide_window(cmd: &mut Command) {
+    use std::os::windows::process::CommandExt;
+    const CREATE_NO_WINDOW: u32 = 0x08000000;
+    cmd.creation_flags(CREATE_NO_WINDOW);
+}
+
+/// Apply CREATE_NO_WINDOW on Windows to suppress console flashes (std::process variant).
+#[cfg(target_os = "windows")]
+pub fn hide_window_std(cmd: &mut std::process::Command) {
+    use std::os::windows::process::CommandExt;
+    const CREATE_NO_WINDOW: u32 = 0x08000000;
+    cmd.creation_flags(CREATE_NO_WINDOW);
+}
+
+#[cfg(not(target_os = "windows"))]
+pub fn hide_window(_cmd: &mut Command) {}
+
+#[cfg(not(target_os = "windows"))]
+pub fn hide_window_std(_cmd: &mut std::process::Command) {}
+
 /// Call once during app setup to resolve and cache the binary paths.
 pub fn init(app: &AppHandle) {
     let ffmpeg_name = format!("ffmpeg{EXE_EXT}");
@@ -37,22 +59,26 @@ pub fn init(app: &AppHandle) {
     let _ = FFPROBE_PATH.set(ffprobe);
 }
 
-/// Return a `Command` that will invoke ffmpeg.
+/// Return a `Command` that will invoke ffmpeg (console window hidden on Windows).
 pub fn ffmpeg_command() -> Command {
     let path = FFMPEG_PATH
         .get()
         .map(|p| p.as_os_str().to_os_string())
         .unwrap_or_else(|| "ffmpeg".into());
-    Command::new(path)
+    let mut cmd = Command::new(path);
+    hide_window(&mut cmd);
+    cmd
 }
 
-/// Return a `Command` that will invoke ffprobe.
+/// Return a `Command` that will invoke ffprobe (console window hidden on Windows).
 pub fn ffprobe_command() -> Command {
     let path = FFPROBE_PATH
         .get()
         .map(|p| p.as_os_str().to_os_string())
         .unwrap_or_else(|| "ffprobe".into());
-    Command::new(path)
+    let mut cmd = Command::new(path);
+    hide_window(&mut cmd);
+    cmd
 }
 
 /// Check whether ffmpeg is actually reachable (runs `ffmpeg -version`).
@@ -132,8 +158,8 @@ pub async fn download_to_dir(
     #[cfg(target_os = "windows")]
     {
         // Use PowerShell's Invoke-WebRequest
-        let status = tokio::process::Command::new("powershell")
-            .args([
+        let mut dl_cmd = tokio::process::Command::new("powershell");
+        dl_cmd.args([
                 "-NoProfile",
                 "-Command",
                 &format!(
@@ -143,8 +169,9 @@ pub async fn download_to_dir(
                 ),
             ])
             .stdout(std::process::Stdio::null())
-            .stderr(std::process::Stdio::piped())
-            .status()
+            .stderr(std::process::Stdio::piped());
+        hide_window(&mut dl_cmd);
+        let status = dl_cmd.status()
             .await
             .map_err(|e| format!("Failed to start download: {e}"))?;
 
@@ -157,11 +184,12 @@ pub async fn download_to_dir(
     #[cfg(not(target_os = "windows"))]
     {
         // Use curl
-        let status = tokio::process::Command::new("curl")
-            .args(["-L", "-o", &tmp_path.to_string_lossy(), url])
+        let mut dl_cmd = tokio::process::Command::new("curl");
+        dl_cmd.args(["-L", "-o", &tmp_path.to_string_lossy(), url])
             .stdout(std::process::Stdio::null())
-            .stderr(std::process::Stdio::null())
-            .status()
+            .stderr(std::process::Stdio::null());
+        hide_window(&mut dl_cmd);
+        let status = dl_cmd.status()
             .await
             .map_err(|e| format!("Failed to start download: {e}"))?;
 
@@ -228,9 +256,10 @@ $zip.Dispose()
         target_dir.to_string_lossy().replace('\'', "''")
     );
 
-    let output = std::process::Command::new("powershell")
-        .args(["-NoProfile", "-Command", &script])
-        .output()
+    let mut extract_cmd = std::process::Command::new("powershell");
+    extract_cmd.args(["-NoProfile", "-Command", &script]);
+    hide_window_std(&mut extract_cmd);
+    let output = extract_cmd.output()
         .map_err(|e| format!("Failed to run extraction: {e}"))?;
 
     if !output.status.success() {
@@ -245,8 +274,8 @@ $zip.Dispose()
 fn extract_from_tar_xz(tar_path: &std::path::Path, target_dir: &std::path::Path) -> Result<(), String> {
     // Use tar to extract just ffmpeg and ffprobe
     // The BtbN archives have files like ffmpeg-master-latest-linux64-gpl/bin/ffmpeg
-    let output = std::process::Command::new("tar")
-        .args([
+    let mut extract_cmd = std::process::Command::new("tar");
+    extract_cmd.args([
             "xf",
             &tar_path.to_string_lossy(),
             "--wildcards",
@@ -255,8 +284,9 @@ fn extract_from_tar_xz(tar_path: &std::path::Path, target_dir: &std::path::Path)
             "--strip-components=2",
             "-C",
             &target_dir.to_string_lossy(),
-        ])
-        .output()
+        ]);
+    hide_window_std(&mut extract_cmd);
+    let output = extract_cmd.output()
         .map_err(|e| format!("Failed to run extraction: {e}"))?;
 
     if !output.status.success() {

@@ -1213,9 +1213,10 @@ pub async fn execute_post_action(action: &str) -> Result<(), String> {
         _ => return Ok(()),
     };
 
-    Command::new(cmd)
-        .args(&args)
-        .spawn()
+    let mut proc = Command::new(cmd);
+    proc.args(&args);
+    ffbin::hide_window(&mut proc);
+    proc.spawn()
         .map_err(|e| format!("Failed to execute {}: {}", action, e))?;
 
     Ok(())
