@@ -1171,17 +1171,17 @@
           encoderStatus.textContent = 'Encoder detection failed';
         }
         updateBatchButtons();
-		});
-		
-		// ffmpeg not found — prompt to download
+      });
+
+      // ffmpeg not found — prompt to download
       listen('ffmpeg-missing', () => {
         encoderStatus.textContent = 'ffmpeg not found';
         const modal = document.querySelector('#modal-ffmpeg-missing');
         const body = document.querySelector('#ffmpeg-missing-body');
-        modal.classList.add('active');
+        modal.classList.add('visible');
 
         document.querySelector('#ffmpeg-dl-yes').onclick = async () => {
-          modal.classList.remove('active');
+          modal.classList.remove('visible');
           encoderStatus.textContent = 'Downloading ffmpeg...';
           try {
             await invoke('download_ffmpeg');
@@ -1189,12 +1189,12 @@
           } catch (e) {
             encoderStatus.textContent = 'Download failed: ' + e;
             body.textContent = 'Download failed: ' + e + '. You can install ffmpeg manually and restart the app.';
-            modal.classList.add('active');
+            modal.classList.add('visible');
           }
         };
 
         document.querySelector('#ffmpeg-dl-no').onclick = () => {
-          modal.classList.remove('active');
+          modal.classList.remove('visible');
           encoderStatus.textContent = 'ffmpeg not found - install ffmpeg and restart';
         };
       });
