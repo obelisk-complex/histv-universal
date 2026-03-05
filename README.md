@@ -1,6 +1,6 @@
 # Honey, I Shrunk The Vids v2
 
-A cross-platform batch video encoder built with [Tauri v2](https://v2.tauri.app/) and Rust. Designed for re-encoding large media libraries down to sensible bitrates using hardware-accelerated encoders where available, with automatic fallback to software encoding.
+A cross-platform batch video encoder built with [Tauri v2](https://v2.tauri.app/) and Rust. Designed for re-encoding large media libraries down to sensible bitrates using hardware-accelerated encoders where available, with automatic fallback to software encoding. Download the compiled binary for your system from the Releases page here: https://github.com/obelisk-complex/histv-universal/releases/
 
 ## Features
 
