@@ -357,11 +357,11 @@ input[readonly] {
   display: flex;
   flex-direction: column;
   overflow: hidden;
-  flex-shrink: 0;
+  flex-shrink: 1;
   height: 0;
   transition: height 0.2s ease;
 }
-#log-drawer.open { height: 200px; }
+#log-drawer.open { height: 200px; max-height: 30vh; }
 
 #log-toggle {
   background: var(--base-300);
