@@ -2,7 +2,7 @@
 
 ### Why this exists
 
-I was doing a lot of manual re-encoding down from insane source bitrates with FFMPEG, and I started wondering if I could put my Powershell script into a nice GUI. Then I wondered if I could give it a dark theme... and a file queue... and on and on and on... until finally I had it working how I wanted. Then I wondered, because Windows is awful, if I could make it platform-agnostic. And here we are. It's got a dark theme because of course and a light theme because I guess, also it's themeable because why the hell not (see [THEMES.md](https://github.com/obelisk-complex/histv-universal/blob/main/THEMES.md))
+I was doing a lot of manual re-encoding down from insane source bitrates with FFMPEG, and I started wondering if I could put my Powershell script into a nice GUI. Then I wondered if I could give it a dark theme... and a file queue... and on and on and on... until finally I had it working how I wanted. Then I wondered, because Windows is awful, if I could make it platform-agnostic. And here we are. It's got a dark theme because of course and a light theme because I guess, also it's themeable because why the hell not (see [THEMES.md](THEMES.md)).
 
 The core idea hasn't changed: point it at a file or folder, let it enumerate the multimedia files, pick a target bitrate, hit Start. You don't even have to pick an output folder; by default outputs go into /output in the same folder as the application is running from.
 
