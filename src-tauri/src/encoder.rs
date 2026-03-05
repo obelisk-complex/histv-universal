@@ -373,10 +373,7 @@ pub async fn start_batch_encode(
                 if b.cancel_all {
                     break;
                 }
-                // Reset cancel_current for new file
-                let mut b_mut = b;
-                // We need a mutable ref, re-acquire
-                drop(b_mut);
+                drop(b);
             }
             {
                 let mut b = state_clone.batch.lock().await;
@@ -1188,6 +1185,9 @@ where
 
 /// Execute a post-batch action (§7.6).
 pub async fn execute_post_action(action: &str) -> Result<(), String> {
+    #[cfg(target_os = "linux")]
+    let linux_user = std::env::var("USER").unwrap_or_default();
+
     let (cmd, args): (&str, Vec<&str>) = match action {
         #[cfg(target_os = "windows")]
         "Shutdown" => ("shutdown", vec!["/s", "/t", "0"]),
@@ -1208,7 +1208,7 @@ pub async fn execute_post_action(action: &str) -> Result<(), String> {
         #[cfg(target_os = "linux")]
         "Sleep" => ("systemctl", vec!["suspend"]),
         #[cfg(target_os = "linux")]
-        "Log Out" => ("loginctl", vec!["terminate-user", &std::env::var("USER").unwrap_or_default()]),
+        "Log Out" => ("loginctl", vec!["terminate-user", &linux_user]),
 
         _ => return Ok(()),
     };
