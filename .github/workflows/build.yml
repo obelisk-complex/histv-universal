@@ -17,11 +17,10 @@ jobs:
           - os: windows-latest
             target: x86_64-pc-windows-msvc
             label: windows
-            bundles: msi,nsis
           - os: ubuntu-22.04
             target: x86_64-unknown-linux-gnu
             label: linux
-            bundles: deb,appimage
+            bundles: appimage
           - os: macos-latest
             target: aarch64-apple-darwin
             label: macos-arm64
@@ -59,20 +58,27 @@ jobs:
         run: cargo install tauri-cli --version "^2" --locked
 
       - name: Build
-        run: cargo tauri build --target ${{ matrix.target }} --bundles ${{ matrix.bundles }}
-
-      - name: Find bundle outputs
         shell: bash
         run: |
-          echo "=== Searching for bundle files ==="
-          find "$GITHUB_WORKSPACE" -type f \( -name "*.msi" -o -name "*.deb" -o -name "*.AppImage" -o -name "*.dmg" \) 2>/dev/null || echo "None found"
+          if [ -n "${{ matrix.bundles }}" ]; then
+            cargo tauri build --target ${{ matrix.target }} --bundles ${{ matrix.bundles }}
+          else
+            cargo tauri build --target ${{ matrix.target }}
+          fi
 
       - name: Collect artefacts
         shell: bash
         run: |
           mkdir -p artefacts
-          find "$GITHUB_WORKSPACE" -type f \( -name "*.msi" -o -name "*.deb" -o -name "*.AppImage" -o -name "*.dmg" \) -exec cp {} artefacts/ \;
-          find "$GITHUB_WORKSPACE" -path "*/bundle/nsis/*" -name "*.exe" -exec cp {} artefacts/ \;
+          # Portable Windows exe
+          PORTABLE="$GITHUB_WORKSPACE/src-tauri/target/${{ matrix.target }}/release/histv.exe"
+          if [ -f "$PORTABLE" ]; then
+            cp "$PORTABLE" "artefacts/histv-${{ matrix.label }}.exe"
+          fi
+          # AppImage (Linux portable)
+          find "$GITHUB_WORKSPACE" -name "*.AppImage" -exec cp {} artefacts/ \;
+          # DMG (macOS portable)
+          find "$GITHUB_WORKSPACE" -name "*.dmg" -exec cp {} artefacts/ \;
           ls -lh artefacts/
 
       - name: Upload artefacts
