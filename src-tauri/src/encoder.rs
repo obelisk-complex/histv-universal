@@ -434,35 +434,29 @@ pub async fn start_batch_encode(
         let mut file_counter: u32 = 0;
 
         for &idx in &pending_indices {
-            // Check cancel all
-            {
-                let b = state_clone.batch.lock().await;
+            // ── Pause / cancel check (single lock acquisition) ──
+            loop {
+                let mut b = state_clone.batch.lock().await;
                 if b.cancel_all {
+                    // Drop lock before breaking out of both loops
+                    drop(b);
                     break;
                 }
-            }
-
-            // Pause check
-            loop {
-                let b = state_clone.batch.lock().await;
-                if !b.paused || b.cancel_all {
+                if !b.paused {
+                    b.cancel_current = false;
+                    drop(b);
                     break;
                 }
                 drop(b);
                 tokio::time::sleep(std::time::Duration::from_millis(300)).await;
             }
 
-            // Recheck cancel after pause
+            // Check if we broke out due to cancel_all
             {
                 let b = state_clone.batch.lock().await;
                 if b.cancel_all {
                     break;
                 }
-                drop(b);
-            }
-            {
-                let mut b = state_clone.batch.lock().await;
-                b.cancel_current = false;
             }
 
             file_counter += 1;
@@ -644,14 +638,13 @@ pub async fn start_batch_encode(
             let _ = app_clone.emit("log", &mode_desc);
             log_lines.push(mode_desc);
 
-            // Probe audio streams and build audio args (§6.2)
-            let audio_args = build_audio_args(
-                &item.full_path,
+            // Build audio args from pre-probed stream data (§6.2)
+            let audio_args = build_audio_args_from_probe(
+                &item.audio_streams,
                 &audio_encoder,
                 audio_cap,
                 &app_clone,
-            )
-            .await;
+            );
 
             // Assemble full ffmpeg command (§10.3)
             let mut ffmpeg_args: Vec<String> = vec![
@@ -870,13 +863,13 @@ pub async fn start_batch_encode(
                         ];
                         sw_ffmpeg_args.extend(sw_video_args);
                         sw_ffmpeg_args.extend(vec!["-pix_fmt".into(), pix_fmt.clone()]);
-                        // Re-use same audio args
-                        let sw_audio = build_audio_args(
-                            &item.full_path,
+                        // Re-use same audio args from probe data
+                        let sw_audio = build_audio_args_from_probe(
+                            &item.audio_streams,
                             &audio_encoder,
                             audio_cap,
                             &app_clone,
-                        ).await;
+                        );
                         sw_ffmpeg_args.extend(sw_audio);
                         sw_ffmpeg_args.extend(vec![
                             "-c:s".into(), "copy".into(),
@@ -1195,9 +1188,11 @@ pub async fn start_batch_encode(
     Ok(())
 }
 
-/// Build per-stream audio arguments (§6.2).
-async fn build_audio_args(
-    file_path: &str,
+/// Build per-stream audio arguments from pre-probed audio stream data (§6.2).
+/// This avoids spawning a separate ffprobe during encoding — audio metadata
+/// was already collected during the initial probe and stored on QueueItem.
+fn build_audio_args_from_probe(
+    audio_streams: &[crate::queue::AudioStreamInfo],
     audio_encoder: &str,
     audio_cap: u32,
     app: &AppHandle,
@@ -1207,80 +1202,47 @@ async fn build_audio_args(
         return vec!["-c:a".into(), "copy".into()];
     }
 
-    // Probe audio streams
-    let output = ffbin::ffprobe_command()
-        .args([
-            "-v", "error",
-            "-select_streams", "a",
-            "-show_entries", "stream=index,codec_name,bit_rate",
-            "-of", "csv=p=0",
-            file_path,
-        ])
-        .stdout(std::process::Stdio::piped())
-        .stderr(std::process::Stdio::piped())
-        .output()
-        .await;
-
-    let raw = match output {
-        Ok(o) => String::from_utf8_lossy(&o.stdout).trim().to_string(),
-        Err(_) => String::new(),
-    };
-
-    if raw.is_empty() {
+    if audio_streams.is_empty() {
         let _ = app.emit("log", "  WARNING: No audio streams found");
         return Vec::new();
     }
 
     let mut args = Vec::new();
-    let mut stream_index = 0;
 
-    for line in raw.lines() {
-        let line = line.trim();
-        if line.is_empty() {
-            continue;
-        }
-        let parts: Vec<&str> = line.split(',').collect();
-        if parts.len() < 3 {
-            let _ = app.emit("log", format!("  WARNING: Could not parse audio line: '{}'", line));
-            stream_index += 1;
-            continue;
-        }
-
-        let codec = parts[1].trim();
-        let br_raw = parts[2].trim();
-        let br_kbps: u32 = br_raw
-            .parse::<u64>()
-            .map(|v| (v / 1000) as u32)
-            .unwrap_or(999);
-
-        let should_copy = (codec == audio_encoder || codec == "copy") && br_kbps < audio_cap;
+    for stream in audio_streams {
+        let should_copy =
+            (stream.codec == audio_encoder || stream.codec == "copy")
+            && stream.bitrate_kbps < audio_cap;
 
         if should_copy {
             args.extend(vec![
-                format!("-c:a:{}", stream_index),
+                format!("-c:a:{}", stream.index),
                 "copy".into(),
             ]);
             let _ = app.emit(
                 "log",
-                format!("  Audio {} : {} @ {}kbps — copying", stream_index, codec, br_kbps),
+                format!(
+                    "  Audio {} : {} @ {}kbps — copying",
+                    stream.index, stream.codec, stream.bitrate_kbps
+                ),
             );
         } else {
-            let target_br = br_kbps.min(audio_cap);
+            let target_br = stream.bitrate_kbps.min(audio_cap);
             args.extend(vec![
-                format!("-c:a:{}", stream_index),
+                format!("-c:a:{}", stream.index),
                 audio_encoder.to_string(),
-                format!("-b:a:{}", stream_index),
+                format!("-b:a:{}", stream.index),
                 format!("{}k", target_br),
             ]);
             let _ = app.emit(
                 "log",
                 format!(
                     "  Audio {} : {} @ {}kbps — encoding to {} {}kbps",
-                    stream_index, codec, br_kbps, audio_encoder, target_br
+                    stream.index, stream.codec, stream.bitrate_kbps,
+                    audio_encoder, target_br
                 ),
             );
         }
-        stream_index += 1;
     }
 
     args

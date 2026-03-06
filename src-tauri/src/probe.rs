@@ -2,6 +2,7 @@ use serde::{Deserialize, Serialize};
 use tauri::{AppHandle, Emitter};
 
 use crate::ffmpeg;
+use crate::queue::AudioStreamInfo;
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
@@ -13,6 +14,7 @@ pub struct ProbeResult {
     pub video_bitrate_mbps: f64,
     pub is_hdr: bool,
     pub color_transfer: String,
+    pub audio_streams: Vec<AudioStreamInfo>,
 }
 
 /// Run ffprobe with the given arguments and return trimmed stdout.
@@ -30,136 +32,8 @@ async fn run_ffprobe(args: &[&str]) -> Result<String, String> {
     Ok(String::from_utf8_lossy(&output.stdout).trim().to_string())
 }
 
-/// Three-tier bitrate detection strategy (§5.6):
-/// 1. Stream header bit_rate
-/// 2. MKV stream tags (NUMBER_OF_BYTES / DURATION)
-/// 3. Format-level bit_rate (container bitrate, less precise but widely available)
-/// 4. Packet counting fallback (sums packet sizes over the video stream)
-async fn detect_bitrate(file_path: &str, app: &AppHandle) -> f64 {
-    // Tier 1: stream header
-    if let Ok(raw) = run_ffprobe(&[
-        "-v", "error",
-        "-select_streams", "v:0",
-        "-show_entries", "stream=bit_rate",
-        "-of", "default=noprint_wrappers=1:nokey=1",
-        file_path,
-    ])
-    .await
-    {
-        let trimmed = raw.trim();
-        if trimmed != "N/A" && !trimmed.is_empty() {
-            if let Ok(bps) = trimmed.parse::<f64>() {
-                if bps > 0.0 {
-                    return bps;
-                }
-            }
-        }
-    }
-
-    // Tier 2: MKV stream tags
-    if let Ok(tag_info) = run_ffprobe(&[
-        "-v", "error",
-        "-select_streams", "v:0",
-        "-show_entries", "stream_tags=NUMBER_OF_BYTES,DURATION",
-        "-of", "default=noprint_wrappers=1:nokey=1",
-        file_path,
-    ])
-    .await
-    {
-        let lines: Vec<&str> = tag_info.lines().filter(|l| !l.trim().is_empty()).collect();
-        let tag_bytes: Option<f64> = lines.iter().find_map(|l| l.trim().parse::<f64>().ok());
-        let tag_dur: Option<f64> = lines.iter().find_map(|l| parse_duration_tag(l.trim()));
-        if let (Some(bytes), Some(dur)) = (tag_bytes, tag_dur) {
-            if dur > 0.0 {
-                return (bytes * 8.0) / dur;
-            }
-        }
-    }
-
-    // Tier 3: format-level bit_rate (container bitrate — includes all streams,
-    // but still useful as an approximation for files where stream bit_rate is absent)
-    if let Ok(raw) = run_ffprobe(&[
-        "-v", "error",
-        "-show_entries", "format=bit_rate",
-        "-of", "default=noprint_wrappers=1:nokey=1",
-        file_path,
-    ])
-    .await
-    {
-        let trimmed = raw.trim();
-        if trimmed != "N/A" && !trimmed.is_empty() {
-            if let Ok(bps) = trimmed.parse::<f64>() {
-                if bps > 0.0 {
-                    return bps;
-                }
-            }
-        }
-    }
-
-    // Tier 4: packet counting fallback — sum all video packet sizes and divide by duration
-    let _ = app.emit("log", format!("[probe] Scanning packets for bitrate (this may take a moment)... {}", file_path));
-    if let Ok(raw) = run_ffprobe(&[
-        "-v", "error",
-        "-select_streams", "v:0",
-        "-show_entries", "packet=size",
-        "-of", "default=noprint_wrappers=1:nokey=1",
-        file_path,
-    ])
-    .await
-    {
-        let total_bytes: f64 = raw
-            .lines()
-            .filter_map(|l| l.trim().parse::<f64>().ok())
-            .sum();
-
-        if total_bytes > 0.0 {
-            // Get duration
-            if let Ok(dur_raw) = run_ffprobe(&[
-                "-v", "error",
-                "-select_streams", "v:0",
-                "-show_entries", "stream=duration",
-                "-of", "default=noprint_wrappers=1:nokey=1",
-                file_path,
-            ])
-            .await
-            {
-                let dur_trimmed = dur_raw.trim();
-                if dur_trimmed != "N/A" && !dur_trimmed.is_empty() {
-                    if let Ok(dur) = dur_trimmed.parse::<f64>() {
-                        if dur > 0.0 {
-                            return (total_bytes * 8.0) / dur;
-                        }
-                    }
-                }
-            }
-
-            // If stream duration is also missing, try format duration
-            if let Ok(dur_raw) = run_ffprobe(&[
-                "-v", "error",
-                "-show_entries", "format=duration",
-                "-of", "default=noprint_wrappers=1:nokey=1",
-                file_path,
-            ])
-            .await
-            {
-                let dur_trimmed = dur_raw.trim();
-                if dur_trimmed != "N/A" && !dur_trimmed.is_empty() {
-                    if let Ok(dur) = dur_trimmed.parse::<f64>() {
-                        if dur > 0.0 {
-                            return (total_bytes * 8.0) / dur;
-                        }
-                    }
-                }
-            }
-        }
-    }
-
-    0.0
-}
-
 /// Parse a duration tag like "01:23:45.678" into seconds.
 fn parse_duration_tag(s: &str) -> Option<f64> {
-    // Must contain colons to be a time format
     if !s.contains(':') {
         return None;
     }
@@ -173,59 +47,137 @@ fn parse_duration_tag(s: &str) -> Option<f64> {
     Some(h * 3600.0 + m * 60.0 + sec)
 }
 
-/// Full file probe: codec, dimensions, bitrate, HDR.
+/// Attempt to parse a non-empty, non-"N/A" numeric string.
+fn parse_numeric(s: &str) -> Option<f64> {
+    let trimmed = s.trim();
+    if trimmed.is_empty() || trimmed == "N/A" {
+        return None;
+    }
+    trimmed.parse::<f64>().ok().filter(|v| *v > 0.0)
+}
+
+/// Full file probe: codec, dimensions, bitrate, HDR, and audio streams —
+/// all gathered in a single ffprobe invocation where possible.
+///
+/// Previously this spawned 3-6 separate ffprobe processes per file.
+/// Now the primary call requests all video/audio stream data plus format
+/// metadata in one go. Only the packet-counting bitrate fallback (tier 4)
+/// requires a second invocation, and that's rare.
 pub async fn probe_file(file_path: &str, app: &AppHandle) -> Result<ProbeResult, String> {
-    // Probe codec and dimensions
-    let video_info = run_ffprobe(&[
+    // ── Single-pass probe: all streams + format in one call ──
+    let json_raw = run_ffprobe(&[
         "-v", "error",
-        "-select_streams", "v:0",
-        "-show_entries", "stream=codec_name,width,height",
-        "-of", "csv=p=0",
+        "-show_streams",
+        "-show_format",
+        "-of", "json",
         file_path,
     ])
     .await
     .unwrap_or_default();
 
+    let json: serde_json::Value =
+        serde_json::from_str(&json_raw).unwrap_or(serde_json::Value::Null);
+
+    let streams = json["streams"].as_array();
+    let format = &json["format"];
+
+    // ── Extract video stream info ──
     let mut video_codec = String::new();
     let mut video_width: u32 = 0;
     let mut video_height: u32 = 0;
+    let mut stream_bitrate: Option<f64> = None;
+    let mut is_hdr = false;
+    let mut color_transfer = String::new();
+    let mut tag_bytes: Option<f64> = None;
+    let mut tag_duration: Option<f64> = None;
 
-    if !video_info.is_empty() && video_info != "N/A" {
-        let parts: Vec<&str> = video_info.split(',').collect();
-        if !parts.is_empty() {
-            video_codec = parts[0].trim().to_string();
-        }
-        if parts.len() >= 2 {
-            video_width = parts[1].trim().parse().unwrap_or(0);
-        }
-        if parts.len() >= 3 {
-            video_height = parts[2].trim().parse().unwrap_or(0);
+    if let Some(streams_arr) = streams {
+        for s in streams_arr {
+            let codec_type = s["codec_type"].as_str().unwrap_or("");
+            if codec_type == "video" && video_codec.is_empty() {
+                // First video stream
+                video_codec = s["codec_name"].as_str().unwrap_or("").to_string();
+                video_width = s["width"].as_u64().unwrap_or(0) as u32;
+                video_height = s["height"].as_u64().unwrap_or(0) as u32;
+
+                // Tier 1: stream-level bit_rate
+                if let Some(br_str) = s["bit_rate"].as_str() {
+                    stream_bitrate = parse_numeric(br_str);
+                }
+
+                // Tier 2: MKV stream tags (NUMBER_OF_BYTES / DURATION)
+                if stream_bitrate.is_none() {
+                    let tags = &s["tags"];
+                    // Try several capitalisation variants (ffprobe is inconsistent)
+                    for key in &["NUMBER_OF_BYTES", "number_of_bytes", "Number_Of_Bytes"] {
+                        if let Some(v) = tags[*key].as_str() {
+                            tag_bytes = parse_numeric(v);
+                            if tag_bytes.is_some() {
+                                break;
+                            }
+                        }
+                    }
+                    for key in &["DURATION", "duration", "Duration"] {
+                        if let Some(v) = tags[*key].as_str() {
+                            tag_duration = parse_duration_tag(v);
+                            if tag_duration.is_some() {
+                                break;
+                            }
+                        }
+                    }
+                }
+
+                // HDR detection via colour metadata
+                let ct = s["color_transfer"].as_str().unwrap_or("");
+                if ct == "smpte2084" || ct == "arib-std-b67" {
+                    is_hdr = true;
+                    color_transfer = ct.to_string();
+                }
+            }
         }
     }
 
-    // Probe bitrate (four-tier)
-    let video_bitrate_bps = detect_bitrate(file_path, app).await;
+    // ── Resolve bitrate using the tier waterfall ──
+    let video_bitrate_bps = if let Some(bps) = stream_bitrate {
+        // Tier 1: stream header
+        bps
+    } else if let (Some(bytes), Some(dur)) = (tag_bytes, tag_duration) {
+        // Tier 2: MKV stream tags
+        if dur > 0.0 { (bytes * 8.0) / dur } else { 0.0 }
+    } else if let Some(bps) = format["bit_rate"]
+        .as_str()
+        .and_then(parse_numeric)
+    {
+        // Tier 3: format-level (container) bitrate
+        bps
+    } else {
+        // Tier 4: packet counting fallback — requires a second ffprobe call
+        packet_count_bitrate(file_path, app).await
+    };
+
     let video_bitrate_mbps = video_bitrate_bps / 1_000_000.0;
 
-    // Probe HDR colour metadata
-    let colour_info = run_ffprobe(&[
-        "-v", "error",
-        "-select_streams", "v:0",
-        "-show_entries", "stream=color_transfer,color_primaries,color_space",
-        "-of", "default=noprint_wrappers=1:nokey=1",
-        file_path,
-    ])
-    .await
-    .unwrap_or_default();
+    // ── Extract audio stream info ──
+    let mut audio_streams: Vec<AudioStreamInfo> = Vec::new();
+    let mut audio_index: u32 = 0;
 
-    let mut is_hdr = false;
-    let mut color_transfer = String::new();
-    for line in colour_info.lines() {
-        let trimmed = line.trim();
-        if trimmed == "smpte2084" || trimmed == "arib-std-b67" {
-            is_hdr = true;
-            color_transfer = trimmed.to_string();
-            break;
+    if let Some(streams_arr) = streams {
+        for s in streams_arr {
+            if s["codec_type"].as_str().unwrap_or("") == "audio" {
+                let codec = s["codec_name"].as_str().unwrap_or("unknown").to_string();
+                let br_kbps: u32 = s["bit_rate"]
+                    .as_str()
+                    .and_then(|v| v.parse::<u64>().ok())
+                    .map(|v| (v / 1000) as u32)
+                    .unwrap_or(999);
+
+                audio_streams.push(AudioStreamInfo {
+                    index: audio_index,
+                    codec,
+                    bitrate_kbps: br_kbps,
+                });
+                audio_index += 1;
+            }
         }
     }
 
@@ -237,5 +189,77 @@ pub async fn probe_file(file_path: &str, app: &AppHandle) -> Result<ProbeResult,
         video_bitrate_mbps,
         is_hdr,
         color_transfer,
+        audio_streams,
     })
+}
+
+/// Tier 4 bitrate fallback: sum all video packet sizes and divide by duration.
+/// This is the only case that requires a second ffprobe invocation — it's
+/// needed for files where neither stream headers, MKV tags, nor format
+/// metadata contain a usable bitrate (e.g. some older AVI files).
+async fn packet_count_bitrate(file_path: &str, app: &AppHandle) -> f64 {
+    let _ = app.emit(
+        "log",
+        format!(
+            "[probe] Scanning packets for bitrate (this may take a moment)... {}",
+            file_path
+        ),
+    );
+
+    let raw = match run_ffprobe(&[
+        "-v", "error",
+        "-select_streams", "v:0",
+        "-show_entries", "packet=size",
+        "-show_entries", "stream=duration",
+        "-show_entries", "format=duration",
+        "-of", "json",
+        file_path,
+    ])
+    .await
+    {
+        Ok(r) => r,
+        Err(_) => return 0.0,
+    };
+
+    let json: serde_json::Value =
+        serde_json::from_str(&raw).unwrap_or(serde_json::Value::Null);
+
+    // Sum packet sizes
+    let total_bytes: f64 = json["packets"]
+        .as_array()
+        .map(|arr| {
+            arr.iter()
+                .filter_map(|p| {
+                    p["size"]
+                        .as_str()
+                        .and_then(|s| s.parse::<f64>().ok())
+                })
+                .sum()
+        })
+        .unwrap_or(0.0);
+
+    if total_bytes <= 0.0 {
+        return 0.0;
+    }
+
+    // Try stream duration first, then format duration
+    let duration = json["streams"]
+        .as_array()
+        .and_then(|arr| {
+            arr.iter().find_map(|s| {
+                s["duration"].as_str().and_then(parse_numeric)
+            })
+        })
+        .or_else(|| {
+            json["format"]["duration"]
+                .as_str()
+                .and_then(parse_numeric)
+        })
+        .unwrap_or(0.0);
+
+    if duration > 0.0 {
+        (total_bytes * 8.0) / duration
+    } else {
+        0.0
+    }
 }

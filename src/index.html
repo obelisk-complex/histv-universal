@@ -361,6 +361,8 @@
     let batchRunning = false;
     let encoderDetectionDone = false;
     let saveDebounce = null;
+    let queueRefreshDebounce = null;   // coalesces rapid queue fetch+render cycles
+    let targetBitrateDebounce = null;  // coalesces rapid refreshTargetBitrates calls
 
     // ── DOM refs ───────────────────────────────────────────────────
     const $ = (s) => document.querySelector(s);
@@ -753,6 +755,25 @@
       });
     }
 
+    // ── Debounced variant — coalesces rapid settings changes into one DOM walk ──
+    function scheduleRefreshTargetBitrates() {
+      if (targetBitrateDebounce) clearTimeout(targetBitrateDebounce);
+      targetBitrateDebounce = setTimeout(refreshTargetBitrates, 50);
+    }
+
+    // ── Debounced queue refresh — coalesces rapid fetch+render cycles ──
+    // Multiple sources (probeFileAt completions, Tauri events) can all
+    // request a queue refresh within milliseconds of each other. This
+    // collapses them into a single IPC call + render.
+    function scheduleQueueRefresh() {
+      if (queueRefreshDebounce) clearTimeout(queueRefreshDebounce);
+      queueRefreshDebounce = setTimeout(async () => {
+        queueData = await invoke('get_queue');
+        renderQueue();
+        checkHdrAuto();
+      }, 80);
+    }
+
     // ── Add files via backend ──
     async function addFilesToQueue(paths) {
       if (!paths || paths.length === 0) return;
@@ -761,7 +782,8 @@
         // Re-fetch full queue to stay in sync
         queueData = await invoke('get_queue');
         renderQueue();
-        // Probe newly-added items
+        // Probe newly-added items — fire all probes concurrently,
+        // each one schedules a debounced refresh on completion
         for (const item of added) {
           const idx = queueData.findIndex(q => q.fullPath === item.fullPath);
           if (idx >= 0 && queueData[idx].status === 'Pending') {
@@ -774,16 +796,15 @@
     }
 
     // ── Probe a single file (async, non-blocking) ──
+    // Schedules a debounced queue refresh on completion rather than
+    // fetching + rendering immediately — prevents N fetches for N files.
     async function probeFileAt(index) {
       try {
         await invoke('probe_file', { index });
-        queueData = await invoke('get_queue');
-        renderQueue();
-        checkHdrAuto();
+        scheduleQueueRefresh();
       } catch (e) {
         console.warn(`Probe failed for index ${index}:`, e);
-        queueData = await invoke('get_queue');
-        renderQueue();
+        scheduleQueueRefresh();
       }
     }
 
@@ -919,33 +940,33 @@
       selCodec.addEventListener('change', () => {
         populateEncoderDropdown();
         updateRcModeVisibility();
-        refreshTargetBitrates();
+        scheduleRefreshTargetBitrates();
         scheduleConfigSave();
       });
 
       selEncoder.addEventListener('change', () => {
         updateRcModeVisibility();
-        refreshTargetBitrates();
+        scheduleRefreshTargetBitrates();
         scheduleConfigSave();
       });
 
       numBitrate.addEventListener('change', () => {
-        refreshTargetBitrates();
+        scheduleRefreshTargetBitrates();
         scheduleConfigSave();
       });
 
       numQpI.addEventListener('change', () => {
-        refreshTargetBitrates();
+        scheduleRefreshTargetBitrates();
         scheduleConfigSave();
       });
 
       numQpP.addEventListener('change', () => {
-        refreshTargetBitrates();
+        scheduleRefreshTargetBitrates();
         scheduleConfigSave();
       });
 
       numCrf.addEventListener('change', () => {
-        refreshTargetBitrates();
+        scheduleRefreshTargetBitrates();
         scheduleConfigSave();
       });
 
@@ -958,7 +979,7 @@
       for (const btn of rcToggle.querySelectorAll('button')) {
         btn.addEventListener('click', () => {
           setRateControlMode(btn.dataset.mode);
-          refreshTargetBitrates();
+          scheduleRefreshTargetBitrates();
           scheduleConfigSave();
         });
       }
@@ -1393,17 +1414,17 @@
         appendLog(event.payload);
       });
 
-      // Queue item updated (status change)
-      listen('queue-item-updated', async () => {
-        queueData = await invoke('get_queue');
-        renderQueue();
+      // Queue item updated (status change) — debounced to coalesce
+      // with any direct-call refreshes already in flight
+      listen('queue-item-updated', () => {
+        scheduleQueueRefresh();
         updateBatchButtons();
       });
 
-      // Queue item probed
-      listen('queue-item-probed', async () => {
-        queueData = await invoke('get_queue');
-        renderQueue();
+      // Queue item probed — debounced (probeFileAt also schedules a
+      // refresh, so this just ensures we don't miss backend-initiated probes)
+      listen('queue-item-probed', () => {
+        scheduleQueueRefresh();
       });
 
       // Batch started

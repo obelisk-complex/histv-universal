@@ -166,6 +166,7 @@ async fn probe_file(
                     q[index].video_bitrate_mbps = pr.video_bitrate_mbps;
                     q[index].is_hdr = pr.is_hdr;
                     q[index].color_transfer = pr.color_transfer.clone();
+                    q[index].audio_streams = pr.audio_streams.clone();
                     q[index].status = QueueItemStatus::Pending;
                 }
                 Err(_) => {

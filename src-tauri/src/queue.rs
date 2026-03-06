@@ -46,6 +46,16 @@ pub struct QueueItem {
     pub video_bitrate_mbps: f64,
     pub is_hdr: bool,
     pub color_transfer: String,
+    pub audio_streams: Vec<AudioStreamInfo>,
+}
+
+/// Per-stream audio metadata collected during probing.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct AudioStreamInfo {
+    pub index: u32,
+    pub codec: String,
+    pub bitrate_kbps: u32,
 }
 
 /// Batch control state, shared between the UI thread and the encoding task.
@@ -126,6 +136,7 @@ pub fn add_paths_to_queue(queue: &mut Vec<QueueItem>, paths: &[String]) -> Vec<Q
             video_bitrate_mbps: 0.0,
             is_hdr: false,
             color_transfer: String::new(),
+            audio_streams: Vec::new(),
         };
         queue.push(item.clone());
         added.push(item);
