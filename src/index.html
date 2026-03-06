@@ -754,7 +754,6 @@
         if (selectedRows.has(i)) tr.classList.add('selected');
         tr.dataset.index = i;
         tr.dataset.status = statusLower;
-        tr.draggable = true;
 
         // Filename
         const tdName = document.createElement('td');
@@ -819,7 +818,14 @@
     }
 
     // ── Delegated row click handler — toggles selection without full rebuild ──
+    let reorderJustCompleted = false;
+
     function handleQueueRowClick(e) {
+      // Skip selection change if a reorder drag just ended
+      if (reorderJustCompleted) {
+        reorderJustCompleted = false;
+        return;
+      }
       const tr = e.target.closest('tr');
       if (!tr) return;
       const i = parseInt(tr.dataset.index, 10);
@@ -1108,69 +1114,132 @@
       });
     }
 
-    // ── Drag reorder (§5.9) ──
-    let dragSourceIndex = null;
+    // ── Drag reorder (§5.9) — mouse-event based ──
+    // Tauri's native drag-drop handler intercepts HTML5 drag events, so
+    // row reordering uses mousedown/mousemove/mouseup instead.
+    let reorderActive = false;
+    let reorderSourceIndex = null;
+    let reorderStartY = 0;
+    let reorderLastIndicator = null; // { index, position: 'above'|'below' }
+    const REORDER_THRESHOLD = 5; // pixels before drag activates
 
     function setupDragReorder() {
-      queueBody.addEventListener('dragstart', (e) => {
-        const tr = e.target.closest('tr');
-        if (!tr || batchRunning) { e.preventDefault(); return; }
-        dragSourceIndex = parseInt(tr.dataset.index, 10);
-        e.dataTransfer.effectAllowed = 'move';
-        e.dataTransfer.setData('text/plain', dragSourceIndex);
-        tr.style.opacity = '0.5';
-      });
-
-      queueBody.addEventListener('dragover', (e) => {
-        e.preventDefault();
-        e.dataTransfer.dropEffect = 'move';
+      queueBody.addEventListener('mousedown', (e) => {
+        if (batchRunning || e.button !== 0) return;
         const tr = e.target.closest('tr');
         if (!tr) return;
-        // Clear previous indicators
-        $$('#queue-body tr').forEach(r => {
-          r.classList.remove('drag-over-above', 'drag-over-below');
-        });
-        const rect = tr.getBoundingClientRect();
-        const midY = rect.top + rect.height / 2;
-        if (e.clientY < midY) {
-          tr.classList.add('drag-over-above');
+        reorderSourceIndex = parseInt(tr.dataset.index, 10);
+        if (isNaN(reorderSourceIndex)) { reorderSourceIndex = null; return; }
+        reorderStartY = e.clientY;
+        reorderActive = false;
+        reorderLastIndicator = null;
+      });
+
+      document.addEventListener('mousemove', (e) => {
+        if (reorderSourceIndex === null) return;
+        const rows = queueBody.children;
+
+        // Activate after passing the drag threshold
+        if (!reorderActive) {
+          if (Math.abs(e.clientY - reorderStartY) < REORDER_THRESHOLD) return;
+          reorderActive = true;
+          if (rows[reorderSourceIndex]) {
+            rows[reorderSourceIndex].classList.add('drag-source');
+          }
+        }
+
+        // Clear all indicators
+        for (let i = 0; i < rows.length; i++) {
+          rows[i].classList.remove('drag-over-above', 'drag-over-below');
+        }
+
+        // Find which gap the cursor is closest to.
+        // We calculate the insertion point as: above row N means "insert before N",
+        // below row N means "insert after N". We skip showing anything on the
+        // source row's own position since moving it there is a no-op.
+        let closestRow = null;
+        let position = null;
+
+        for (let i = 0; i < rows.length; i++) {
+          const rect = rows[i].getBoundingClientRect();
+          if (e.clientY < rect.top || e.clientY > rect.bottom) continue;
+
+          const midY = rect.top + rect.height / 2;
+          if (e.clientY < midY) {
+            // Cursor is in the top half — insertion line goes above this row
+            // That means "insert before row i"
+            // Skip if this would be a no-op (inserting before the source or after the row above it)
+            if (i === reorderSourceIndex || i === reorderSourceIndex + 1) break;
+            closestRow = i;
+            position = 'above';
+          } else {
+            // Cursor is in the bottom half — insertion line goes below this row
+            // That means "insert after row i"
+            // Skip if no-op (inserting after the source or before the row below it)
+            if (i === reorderSourceIndex || i === reorderSourceIndex - 1) break;
+            closestRow = i;
+            position = 'below';
+          }
+          break;
+        }
+
+        // Handle cursor above/below the entire table
+        if (closestRow === null && rows.length > 0) {
+          const firstRect = rows[0].getBoundingClientRect();
+          const lastRect = rows[rows.length - 1].getBoundingClientRect();
+          if (e.clientY < firstRect.top && reorderSourceIndex !== 0) {
+            closestRow = 0;
+            position = 'above';
+          } else if (e.clientY > lastRect.bottom && reorderSourceIndex !== rows.length - 1) {
+            closestRow = rows.length - 1;
+            position = 'below';
+          }
+        }
+
+        if (closestRow !== null && position) {
+          rows[closestRow].classList.add(position === 'above' ? 'drag-over-above' : 'drag-over-below');
+          reorderLastIndicator = { index: closestRow, position };
         } else {
-          tr.classList.add('drag-over-below');
+          reorderLastIndicator = null;
         }
       });
 
-      queueBody.addEventListener('dragleave', (e) => {
-        const tr = e.target.closest('tr');
-        if (tr) {
-          tr.classList.remove('drag-over-above', 'drag-over-below');
-        }
-      });
+      document.addEventListener('mouseup', async (e) => {
+        if (reorderSourceIndex === null) return;
 
-      queueBody.addEventListener('drop', async (e) => {
-        e.preventDefault();
-        $$('#queue-body tr').forEach(r => {
-          r.classList.remove('drag-over-above', 'drag-over-below');
-          r.style.opacity = '';
-        });
-        const tr = e.target.closest('tr');
-        if (!tr || dragSourceIndex === null) return;
-        let targetIndex = parseInt(tr.dataset.index, 10);
-        if (isNaN(targetIndex)) return;
+        const wasActive = reorderActive;
+        const fromIndex = reorderSourceIndex;
+        const indicator = reorderLastIndicator;
 
-        // Determine if above or below the midpoint
-        const rect = tr.getBoundingClientRect();
-        const midY = rect.top + rect.height / 2;
-        if (e.clientY >= midY && targetIndex < queueData.length - 1) {
-          targetIndex++;
+        // Clean up visual state
+        const rows = queueBody.children;
+        for (let i = 0; i < rows.length; i++) {
+          rows[i].classList.remove('drag-over-above', 'drag-over-below', 'drag-source');
         }
-        // Adjust target if dragging downwards (removal shifts indices)
-        if (dragSourceIndex < targetIndex) {
-          targetIndex--;
-        }
+        reorderSourceIndex = null;
+        reorderActive = false;
+        reorderLastIndicator = null;
 
-        if (dragSourceIndex !== targetIndex) {
+        if (!wasActive || !indicator) return;
+
+        // Prevent the click handler from firing after a reorder drag
+        reorderJustCompleted = true;
+
+        // Calculate the target index from the indicator position.
+        // "above row N" = insert at index N (pushing N down)
+        // "below row N" = insert at index N+1
+        let toIndex = indicator.position === 'above' ? indicator.index : indicator.index + 1;
+
+        // Adjust for the removal of the source — when the source is before
+        // the target, removing it shifts everything above the target down by one.
+        if (fromIndex < toIndex) toIndex--;
+
+        // Clamp
+        toIndex = Math.max(0, Math.min(toIndex, queueData.length - 1));
+
+        if (fromIndex !== toIndex) {
           try {
-            await invoke('move_queue_item', { from: dragSourceIndex, to: targetIndex });
+            await invoke('move_queue_item', { from: fromIndex, to: toIndex });
             selectedRows.clear();
             queueData = await invoke('get_queue');
             renderQueue();
@@ -1178,15 +1247,6 @@
             console.error('Move item error:', err);
           }
         }
-        dragSourceIndex = null;
-      });
-
-      queueBody.addEventListener('dragend', () => {
-        $$('#queue-body tr').forEach(r => {
-          r.classList.remove('drag-over-above', 'drag-over-below');
-          r.style.opacity = '';
-        });
-        dragSourceIndex = null;
       });
     }
 

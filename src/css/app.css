@@ -523,10 +523,17 @@ input[readonly] {
 }
 
 /* ── Drag reorder ── */
-#queue-table tr.drag-over-above { box-shadow: 0 -2px 0 0 var(--primary) inset; }
-#queue-table tr.drag-over-below { box-shadow: 0 2px 0 0 var(--primary) inset; }
-#queue-table tr[draggable="true"] { cursor: grab; }
-#queue-table tr[draggable="true"]:active { cursor: grabbing; }
+#queue-table tr.drag-over-above {
+  border-top: 2px solid var(--primary);
+}
+#queue-table tr.drag-over-below {
+  border-bottom: 2px solid var(--primary);
+}
+#queue-table tr.drag-source {
+  opacity: 0.35;
+}
+#queue-body tr { cursor: grab; }
+#queue-body tr:active { cursor: grabbing; }
 
 /* ── Start button disabled tooltip ── */
 #btn-start-wrapper {
