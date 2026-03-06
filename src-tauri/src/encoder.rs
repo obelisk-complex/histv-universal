@@ -122,6 +122,24 @@ pub fn cqp_flags(encoder: &str, qp_i: u32, qp_p: u32) -> Vec<String> {
     }
 }
 
+/// Per-encoder flag mapping for CRF mode — only valid for libx265/libx264.
+/// Hardware encoders do not support CRF; fall back to CQP for them.
+pub fn crf_flags(encoder: &str, crf: u32, qp_i: u32, qp_p: u32) -> Vec<String> {
+    let crf_str = crf.to_string();
+    match encoder {
+        "libx265" => vec![
+            "-preset".into(), "slow".into(),
+            "-crf".into(), crf_str,
+        ],
+        "libx264" => vec![
+            "-preset".into(), "slow".into(),
+            "-crf".into(), crf_str,
+        ],
+        // HW encoders don't support CRF — fall back to CQP
+        _ => cqp_flags(encoder, qp_i, qp_p),
+    }
+}
+
 /// Software fallback encoder for a given codec family.
 pub fn software_fallback(codec_family: &str) -> &'static str {
     if codec_family == "H.264" {
@@ -321,11 +339,19 @@ pub async fn start_batch_encode(
         .as_str()
         .unwrap_or("mkv")
         .to_string();
+    let output_next_to_input = settings["outputNextToInput"]
+        .as_bool()
+        .unwrap_or(false);
     let threshold: f64 = settings["targetBitrate"]
         .as_f64()
         .unwrap_or(5.0);
     let qp_i: u32 = settings["qpI"].as_u64().unwrap_or(20) as u32;
     let qp_p: u32 = settings["qpP"].as_u64().unwrap_or(22) as u32;
+    let crf_val: u32 = settings["crf"].as_u64().unwrap_or(20) as u32;
+    let rate_control_mode = settings["rateControlMode"]
+        .as_str()
+        .unwrap_or("QP")
+        .to_string();
     let video_encoder = settings["videoEncoder"]
         .as_str()
         .unwrap_or("libx265")
@@ -373,10 +399,12 @@ pub async fn start_batch_encode(
         return Err("No pending files in the queue.".into());
     }
 
-    // Create output folder if needed
-    if !Path::new(&output_folder).exists() {
-        std::fs::create_dir_all(&output_folder)
-            .map_err(|e| format!("Could not create output folder: {e}"))?;
+    // Create output folder if needed (only when not using per-input output)
+    if !output_next_to_input {
+        if !Path::new(&output_folder).exists() {
+            std::fs::create_dir_all(&output_folder)
+                .map_err(|e| format!("Could not create output folder: {e}"))?;
+        }
     }
 
     // Set batch running
@@ -470,7 +498,33 @@ pub async fn start_batch_encode(
             let _ = app_clone.emit("queue-item-updated", (idx, "Encoding"));
 
             let ext = if output_container == "mp4" { "mp4" } else { "mkv" };
-            let output_file = Path::new(&output_folder)
+            let actual_output_folder = if output_next_to_input {
+                // Create an "output" subfolder next to the input file
+                let input_dir = Path::new(&item.full_path)
+                    .parent()
+                    .unwrap_or_else(|| Path::new("."));
+                let out_dir = input_dir.join("output");
+                if !out_dir.exists() {
+                    if let Err(e) = std::fs::create_dir_all(&out_dir) {
+                        let err_msg = format!("  ERROR: Could not create output folder next to input: {e}");
+                        let _ = app_clone.emit("log", &err_msg);
+                        log_lines.push(err_msg);
+                        {
+                            let mut q = state_clone.queue.lock().await;
+                            if idx < q.len() {
+                                q[idx].status = QueueItemStatus::Failed;
+                            }
+                        }
+                        let _ = app_clone.emit("queue-item-updated", (idx, "Failed"));
+                        fail_count += 1;
+                        continue;
+                    }
+                }
+                out_dir.to_string_lossy().to_string()
+            } else {
+                output_folder.clone()
+            };
+            let output_file = Path::new(&actual_output_folder)
                 .join(format!("{}.{}", item.base_name, ext));
             let output_str = output_file.to_string_lossy().to_string();
 
@@ -542,6 +596,18 @@ pub async fn start_batch_encode(
                         "  Already {} at {:.2}Mbps (at/below target) — copying video",
                         codec_family,
                         bitrate_mbps
+                    );
+                } else if rate_control_mode == "CRF" {
+                    // CRF transcode (software encoders only; crf_flags falls back to CQP for HW)
+                    video_args = vec!["-c:v".into(), video_encoder.clone()];
+                    video_args.extend(crf_flags(&video_encoder, crf_val, qp_i, qp_p));
+                    mode_desc = format!(
+                        "  Video: {:.2}Mbps [{}] {}x{} — CRF {}",
+                        bitrate_mbps,
+                        item.video_codec,
+                        item.video_width,
+                        item.video_height,
+                        crf_val
                     );
                 } else {
                     // CQP transcode

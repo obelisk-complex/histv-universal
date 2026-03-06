@@ -11,6 +11,7 @@ pub struct AppConfig {
     pub theme: String,
     pub output_folder: String,
     pub output_container: String, // "mkv" | "mp4"
+    pub output_next_to_input: bool,
     pub overwrite: bool,
     pub delete_source: bool,
     pub save_log: bool,
@@ -22,6 +23,8 @@ pub struct AppConfig {
     pub target_bitrate: u32,
     pub qp_i: u32,
     pub qp_p: u32,
+    pub crf: u32,
+    pub rate_control_mode: String, // "QP" | "CRF"
     pub hdr: bool,
     pub audio_codec: String, // "AC3" | "EAC3" | "AAC" | "Copy"
     pub audio_bitrate_cap: u32,
@@ -34,6 +37,7 @@ impl Default for AppConfig {
             theme: "Default Dark".to_string(),
             output_folder: "output".to_string(),
             output_container: "mkv".to_string(),
+            output_next_to_input: false,
             overwrite: false,
             delete_source: false,
             save_log: false,
@@ -45,6 +49,8 @@ impl Default for AppConfig {
             target_bitrate: 5,
             qp_i: 20,
             qp_p: 22,
+            crf: 20,
+            rate_control_mode: "QP".to_string(),
             hdr: false,
             audio_codec: "AC3".to_string(),
             audio_bitrate_cap: 640,

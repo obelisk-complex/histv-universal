@@ -50,41 +50,76 @@
           <div class="section-header">Video</div>
 
           <div class="form-row">
-            <label for="sel-codec">Codec</label>
+            <label for="sel-codec" class="has-tooltip">Codec
+              <span class="tooltip-icon">?</span>
+              <span class="tooltip-text">HEVC (H.265) offers better compression than H.264 at the cost of slower encoding. H.264 has wider device compatibility.</span>
+            </label>
             <select id="sel-codec">
               <option value="HEVC">HEVC</option>
               <option value="H.264">H.264</option>
             </select>
-            <label for="sel-encoder" style="min-width:auto;">Encoder</label>
             <select id="sel-encoder"></select>
           </div>
           <div class="status-text" id="encoder-status">Detecting encoders…</div>
 
           <div class="form-row">
-            <label for="num-bitrate">Target bitrate (Mbps)</label>
+            <label for="num-bitrate" class="has-tooltip">Target bitrate (Mbps)
+              <span class="tooltip-icon">?</span>
+              <span class="tooltip-text">Files above this bitrate are re-encoded in VBR mode to reach this target. Files at or below are either copied (same codec) or re-encoded using quality mode.</span>
+            </label>
             <input type="number" id="num-bitrate" min="1" max="50" value="5" />
           </div>
 
-          <div class="form-row">
-            <label>QP I / P</label>
+          <div class="form-row" id="row-rc-mode">
+            <label class="has-tooltip">Quality mode
+              <span class="tooltip-icon">?</span>
+              <span class="tooltip-text" id="rc-tooltip">QP sets a fixed quantiser per frame — output size is less predictable but quality is frame-consistent. CRF lets the encoder vary quantisation to hit a perceptual quality target — generally preferred for software encoders (libx264/libx265).</span>
+            </label>
+            <div class="rc-toggle" id="rc-toggle">
+              <button type="button" class="active" data-mode="QP">QP</button>
+              <button type="button" data-mode="CRF">CRF</button>
+            </div>
+          </div>
+
+          <div class="form-row" id="row-qp">
+            <label class="has-tooltip" id="lbl-qp">QP I / P
+              <span class="tooltip-icon">?</span>
+              <span class="tooltip-text">Quantisation parameter for I-frames and P-frames. Lower = higher quality and larger files. Typical range: 18–28.</span>
+            </label>
             <input type="number" id="num-qp-i" min="0" max="51" value="20" style="width:55px;" />
             <input type="number" id="num-qp-p" min="0" max="51" value="22" style="width:55px;" />
           </div>
 
+          <div class="form-row" id="row-crf" style="display:none;">
+            <label class="has-tooltip" id="lbl-crf">CRF value
+              <span class="tooltip-icon">?</span>
+              <span class="tooltip-text">Constant Rate Factor — the encoder targets a perceptual quality level. Lower = higher quality and larger files. Typical range: 18–28. Only available with libx264/libx265.</span>
+            </label>
+            <input type="number" id="num-crf" min="0" max="51" value="20" style="width:55px;" />
+          </div>
+
           <div class="form-row">
-            <label for="txt-pixfmt">Pixel format</label>
+            <label for="txt-pixfmt" class="has-tooltip">Pixel format
+              <span class="tooltip-icon">?</span>
+              <span class="tooltip-text">Colour depth and subsampling. yuv420p is 8-bit SDR (most compatible). p010le is 10-bit for HDR content.</span>
+            </label>
             <input type="text" id="txt-pixfmt" value="yuv420p" readonly style="width:90px;flex:none;" />
           </div>
 
-          <div class="checkbox-row">
+          <div class="checkbox-row has-tooltip">
             <input type="checkbox" id="chk-hdr" />
             <label for="chk-hdr">10-bit HDR — uncheck to encode HDR source as SDR</label>
+            <span class="tooltip-icon">?</span>
+            <span class="tooltip-text">When ticked, HDR metadata and 10-bit colour are preserved. Untick to tone-map HDR sources down to SDR.</span>
           </div>
 
           <div class="section-header">Audio</div>
 
           <div class="form-row">
-            <label for="sel-audio-codec">Audio codec</label>
+            <label for="sel-audio-codec" class="has-tooltip">Audio codec
+              <span class="tooltip-icon">?</span>
+              <span class="tooltip-text">AC3 (Dolby Digital) is widely supported. EAC3 is its successor with better quality at the same bitrate. AAC is efficient and universal. Copy passes through without re-encoding.</span>
+            </label>
             <select id="sel-audio-codec">
               <option value="AC3">AC3</option>
               <option value="EAC3">EAC3</option>
@@ -94,7 +129,10 @@
           </div>
 
           <div class="form-row">
-            <label for="num-audio-cap">Audio cap (kbps)</label>
+            <label for="num-audio-cap" class="has-tooltip">Audio cap (kbps)
+              <span class="tooltip-icon">?</span>
+              <span class="tooltip-text">Maximum audio bitrate. Audio streams already at or below this value are copied unchanged. Higher values preserve more audio detail.</span>
+            </label>
             <input type="number" id="num-audio-cap" min="128" max="1536" step="32" value="640" />
           </div>
 
@@ -110,45 +148,69 @@
           <div class="section-header">Output</div>
 
           <div class="form-row">
-            <label for="txt-output-folder">Output folder</label>
+            <label for="txt-output-folder" class="has-tooltip">Output folder
+              <span class="tooltip-icon">?</span>
+              <span class="tooltip-text">The directory where encoded files are saved. Can be an absolute path or a relative name (e.g. "output") which is created inside the working directory.</span>
+            </label>
             <input type="text" id="txt-output-folder" value="output" />
             <button class="btn" id="btn-browse-output">Browse</button>
           </div>
 
+          <div class="checkbox-row has-tooltip">
+            <input type="checkbox" id="chk-output-next-to-input" />
+            <label for="chk-output-next-to-input">Put output next to input file</label>
+            <span class="tooltip-icon">?</span>
+            <span class="tooltip-text">Creates an "output" subfolder alongside each input file and saves the encoded file there. Overrides the output folder above.</span>
+          </div>
+
           <div class="form-row">
-            <label for="sel-container">Container</label>
+            <label for="sel-container" class="has-tooltip">Container
+              <span class="tooltip-icon">?</span>
+              <span class="tooltip-text">MKV supports virtually all codecs and subtitle formats. MP4 has broader playback support on consumer devices but fewer subtitle/codec options.</span>
+            </label>
             <select id="sel-container">
               <option value="mkv">MKV</option>
               <option value="mp4">MP4</option>
             </select>
           </div>
 
-          <div class="checkbox-row">
+          <div class="checkbox-row has-tooltip">
             <input type="checkbox" id="chk-overwrite" />
             <label for="chk-overwrite">Overwrite existing output files</label>
+            <span class="tooltip-icon">?</span>
+            <span class="tooltip-text">Skip the confirmation prompt when an output file already exists and overwrite it automatically.</span>
           </div>
 
-          <div class="checkbox-row">
+          <div class="checkbox-row has-tooltip">
             <input type="checkbox" id="chk-delete-source" />
             <label for="chk-delete-source">Delete source files after successful encode</label>
+            <span class="tooltip-icon">?</span>
+            <span class="tooltip-text">Permanently deletes the original source file after a successful encode. A confirmation prompt is shown when starting the batch.</span>
           </div>
 
-          <div class="section-header" style="margin-top:18px;">Logging &amp; Notifications</div>
+          <div class="section-header">Logging &amp; Notifications</div>
 
-          <div class="checkbox-row">
+          <div class="checkbox-row has-tooltip">
             <input type="checkbox" id="chk-save-log" />
             <label for="chk-save-log">Save log to output folder</label>
+            <span class="tooltip-icon">?</span>
+            <span class="tooltip-text">Writes a timestamped text log of the entire batch to the output directory when the batch finishes.</span>
           </div>
 
-          <div class="checkbox-row">
+          <div class="checkbox-row has-tooltip">
             <input type="checkbox" id="chk-toast" />
             <label for="chk-toast">Show system notification on batch completion</label>
+            <span class="tooltip-icon">?</span>
+            <span class="tooltip-text">Displays an OS-level notification when the batch finishes so you know it's done even if the app is in the background.</span>
           </div>
 
-          <div class="section-header" style="margin-top:18px;">Post-Batch Action</div>
+          <div class="section-header">Post-Batch Action</div>
 
           <div class="form-row">
-            <label for="sel-post-action">Action</label>
+            <label for="sel-post-action" class="has-tooltip">Action
+              <span class="tooltip-icon">?</span>
+              <span class="tooltip-text">An optional action to perform after the batch completes. Useful for long overnight encodes — shutdown the PC, put it to sleep, etc.</span>
+            </label>
             <select id="sel-post-action">
               <option value="None">None</option>
               <option value="Shutdown">Shutdown</option>
@@ -164,7 +226,10 @@
           </div>
 
           <div class="form-row">
-            <label for="num-countdown">Countdown (seconds)</label>
+            <label for="num-countdown" class="has-tooltip">Countdown (seconds)
+              <span class="tooltip-icon">?</span>
+              <span class="tooltip-text">A countdown shown before the post-batch action executes, giving you a chance to cancel. Set to 0 for immediate execution.</span>
+            </label>
             <input type="number" id="num-countdown" min="0" max="3600" value="0" />
           </div>
         </div><!-- /tab-output -->
@@ -309,12 +374,18 @@
     const numBitrate      = $('#num-bitrate');
     const numQpI          = $('#num-qp-i');
     const numQpP          = $('#num-qp-p');
+    const numCrf          = $('#num-crf');
+    const rowQp           = $('#row-qp');
+    const rowCrf          = $('#row-crf');
+    const rowRcMode       = $('#row-rc-mode');
+    const rcToggle        = $('#rc-toggle');
     const txtPixFmt       = $('#txt-pixfmt');
     const chkHdr          = $('#chk-hdr');
     const selAudioCodec   = $('#sel-audio-codec');
     const numAudioCap     = $('#num-audio-cap');
     const selTheme        = $('#sel-theme');
     const txtOutputFolder = $('#txt-output-folder');
+    const chkOutputNextTo = $('#chk-output-next-to-input');
     const selContainer    = $('#sel-container');
     const chkOverwrite    = $('#chk-overwrite');
     const chkDeleteSource = $('#chk-delete-source');
@@ -419,11 +490,14 @@
         numBitrate.value = cfg.targetBitrate || 5;
         numQpI.value = cfg.qpI ?? 20;
         numQpP.value = cfg.qpP ?? 22;
+        numCrf.value = cfg.crf ?? 20;
         chkHdr.checked = cfg.hdr || false;
         updatePixFmt();
         selAudioCodec.value = cfg.audioCodec || 'AC3';
         numAudioCap.value = cfg.audioBitrateCap || 640;
         txtOutputFolder.value = cfg.outputFolder || 'output';
+        chkOutputNextTo.checked = cfg.outputNextToInput || false;
+        toggleOutputNextTo();
         selContainer.value = cfg.outputContainer || 'mkv';
         chkOverwrite.checked = cfg.overwrite || false;
         chkDeleteSource.checked = cfg.deleteSource || false;
@@ -437,6 +511,9 @@
           logDrawer.classList.add('open');
           logToggleArrow.textContent = '\u25BC';
         }
+        // Restore rate control mode
+        const rcMode = cfg.rateControlMode || 'QP';
+        setRateControlMode(rcMode);
       } catch (e) {
         console.warn('Could not load config:', e);
       }
@@ -452,6 +529,7 @@
               theme: selTheme.value || 'Default Dark',
               outputFolder: txtOutputFolder.value,
               outputContainer: selContainer.value,
+              outputNextToInput: chkOutputNextTo.checked,
               overwrite: chkOverwrite.checked,
               deleteSource: chkDeleteSource.checked,
               saveLog: chkSaveLog.checked,
@@ -463,6 +541,8 @@
               targetBitrate: parseInt(numBitrate.value, 10) || 5,
               qpI: parseInt(numQpI.value, 10) || 20,
               qpP: parseInt(numQpP.value, 10) || 22,
+              crf: parseInt(numCrf.value, 10) || 20,
+              rateControlMode: getCurrentRcMode(),
               hdr: chkHdr.checked,
               audioCodec: selAudioCodec.value,
               audioBitrateCap: parseInt(numAudioCap.value, 10) || 640,
@@ -641,6 +721,8 @@
       const target = parseFloat(numBitrate.value) || 5;
       const qpI = parseInt(numQpI.value, 10) || 20;
       const qpP = parseInt(numQpP.value, 10) || 22;
+      const crf = parseInt(numCrf.value, 10) || 20;
+      const rcMode = getCurrentRcMode();
       const mbps = item.videoBitrateMbps;
       if (!mbps || mbps <= 0) return '?';
 
@@ -653,6 +735,9 @@
       } else if (isSameCodec) {
         return 'Copy';
       } else {
+        if (rcMode === 'CRF') {
+          return `CRF ${crf}`;
+        }
         return `CQP (${qpI}/${qpP})`;
       }
     }
@@ -830,14 +915,16 @@
     //  SETTINGS LISTENERS
     // ═══════════════════════════════════════════════════════════════
     function setupSettingsListeners() {
-      // Codec change → repopulate encoder dropdown, refresh target bitrates
+      // Codec change → repopulate encoder dropdown, refresh target bitrates, update RC visibility
       selCodec.addEventListener('change', () => {
         populateEncoderDropdown();
+        updateRcModeVisibility();
         refreshTargetBitrates();
         scheduleConfigSave();
       });
 
       selEncoder.addEventListener('change', () => {
+        updateRcModeVisibility();
         refreshTargetBitrates();
         scheduleConfigSave();
       });
@@ -857,8 +944,28 @@
         scheduleConfigSave();
       });
 
+      numCrf.addEventListener('change', () => {
+        refreshTargetBitrates();
+        scheduleConfigSave();
+      });
+
       chkHdr.addEventListener('change', () => {
         updatePixFmt();
+        scheduleConfigSave();
+      });
+
+      // RC mode toggle (QP / CRF)
+      for (const btn of rcToggle.querySelectorAll('button')) {
+        btn.addEventListener('click', () => {
+          setRateControlMode(btn.dataset.mode);
+          refreshTargetBitrates();
+          scheduleConfigSave();
+        });
+      }
+
+      // Output next to input toggle
+      chkOutputNextTo.addEventListener('change', () => {
+        toggleOutputNextTo();
         scheduleConfigSave();
       });
 
@@ -880,6 +987,48 @@
       rowCustomCmd.style.display = selPostAction.value === 'Custom Command' ? 'flex' : 'none';
     }
 
+    function toggleOutputNextTo() {
+      const nextTo = chkOutputNextTo.checked;
+      txtOutputFolder.disabled = nextTo;
+      txtOutputFolder.style.opacity = nextTo ? '0.4' : '1';
+      $('#btn-browse-output').disabled = nextTo;
+      $('#btn-browse-output').style.opacity = nextTo ? '0.4' : '1';
+    }
+
+    // ── Rate control mode helpers ──
+    function getCurrentRcMode() {
+      const activeBtn = rcToggle.querySelector('button.active');
+      return activeBtn ? activeBtn.dataset.mode : 'QP';
+    }
+
+    function setRateControlMode(mode) {
+      for (const btn of rcToggle.querySelectorAll('button')) {
+        btn.classList.toggle('active', btn.dataset.mode === mode);
+      }
+      if (mode === 'CRF') {
+        rowQp.style.display = 'none';
+        rowCrf.style.display = 'flex';
+      } else {
+        rowQp.style.display = 'flex';
+        rowCrf.style.display = 'none';
+      }
+    }
+
+    function isSoftwareEncoder(name) {
+      return name === 'libx265' || name === 'libx264';
+    }
+
+    function updateRcModeVisibility() {
+      const encoder = selEncoder.value || '';
+      if (isSoftwareEncoder(encoder)) {
+        rowRcMode.style.display = 'flex';
+      } else {
+        // HW encoders only support QP — force QP and hide the toggle
+        rowRcMode.style.display = 'none';
+        setRateControlMode('QP');
+      }
+    }
+
     // ═══════════════════════════════════════════════════════════════
     //  ENCODER DETECTION (§8)
     // ═══════════════════════════════════════════════════════════════
@@ -898,6 +1047,7 @@
       if (matching.find(e => e.name === prevValue)) {
         selEncoder.value = prevValue;
       }
+      updateRcModeVisibility();
     }
 
     // ═══════════════════════════════════════════════════════════════
@@ -1022,9 +1172,12 @@
           settings: {
             outputFolder: txtOutputFolder.value,
             outputContainer: selContainer.value,
+            outputNextToInput: chkOutputNextTo.checked,
             targetBitrate: parseFloat(numBitrate.value) || 5,
             qpI: parseInt(numQpI.value, 10) || 20,
             qpP: parseInt(numQpP.value, 10) || 22,
+            crf: parseInt(numCrf.value, 10) || 20,
+            rateControlMode: getCurrentRcMode(),
             videoEncoder: selEncoder.value,
             codecFamily: selCodec.value,
             audioEncoder: selAudioCodec.value.toLowerCase(),
