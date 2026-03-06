@@ -426,8 +426,8 @@
     //  INITIALISATION
     // ═══════════════════════════════════════════════════════════════
     document.addEventListener('DOMContentLoaded', async () => {
-      await loadConfig();
-      await loadThemes();
+      const savedConfig = await loadConfig();
+      await loadThemes(savedConfig);
       setupTabs();
       setupSplitter();
       setupQueueButtons();
@@ -516,8 +516,10 @@
         // Restore rate control mode
         const rcMode = cfg.rateControlMode || 'QP';
         setRateControlMode(rcMode);
+        return cfg;
       } catch (e) {
         console.warn('Could not load config:', e);
+        return null;
       }
     }
 
@@ -560,7 +562,7 @@
     // ═══════════════════════════════════════════════════════════════
     //  THEMING (§3)
     // ═══════════════════════════════════════════════════════════════
-    async function loadThemes() {
+    async function loadThemes(savedConfig) {
       try {
         themes = await invoke('get_themes');
         selTheme.innerHTML = '';
@@ -570,10 +572,9 @@
           opt.textContent = t.name;
           selTheme.appendChild(opt);
         }
-        // Restore saved theme
-        const cfg = await invoke('get_config');
-        if (cfg.theme && themes.find(t => t.name === cfg.theme)) {
-          selTheme.value = cfg.theme;
+        // Restore saved theme from the config already loaded
+        if (savedConfig && savedConfig.theme && themes.find(t => t.name === savedConfig.theme)) {
+          selTheme.value = savedConfig.theme;
         }
         applyTheme(selTheme.value);
       } catch (e) {
@@ -648,8 +649,79 @@
     // ═══════════════════════════════════════════════════════════════
 
     // ── Render queue table ──
+    // Differential update: only rebuilds rows whose data has changed,
+    // and only updates cells within a row if the underlying values differ.
+    // Falls back to a full rebuild when the row count changes.
     function renderQueue() {
-      queueBody.innerHTML = '';
+      const existingRows = queueBody.children;
+
+      // Full rebuild needed if row count changed
+      if (existingRows.length !== queueData.length) {
+        fullRenderQueue();
+        return;
+      }
+
+      // Differential update — patch only what changed
+      for (let i = 0; i < queueData.length; i++) {
+        const item = queueData[i];
+        const tr = existingRows[i];
+        const statusLower = (item.status || 'pending').toLowerCase();
+
+        // Update row class
+        const wantClass = `status-${statusLower}` + (selectedRows.has(i) ? ' selected' : '');
+        if (tr.className !== wantClass) tr.className = wantClass;
+
+        // Cell 0: filename
+        const c0 = tr.children[0];
+        if (c0.textContent !== item.fileName) {
+          c0.textContent = item.fileName;
+          c0.title = item.fullPath || item.fileName;
+        }
+
+        // Cell 1: resolution
+        const resText = (item.videoWidth && item.videoHeight)
+          ? `${item.videoWidth}x${item.videoHeight}` : '';
+        const c1 = tr.children[1];
+        if (c1.textContent !== resText) c1.textContent = resText;
+
+        // Cell 2: source bitrate
+        const srcText = item.videoBitrateMbps > 0
+          ? `${item.videoBitrateMbps.toFixed(2)} Mbps` : '';
+        const c2 = tr.children[2];
+        if (c2.textContent !== srcText) c2.textContent = srcText;
+
+        // Cell 3: target bitrate
+        const tgtText = computeTargetBitrateLabel(item);
+        const c3 = tr.children[3];
+        if (c3.textContent !== tgtText) c3.textContent = tgtText;
+
+        // Cell 4: status badge
+        const c4 = tr.children[4];
+        const badge = c4.firstChild;
+        if (badge) {
+          // Update icon if status changed
+          const currentStatus = tr.dataset.status || '';
+          if (currentStatus !== statusLower) {
+            const icon = STATUS_ICONS[statusLower] || '';
+            // Clear and rebuild badge content
+            badge.innerHTML = '';
+            if (icon) {
+              const iconSpan = document.createElement('span');
+              iconSpan.className = 'status-icon';
+              iconSpan.innerHTML = icon;
+              badge.appendChild(iconSpan);
+            }
+            badge.appendChild(document.createTextNode(item.status || 'Pending'));
+            tr.dataset.status = statusLower;
+          }
+        }
+      }
+      updateBatchButtons();
+    }
+
+    // ── Full queue rebuild (used when row count changes) ──
+    function fullRenderQueue() {
+      const fragment = document.createDocumentFragment();
       for (let i = 0; i < queueData.length; i++) {
         const item = queueData[i];
         const tr = document.createElement('tr');
@@ -657,6 +729,7 @@
         tr.className = `status-${statusLower}`;
         if (selectedRows.has(i)) tr.classList.add('selected');
         tr.dataset.index = i;
+        tr.dataset.status = statusLower;
 
         // Filename
         const tdName = document.createElement('td');
@@ -696,26 +769,43 @@
         tdStatus.appendChild(badge);
         tr.appendChild(tdStatus);
 
-        // Row click selection
-        tr.addEventListener('click', (e) => {
-          if (e.shiftKey && selectedRows.size > 0) {
-            const last = Math.max(...selectedRows);
-            const lo = Math.min(last, i);
-            const hi = Math.max(last, i);
-            for (let r = lo; r <= hi; r++) selectedRows.add(r);
-          } else if (e.ctrlKey || e.metaKey) {
-            if (selectedRows.has(i)) selectedRows.delete(i);
-            else selectedRows.add(i);
-          } else {
-            selectedRows.clear();
-            selectedRows.add(i);
-          }
-          renderQueue();
-        });
-
-        queueBody.appendChild(tr);
+        fragment.appendChild(tr);
       }
+      queueBody.innerHTML = '';
+      queueBody.appendChild(fragment);
+
+      // Attach a single delegated click handler on the tbody
+      // (re-attached on full rebuild since innerHTML clears it)
+      queueBody.onclick = handleQueueRowClick;
+
 	  updateBatchButtons();
+    }
+
+    // ── Delegated row click handler — toggles selection without full rebuild ──
+    function handleQueueRowClick(e) {
+      const tr = e.target.closest('tr');
+      if (!tr) return;
+      const i = parseInt(tr.dataset.index, 10);
+      if (isNaN(i)) return;
+
+      if (e.shiftKey && selectedRows.size > 0) {
+        const last = Math.max(...selectedRows);
+        const lo = Math.min(last, i);
+        const hi = Math.max(last, i);
+        for (let r = lo; r <= hi; r++) selectedRows.add(r);
+      } else if (e.ctrlKey || e.metaKey) {
+        if (selectedRows.has(i)) selectedRows.delete(i);
+        else selectedRows.add(i);
+      } else {
+        selectedRows.clear();
+        selectedRows.add(i);
+      }
+
+      // Update selection classes directly — no rebuild needed
+      const rows = queueBody.children;
+      for (let r = 0; r < rows.length; r++) {
+        rows[r].classList.toggle('selected', selectedRows.has(r));
+      }
     }
 
     // ── Target bitrate label (§5.7) ──

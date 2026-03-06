@@ -43,100 +43,94 @@ const H264_PRIORITY: &[&str] = &["libx264"];
 const AUDIO_ENCODERS: &[&str] = &["ac3", "eac3", "aac"];
 
 /// Per-encoder flag mapping for VBR mode (§9.3).
-pub fn vbr_flags(encoder: &str, target_bps: u64, peak_bps: u64) -> Vec<String> {
-    let target = target_bps.to_string();
-    let peak = peak_bps.to_string();
+/// Accepts pre-formatted bitrate strings to avoid re-allocating per file.
+pub fn vbr_flags(encoder: &str, target: &str, peak: &str) -> Vec<String> {
     match encoder {
         "hevc_amf" | "h264_amf" => vec![
             "-quality".into(), "quality".into(),
             "-rc".into(), "vbr_peak".into(),
-            "-b:v".into(), target,
-            "-maxrate".into(), peak,
+            "-b:v".into(), target.into(),
+            "-maxrate".into(), peak.into(),
         ],
         "hevc_nvenc" | "h264_nvenc" => vec![
             "-preset".into(), "p7".into(),
             "-rc".into(), "vbr".into(),
-            "-b:v".into(), target,
-            "-maxrate".into(), peak,
+            "-b:v".into(), target.into(),
+            "-maxrate".into(), peak.into(),
         ],
         "hevc_qsv" | "h264_qsv" => vec![
             "-preset".into(), "veryslow".into(),
-            "-b:v".into(), target,
-            "-maxrate".into(), peak,
+            "-b:v".into(), target.into(),
+            "-maxrate".into(), peak.into(),
         ],
         "hevc_videotoolbox" | "h264_videotoolbox" => vec![
-            "-b:v".into(), target,
-            "-maxrate".into(), peak,
+            "-b:v".into(), target.into(),
+            "-maxrate".into(), peak.into(),
         ],
         "hevc_vaapi" | "h264_vaapi" => vec![
             "-rc_mode".into(), "VBR".into(),
-            "-b:v".into(), target,
-            "-maxrate".into(), peak,
+            "-b:v".into(), target.into(),
+            "-maxrate".into(), peak.into(),
         ],
         "libx265" | "libx264" => vec![
             "-preset".into(), "slow".into(),
-            "-b:v".into(), target,
-            "-maxrate".into(), peak,
+            "-b:v".into(), target.into(),
+            "-maxrate".into(), peak.into(),
         ],
         _ => vec![
-            "-b:v".into(), target,
-            "-maxrate".into(), peak,
+            "-b:v".into(), target.into(),
+            "-maxrate".into(), peak.into(),
         ],
     }
 }
 
 /// Per-encoder flag mapping for CQP mode (§9.4).
-pub fn cqp_flags(encoder: &str, qp_i: u32, qp_p: u32) -> Vec<String> {
-    let qi = qp_i.to_string();
-    let qp = qp_p.to_string();
+/// Accepts pre-formatted QP strings to avoid re-allocating per file.
+pub fn cqp_flags(encoder: &str, qi: &str, qp: &str) -> Vec<String> {
     match encoder {
         "hevc_amf" | "h264_amf" => vec![
             "-quality".into(), "quality".into(),
             "-rc".into(), "cqp".into(),
-            "-qp_i".into(), qi,
-            "-qp_p".into(), qp,
+            "-qp_i".into(), qi.into(),
+            "-qp_p".into(), qp.into(),
         ],
         "hevc_nvenc" | "h264_nvenc" => vec![
             "-preset".into(), "p7".into(),
             "-rc".into(), "constqp".into(),
-            "-qp".into(), qi,
+            "-qp".into(), qi.into(),
         ],
         "hevc_qsv" | "h264_qsv" => vec![
             "-preset".into(), "veryslow".into(),
-            "-global_quality".into(), qi,
+            "-global_quality".into(), qi.into(),
         ],
         "hevc_videotoolbox" | "h264_videotoolbox" => vec![
-            "-q:v".into(), qi,
+            "-q:v".into(), qi.into(),
         ],
         "hevc_vaapi" | "h264_vaapi" => vec![
             "-rc_mode".into(), "CQP".into(),
-            "-qp".into(), qi,
+            "-qp".into(), qi.into(),
         ],
         "libx265" | "libx264" => vec![
             "-preset".into(), "slow".into(),
-            "-qp".into(), qi,
+            "-qp".into(), qi.into(),
         ],
         _ => vec![
-            "-qp".into(), qi,
+            "-qp".into(), qi.into(),
         ],
     }
 }
 
 /// Per-encoder flag mapping for CRF mode — only valid for libx265/libx264.
 /// Hardware encoders do not support CRF; fall back to CQP for them.
-pub fn crf_flags(encoder: &str, crf: u32, qp_i: u32, qp_p: u32) -> Vec<String> {
-    let crf_str = crf.to_string();
+/// Accepts pre-formatted strings to avoid re-allocating per file.
+pub fn crf_flags(encoder: &str, crf_str: &str, qi: &str, qp: &str) -> Vec<String> {
     match encoder {
-        "libx265" => vec![
+        "libx265" | "libx264" => vec![
             "-preset".into(), "slow".into(),
-            "-crf".into(), crf_str,
-        ],
-        "libx264" => vec![
-            "-preset".into(), "slow".into(),
-            "-crf".into(), crf_str,
+            "-crf".into(), crf_str.into(),
         ],
         // HW encoders don't support CRF — fall back to CQP
-        _ => cqp_flags(encoder, qp_i, qp_p),
+        _ => cqp_flags(encoder, qi, qp),
     }
 }
 
@@ -324,6 +318,37 @@ fn fallback_encoders() -> (Vec<EncoderInfo>, Vec<String>) {
 
 // ── Batch encoding (§10) ────────────────────────────────────────
 
+/// Assemble the full ffmpeg argument list from its component parts.
+/// Used by both the primary encode and the software-fallback path
+/// to avoid duplicating the invocation pattern.
+fn assemble_ffmpeg_args(
+    input_path: &str,
+    video_args: &[&str],
+    pix_fmt: &str,
+    audio_args: &[String],
+    output_path: &str,
+) -> Vec<String> {
+    let mut args: Vec<String> = vec![
+        "-err_detect".into(), "ignore_err".into(),
+        "-probesize".into(), "100M".into(),
+        "-analyzeduration".into(), "100M".into(),
+        "-y".into(),
+        "-i".into(), input_path.to_string(),
+        "-map".into(), "0:v:0".into(),
+        "-map".into(), "0:a".into(),
+        "-map".into(), "0:s?".into(),
+    ];
+    args.extend(video_args.iter().map(|s| s.to_string()));
+    args.extend(vec!["-pix_fmt".into(), pix_fmt.to_string()]);
+    args.extend_from_slice(audio_args);
+    args.extend(vec![
+        "-c:s".into(), "copy".into(),
+        "-disposition:s:0".into(), "default".into(),
+        output_path.to_string(),
+    ]);
+    args
+}
+
 /// Start the batch encoding loop in a background task.
 pub async fn start_batch_encode(
     app: AppHandle,
@@ -384,6 +409,11 @@ pub async fn start_batch_encode(
         .unwrap_or(0) as u32;
 
     let sw_fallback = software_fallback(&codec_family).to_string();
+
+    // Pre-format numeric values as strings once, reused across all files
+    let qi_str = qp_i.to_string();
+    let qp_str = qp_p.to_string();
+    let crf_str = crf_val.to_string();
 
     // Collect pending indices
     let pending_indices: Vec<usize> = {
@@ -594,7 +624,7 @@ pub async fn start_batch_encode(
                 } else if rate_control_mode == "CRF" {
                     // CRF transcode (software encoders only; crf_flags falls back to CQP for HW)
                     video_args = vec!["-c:v".into(), video_encoder.clone()];
-                    video_args.extend(crf_flags(&video_encoder, crf_val, qp_i, qp_p));
+                    video_args.extend(crf_flags(&video_encoder, &crf_str, &qi_str, &qp_str));
                     mode_desc = format!(
                         "  Video: {:.2}Mbps [{}] {}x{} — CRF {}",
                         bitrate_mbps,
@@ -606,7 +636,7 @@ pub async fn start_batch_encode(
                 } else {
                     // CQP transcode
                     video_args = vec!["-c:v".into(), video_encoder.clone()];
-                    video_args.extend(cqp_flags(&video_encoder, qp_i, qp_p));
+                    video_args.extend(cqp_flags(&video_encoder, &qi_str, &qp_str));
                     mode_desc = format!(
                         "  Video: {:.2}Mbps [{}] {}x{} — CQP ({}/{})",
                         bitrate_mbps,
@@ -621,8 +651,10 @@ pub async fn start_batch_encode(
                 // VBR
                 let target_bps = (threshold * 1_000_000.0) as u64;
                 let peak_bps = (target_bps as f64 * 1.5) as u64;
+                let target_str = target_bps.to_string();
+                let peak_str = peak_bps.to_string();
                 video_args = vec!["-c:v".into(), video_encoder.clone()];
-                video_args.extend(vbr_flags(&video_encoder, target_bps, peak_bps));
+                video_args.extend(vbr_flags(&video_encoder, &target_str, &peak_str));
                 let peak_mbps = peak_bps as f64 / 1_000_000.0;
                 mode_desc = format!(
                     "  Video: {:.2}Mbps [{}] {}x{} — VBR target {}Mbps peak {:.2}Mbps",
@@ -647,24 +679,14 @@ pub async fn start_batch_encode(
             );
 
             // Assemble full ffmpeg command (§10.3)
-            let mut ffmpeg_args: Vec<String> = vec![
-                "-err_detect".into(), "ignore_err".into(),
-                "-probesize".into(), "100M".into(),
-                "-analyzeduration".into(), "100M".into(),
-                "-y".into(),
-                "-i".into(), item.full_path.clone(),
-                "-map".into(), "0:v:0".into(),
-                "-map".into(), "0:a".into(),
-                "-map".into(), "0:s?".into(),
-            ];
-            ffmpeg_args.extend(video_args.clone());
-            ffmpeg_args.extend(vec!["-pix_fmt".into(), pix_fmt.clone()]);
-            ffmpeg_args.extend(audio_args);
-            ffmpeg_args.extend(vec![
-                "-c:s".into(), "copy".into(),
-                "-disposition:s:0".into(), "default".into(),
-                output_str.clone(),
-            ]);
+            let video_arg_refs: Vec<&str> = video_args.iter().map(|s| s.as_str()).collect();
+            let ffmpeg_args = assemble_ffmpeg_args(
+                &item.full_path,
+                &video_arg_refs,
+                &pix_fmt,
+                &audio_args,
+                &output_str,
+            );
 
             let cmd_line = format!("ffmpeg {}", ffmpeg_args.join(" "));
             let _ = app_clone.emit("batch-command", &cmd_line);
@@ -843,26 +865,16 @@ pub async fn start_batch_encode(
                         let mut sw_video_args: Vec<String>;
                         if bitrate_mbps <= threshold {
                             sw_video_args = vec!["-c:v".into(), sw_fallback.clone()];
-                            sw_video_args.extend(cqp_flags(&sw_fallback, qp_i, qp_p));
+                            sw_video_args.extend(cqp_flags(&sw_fallback, &qi_str, &qp_str));
                         } else {
                             let target_bps = (threshold * 1_000_000.0) as u64;
                             let peak_bps = (target_bps as f64 * 1.5) as u64;
+                            let target_str = target_bps.to_string();
+                            let peak_str = peak_bps.to_string();
                             sw_video_args = vec!["-c:v".into(), sw_fallback.clone()];
-                            sw_video_args.extend(vbr_flags(&sw_fallback, target_bps, peak_bps));
+                            sw_video_args.extend(vbr_flags(&sw_fallback, &target_str, &peak_str));
                         }
 
-                        let mut sw_ffmpeg_args: Vec<String> = vec![
-                            "-err_detect".into(), "ignore_err".into(),
-                            "-probesize".into(), "100M".into(),
-                            "-analyzeduration".into(), "100M".into(),
-                            "-y".into(),
-                            "-i".into(), item.full_path.clone(),
-                            "-map".into(), "0:v:0".into(),
-                            "-map".into(), "0:a".into(),
-                            "-map".into(), "0:s?".into(),
-                        ];
-                        sw_ffmpeg_args.extend(sw_video_args);
-                        sw_ffmpeg_args.extend(vec!["-pix_fmt".into(), pix_fmt.clone()]);
                         // Re-use same audio args from probe data
                         let sw_audio = build_audio_args_from_probe(
                             &item.audio_streams,
@@ -870,12 +882,14 @@ pub async fn start_batch_encode(
                             audio_cap,
                             &app_clone,
                         );
-                        sw_ffmpeg_args.extend(sw_audio);
-                        sw_ffmpeg_args.extend(vec![
-                            "-c:s".into(), "copy".into(),
-                            "-disposition:s:0".into(), "default".into(),
-                            output_str.clone(),
-                        ]);
+                        let sw_video_ref: Vec<&str> = sw_video_args.iter().map(|s| s.as_str()).collect();
+                        let sw_ffmpeg_args = assemble_ffmpeg_args(
+                            &item.full_path,
+                            &sw_video_ref,
+                            &pix_fmt,
+                            &sw_audio,
+                            &output_str,
+                        );
 
                         let sw_cmd = format!("ffmpeg {}", sw_ffmpeg_args.join(" "));
                         let _ = app_clone.emit("batch-command", &sw_cmd);
