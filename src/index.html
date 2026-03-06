@@ -12,7 +12,7 @@
     <div id="main-area">
       <!-- ─── Left panel: file queue (§5) ─── -->
       <div id="left-panel">
-        <div class="panel-header">File Queue</div>
+        <div class="panel-header">File Queue <span id="queue-summary" class="queue-summary"></span></div>
         <div id="queue-container" style="position:relative;">
           <div id="drop-overlay">Drop files or folders here</div>
           <table id="queue-table">
@@ -204,6 +204,13 @@
             <span class="tooltip-text">Displays an OS-level notification when the batch finishes so you know it's done even if the app is in the background.</span>
           </div>
 
+          <div class="checkbox-row has-tooltip">
+            <input type="checkbox" id="chk-auto-clear" />
+            <label for="chk-auto-clear">Auto-clear completed items after batch</label>
+            <span class="tooltip-icon">?</span>
+            <span class="tooltip-text">Automatically removes successfully completed items from the queue when the batch finishes. Failed, skipped, and cancelled items are kept.</span>
+          </div>
+
           <div class="section-header">Post-Batch Action</div>
 
           <div class="form-row">
@@ -245,7 +252,10 @@
         <div id="progress-bar"></div>
       </div>
       <div id="bottom-buttons">
-        <button class="btn btn-primary" id="btn-start" disabled>Start</button>
+        <span id="btn-start-wrapper">
+          <button class="btn btn-primary" id="btn-start" disabled>Start</button>
+          <span class="start-tooltip" id="start-tooltip"></span>
+        </span>
         <button class="btn" id="btn-cancel-current" disabled>Cancel Current</button>
         <button class="btn" id="btn-cancel-all" disabled>Cancel All</button>
         <button class="btn" id="btn-dry-run" disabled>Dry Run</button>
@@ -263,9 +273,16 @@
 
     <!-- ═══ Context menu (§5.5) ═══ -->
     <div id="context-menu">
+      <div class="ctx-item" id="ctx-requeue-selected">Re-queue selected</div>
+      <div class="ctx-item" id="ctx-requeue-all">Re-queue all</div>
+      <div class="ctx-separator"></div>
       <div class="ctx-item" id="ctx-remove-selected">Remove selected</div>
       <div class="ctx-item" id="ctx-clear-completed">Clear completed</div>
+      <div class="ctx-item" id="ctx-clear-non-pending">Clear non-pending</div>
       <div class="ctx-item" id="ctx-clear-all">Clear all</div>
+      <div class="ctx-separator"></div>
+      <div class="ctx-item" id="ctx-open-source">Open source file</div>
+      <div class="ctx-item" id="ctx-reveal-source">Reveal in file manager</div>
     </div>
 
     <!-- ═══ Modal: Overwrite prompt (§7.3) ═══ -->
@@ -393,6 +410,7 @@
     const chkDeleteSource = $('#chk-delete-source');
     const chkSaveLog      = $('#chk-save-log');
     const chkToast        = $('#chk-toast');
+    const chkAutoClear    = $('#chk-auto-clear');
     const selPostAction   = $('#sel-post-action');
     const txtCustomCmd    = $('#txt-custom-command');
     const numCountdown    = $('#num-countdown');
@@ -401,6 +419,8 @@
     const statusCmd       = $('#status-cmd');
     const progressBar     = $('#progress-bar');
     const btnStart        = $('#btn-start');
+    const startTooltip    = $('#start-tooltip');
+    const queueSummary    = $('#queue-summary');
     const btnCancelCur    = $('#btn-cancel-current');
     const btnCancelAll    = $('#btn-cancel-all');
     const btnDryRun       = $('#btn-dry-run');
@@ -436,6 +456,8 @@
       setupContextMenu();
       setupDragAndDrop();
       setupClipboardPaste();
+      setupKeyboardShortcuts();
+      setupDragReorder();
       setupModalButtons();
       setupBottomButtons();
       listenTauriEvents();
@@ -505,6 +527,7 @@
         chkDeleteSource.checked = cfg.deleteSource || false;
         chkSaveLog.checked = cfg.saveLog || false;
         chkToast.checked = cfg.showToast || false;
+        chkAutoClear.checked = cfg.autoClearCompleted || false;
         selPostAction.value = cfg.postAction || 'None';
         toggleCustomCommand();
         txtCustomCmd.value = cfg.customCommand || '';
@@ -538,6 +561,7 @@
               deleteSource: chkDeleteSource.checked,
               saveLog: chkSaveLog.checked,
               showToast: chkToast.checked,
+              autoClearCompleted: chkAutoClear.checked,
               postAction: selPostAction.value,
               postCountdown: parseInt(numCountdown.value, 10) || 0,
               customCommand: txtCustomCmd.value,
@@ -730,6 +754,7 @@
         if (selectedRows.has(i)) tr.classList.add('selected');
         tr.dataset.index = i;
         tr.dataset.status = statusLower;
+        tr.draggable = true;
 
         // Filename
         const tdName = document.createElement('td');
@@ -777,6 +802,18 @@
       // Attach a single delegated click handler on the tbody
       // (re-attached on full rebuild since innerHTML clears it)
       queueBody.onclick = handleQueueRowClick;
+
+      // Double-click to open source file in default player
+      queueBody.ondblclick = (e) => {
+        const tr = e.target.closest('tr');
+        if (!tr) return;
+        const i = parseInt(tr.dataset.index, 10);
+        if (!isNaN(i) && i < queueData.length) {
+          invoke('open_file', { path: queueData[i].fullPath }).catch(err => {
+            console.error('Double-click open error:', err);
+          });
+        }
+      };
 
 	  updateBatchButtons();
     }
@@ -1022,6 +1059,137 @@
       });
     }
 
+    // ── Keyboard shortcuts (§5.8) ──
+    function setupKeyboardShortcuts() {
+      document.addEventListener('keydown', async (e) => {
+        // Ignore if focused on an input
+        const active = document.activeElement;
+        if (active && (active.tagName === 'INPUT' || active.tagName === 'TEXTAREA' || active.tagName === 'SELECT')) return;
+
+        // Delete / Backspace — remove selected
+        if ((e.key === 'Delete' || e.key === 'Backspace') && !batchRunning && selectedRows.size > 0) {
+          e.preventDefault();
+          try {
+            await invoke('remove_queue_items', { indices: Array.from(selectedRows) });
+            selectedRows.clear();
+            queueData = await invoke('get_queue');
+            renderQueue();
+          } catch (err) {
+            console.error('Delete key remove error:', err);
+          }
+          return;
+        }
+
+        // Ctrl+A — select all
+        if ((e.ctrlKey || e.metaKey) && e.key === 'a') {
+          e.preventDefault();
+          selectedRows.clear();
+          for (let i = 0; i < queueData.length; i++) selectedRows.add(i);
+          // Update selection classes directly
+          const rows = queueBody.children;
+          for (let r = 0; r < rows.length; r++) {
+            rows[r].classList.toggle('selected', selectedRows.has(r));
+          }
+          return;
+        }
+
+        // Ctrl+R — re-queue selected
+        if ((e.ctrlKey || e.metaKey) && e.key === 'r' && !batchRunning && selectedRows.size > 0) {
+          e.preventDefault();
+          try {
+            await invoke('requeue_items', { indices: Array.from(selectedRows) });
+            queueData = await invoke('get_queue');
+            renderQueue();
+          } catch (err) {
+            console.error('Requeue shortcut error:', err);
+          }
+          return;
+        }
+      });
+    }
+
+    // ── Drag reorder (§5.9) ──
+    let dragSourceIndex = null;
+
+    function setupDragReorder() {
+      queueBody.addEventListener('dragstart', (e) => {
+        const tr = e.target.closest('tr');
+        if (!tr || batchRunning) { e.preventDefault(); return; }
+        dragSourceIndex = parseInt(tr.dataset.index, 10);
+        e.dataTransfer.effectAllowed = 'move';
+        e.dataTransfer.setData('text/plain', dragSourceIndex);
+        tr.style.opacity = '0.5';
+      });
+
+      queueBody.addEventListener('dragover', (e) => {
+        e.preventDefault();
+        e.dataTransfer.dropEffect = 'move';
+        const tr = e.target.closest('tr');
+        if (!tr) return;
+        // Clear previous indicators
+        $$('#queue-body tr').forEach(r => {
+          r.classList.remove('drag-over-above', 'drag-over-below');
+        });
+        const rect = tr.getBoundingClientRect();
+        const midY = rect.top + rect.height / 2;
+        if (e.clientY < midY) {
+          tr.classList.add('drag-over-above');
+        } else {
+          tr.classList.add('drag-over-below');
+        }
+      });
+
+      queueBody.addEventListener('dragleave', (e) => {
+        const tr = e.target.closest('tr');
+        if (tr) {
+          tr.classList.remove('drag-over-above', 'drag-over-below');
+        }
+      });
+
+      queueBody.addEventListener('drop', async (e) => {
+        e.preventDefault();
+        $$('#queue-body tr').forEach(r => {
+          r.classList.remove('drag-over-above', 'drag-over-below');
+          r.style.opacity = '';
+        });
+        const tr = e.target.closest('tr');
+        if (!tr || dragSourceIndex === null) return;
+        let targetIndex = parseInt(tr.dataset.index, 10);
+        if (isNaN(targetIndex)) return;
+
+        // Determine if above or below the midpoint
+        const rect = tr.getBoundingClientRect();
+        const midY = rect.top + rect.height / 2;
+        if (e.clientY >= midY && targetIndex < queueData.length - 1) {
+          targetIndex++;
+        }
+        // Adjust target if dragging downwards (removal shifts indices)
+        if (dragSourceIndex < targetIndex) {
+          targetIndex--;
+        }
+
+        if (dragSourceIndex !== targetIndex) {
+          try {
+            await invoke('move_queue_item', { from: dragSourceIndex, to: targetIndex });
+            selectedRows.clear();
+            queueData = await invoke('get_queue');
+            renderQueue();
+          } catch (err) {
+            console.error('Move item error:', err);
+          }
+        }
+        dragSourceIndex = null;
+      });
+
+      queueBody.addEventListener('dragend', () => {
+        $$('#queue-body tr').forEach(r => {
+          r.classList.remove('drag-over-above', 'drag-over-below');
+          r.style.opacity = '';
+        });
+        dragSourceIndex = null;
+      });
+    }
+
     // ═══════════════════════════════════════════════════════════════
     //  SETTINGS LISTENERS
     // ═══════════════════════════════════════════════════════════════
@@ -1083,7 +1251,7 @@
       // Simple save-on-change for remaining controls
       const simpleSaveControls = [
         selAudioCodec, numAudioCap, txtOutputFolder, selContainer,
-        chkOverwrite, chkDeleteSource, chkSaveLog, chkToast,
+        chkOverwrite, chkDeleteSource, chkSaveLog, chkToast, chkAutoClear,
         selPostAction, txtCustomCmd, numCountdown
       ];
       for (const el of simpleSaveControls) {
@@ -1187,10 +1355,28 @@
 
       container.addEventListener('contextmenu', (e) => {
         e.preventDefault();
-        // Disable all items during batch
-        $$('.ctx-item').forEach(el => {
-          el.classList.toggle('disabled', batchRunning);
+
+        const hasSelection = selectedRows.size > 0;
+        const hasTerminal = queueData.some(i => {
+          const s = (i.status || '').toLowerCase();
+          return s === 'done' || s === 'failed' || s === 'skipped' || s === 'cancelled';
         });
+        const selectedHasTerminal = hasSelection && Array.from(selectedRows).some(idx => {
+          if (idx >= queueData.length) return false;
+          const s = (queueData[idx].status || '').toLowerCase();
+          return s === 'done' || s === 'failed' || s === 'skipped' || s === 'cancelled';
+        });
+
+        // Enable/disable based on context
+        $('#ctx-requeue-selected').classList.toggle('disabled', batchRunning || !selectedHasTerminal);
+        $('#ctx-requeue-all').classList.toggle('disabled', batchRunning || !hasTerminal);
+        $('#ctx-remove-selected').classList.toggle('disabled', batchRunning || !hasSelection);
+        $('#ctx-clear-completed').classList.toggle('disabled', batchRunning);
+        $('#ctx-clear-non-pending').classList.toggle('disabled', batchRunning);
+        $('#ctx-clear-all').classList.toggle('disabled', batchRunning);
+        $('#ctx-open-source').classList.toggle('disabled', !hasSelection);
+        $('#ctx-reveal-source').classList.toggle('disabled', !hasSelection);
+
         contextMenu.style.left = e.clientX + 'px';
         contextMenu.style.top = e.clientY + 'px';
         contextMenu.classList.add('visible');
@@ -1200,6 +1386,31 @@
         contextMenu.classList.remove('visible');
       });
 
+      // Re-queue selected
+      $('#ctx-requeue-selected').addEventListener('click', async () => {
+        if (batchRunning || selectedRows.size === 0) return;
+        try {
+          await invoke('requeue_items', { indices: Array.from(selectedRows) });
+          queueData = await invoke('get_queue');
+          renderQueue();
+        } catch (e) {
+          console.error('Requeue selected error:', e);
+        }
+      });
+
+      // Re-queue all
+      $('#ctx-requeue-all').addEventListener('click', async () => {
+        if (batchRunning) return;
+        try {
+          await invoke('requeue_all');
+          queueData = await invoke('get_queue');
+          renderQueue();
+        } catch (e) {
+          console.error('Requeue all error:', e);
+        }
+      });
+
+      // Remove selected
       $('#ctx-remove-selected').addEventListener('click', async () => {
         if (batchRunning || selectedRows.size === 0) return;
         try {
@@ -1212,6 +1423,7 @@
         }
       });
 
+      // Clear completed (Done only)
       $('#ctx-clear-completed').addEventListener('click', async () => {
         if (batchRunning) return;
         try {
@@ -1224,6 +1436,20 @@
         }
       });
 
+      // Clear non-pending (Done + Failed + Skipped + Cancelled)
+      $('#ctx-clear-non-pending').addEventListener('click', async () => {
+        if (batchRunning) return;
+        try {
+          await invoke('clear_non_pending');
+          selectedRows.clear();
+          queueData = await invoke('get_queue');
+          renderQueue();
+        } catch (e) {
+          console.error('Clear non-pending error:', e);
+        }
+      });
+
+      // Clear all
       $('#ctx-clear-all').addEventListener('click', async () => {
         if (batchRunning) return;
         try {
@@ -1233,6 +1459,32 @@
           renderQueue();
         } catch (e) {
           console.error('Clear all error:', e);
+        }
+      });
+
+      // Open source file (first selected)
+      $('#ctx-open-source').addEventListener('click', async () => {
+        if (selectedRows.size === 0) return;
+        const idx = Math.min(...selectedRows);
+        if (idx < queueData.length) {
+          try {
+            await invoke('open_file', { path: queueData[idx].fullPath });
+          } catch (e) {
+            console.error('Open file error:', e);
+          }
+        }
+      });
+
+      // Reveal source in file manager (first selected)
+      $('#ctx-reveal-source').addEventListener('click', async () => {
+        if (selectedRows.size === 0) return;
+        const idx = Math.min(...selectedRows);
+        if (idx < queueData.length) {
+          try {
+            await invoke('reveal_file', { path: queueData[idx].fullPath });
+          } catch (e) {
+            console.error('Reveal file error:', e);
+          }
         }
       });
     }
@@ -1268,6 +1520,46 @@
       btnCancelCur.disabled = !batchRunning;
       btnCancelAll.disabled = !batchRunning;
       btnPause.disabled = !batchRunning;
+
+      // Start button tooltip — explain why it's disabled
+      if (btnStart.disabled) {
+        if (!encoderDetectionDone) {
+          startTooltip.textContent = 'Waiting for encoder detection…';
+        } else if (batchRunning) {
+          startTooltip.textContent = 'Batch already running';
+        } else if (!hasPending) {
+          startTooltip.textContent = 'No pending items in the queue';
+        } else {
+          startTooltip.textContent = '';
+        }
+      } else {
+        startTooltip.textContent = '';
+      }
+
+      // Queue summary
+      updateQueueSummary();
+    }
+
+    function updateQueueSummary() {
+      const total = queueData.length;
+      if (total === 0) {
+        queueSummary.textContent = '';
+        return;
+      }
+      const counts = { pending: 0, done: 0, failed: 0, skipped: 0, cancelled: 0, encoding: 0, probing: 0 };
+      for (const item of queueData) {
+        const s = (item.status || 'pending').toLowerCase();
+        if (counts.hasOwnProperty(s)) counts[s]++;
+      }
+      const parts = [];
+      if (counts.pending > 0)   parts.push(`${counts.pending} pending`);
+      if (counts.encoding > 0)  parts.push(`${counts.encoding} encoding`);
+      if (counts.probing > 0)   parts.push(`${counts.probing} probing`);
+      if (counts.done > 0)      parts.push(`${counts.done} done`);
+      if (counts.failed > 0)    parts.push(`${counts.failed} failed`);
+      if (counts.skipped > 0)   parts.push(`${counts.skipped} skipped`);
+      if (counts.cancelled > 0) parts.push(`${counts.cancelled} cancelled`);
+      queueSummary.textContent = `(${total} — ${parts.join(', ')})`;
     }
 
     // ── Start batch (§10.1) ──
@@ -1542,15 +1834,26 @@
       });
 
       // Batch finished
-      listen('batch-finished', (event) => {
+      listen('batch-finished', async (event) => {
         batchRunning = false;
         btnPause.textContent = 'Pause';
         statusFile.textContent = 'No job running';
         statusCmd.textContent = '';
         progressBar.style.width = '0%';
         updateBatchButtons();
+
+        // Auto-clear completed items if enabled
+        if (chkAutoClear.checked) {
+          try {
+            await invoke('clear_completed');
+          } catch (e) {
+            console.warn('Auto-clear failed:', e);
+          }
+        }
+
         // Re-fetch queue to get final statuses
-        invoke('get_queue').then(q => { queueData = q; renderQueue(); });
+        queueData = await invoke('get_queue');
+        renderQueue();
       });
 
       // Overwrite prompt from backend

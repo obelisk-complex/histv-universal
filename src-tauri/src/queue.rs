@@ -156,3 +156,52 @@ pub fn remove_items(queue: &mut Vec<QueueItem>, indices: &[usize]) {
         }
     }
 }
+
+/// Reset selected items back to Pending (re-queue).
+/// Only resets items in a terminal state (Done, Failed, Skipped, Cancelled).
+pub fn requeue_items(queue: &mut Vec<QueueItem>, indices: &[usize]) {
+    for &idx in indices {
+        if idx < queue.len() {
+            match queue[idx].status {
+                QueueItemStatus::Done
+                | QueueItemStatus::Failed
+                | QueueItemStatus::Skipped
+                | QueueItemStatus::Cancelled => {
+                    queue[idx].status = QueueItemStatus::Pending;
+                }
+                _ => {}
+            }
+        }
+    }
+}
+
+/// Reset all items in a terminal state back to Pending.
+pub fn requeue_all(queue: &mut Vec<QueueItem>) {
+    for item in queue.iter_mut() {
+        match item.status {
+            QueueItemStatus::Done
+            | QueueItemStatus::Failed
+            | QueueItemStatus::Skipped
+            | QueueItemStatus::Cancelled => {
+                item.status = QueueItemStatus::Pending;
+            }
+            _ => {}
+        }
+    }
+}
+
+/// Clear all non-pending items (Done, Failed, Skipped, Cancelled).
+pub fn clear_non_pending(queue: &mut Vec<QueueItem>) {
+    queue.retain(|item| item.status == QueueItemStatus::Pending
+        || item.status == QueueItemStatus::Probing
+        || item.status == QueueItemStatus::Encoding);
+}
+
+/// Move a queue item from one index to another.
+pub fn move_item(queue: &mut Vec<QueueItem>, from: usize, to: usize) {
+    if from >= queue.len() || to >= queue.len() || from == to {
+        return;
+    }
+    let item = queue.remove(from);
+    queue.insert(to, item);
+}

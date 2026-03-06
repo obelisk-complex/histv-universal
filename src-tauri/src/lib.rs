@@ -116,9 +116,99 @@ async fn clear_completed(state: tauri::State<'_, Arc<AppState>>) -> Result<(), S
 }
 
 #[tauri::command]
+async fn clear_non_pending(state: tauri::State<'_, Arc<AppState>>) -> Result<(), String> {
+    let mut q = state.queue.lock().await;
+    queue::clear_non_pending(&mut q);
+    Ok(())
+}
+
+#[tauri::command]
 async fn clear_all_queue(state: tauri::State<'_, Arc<AppState>>) -> Result<(), String> {
     let mut q = state.queue.lock().await;
     q.clear();
+    Ok(())
+}
+
+#[tauri::command]
+async fn requeue_items(
+    state: tauri::State<'_, Arc<AppState>>,
+    indices: Vec<usize>,
+) -> Result<(), String> {
+    let mut q = state.queue.lock().await;
+    queue::requeue_items(&mut q, &indices);
+    Ok(())
+}
+
+#[tauri::command]
+async fn requeue_all(state: tauri::State<'_, Arc<AppState>>) -> Result<(), String> {
+    let mut q = state.queue.lock().await;
+    queue::requeue_all(&mut q);
+    Ok(())
+}
+
+#[tauri::command]
+async fn move_queue_item(
+    state: tauri::State<'_, Arc<AppState>>,
+    from: usize,
+    to: usize,
+) -> Result<(), String> {
+    let mut q = state.queue.lock().await;
+    queue::move_item(&mut q, from, to);
+    Ok(())
+}
+
+#[tauri::command]
+async fn reveal_file(path: String) -> Result<(), String> {
+    #[cfg(target_os = "windows")]
+    {
+        tokio::process::Command::new("explorer")
+            .args(["/select,", &path])
+            .spawn()
+            .map_err(|e| format!("Could not reveal file: {e}"))?;
+    }
+    #[cfg(target_os = "macos")]
+    {
+        tokio::process::Command::new("open")
+            .args(["-R", &path])
+            .spawn()
+            .map_err(|e| format!("Could not reveal file: {e}"))?;
+    }
+    #[cfg(target_os = "linux")]
+    {
+        // Try xdg-open on the parent directory
+        if let Some(parent) = std::path::Path::new(&path).parent() {
+            tokio::process::Command::new("xdg-open")
+                .arg(parent.to_string_lossy().as_ref())
+                .spawn()
+                .map_err(|e| format!("Could not reveal file: {e}"))?;
+        }
+    }
+    Ok(())
+}
+
+#[tauri::command]
+async fn open_file(path: String) -> Result<(), String> {
+    #[cfg(target_os = "windows")]
+    {
+        tokio::process::Command::new("cmd")
+            .args(["/C", "start", "", &path])
+            .spawn()
+            .map_err(|e| format!("Could not open file: {e}"))?;
+    }
+    #[cfg(target_os = "macos")]
+    {
+        tokio::process::Command::new("open")
+            .arg(&path)
+            .spawn()
+            .map_err(|e| format!("Could not open file: {e}"))?;
+    }
+    #[cfg(target_os = "linux")]
+    {
+        tokio::process::Command::new("xdg-open")
+            .arg(&path)
+            .spawn()
+            .map_err(|e| format!("Could not open file: {e}"))?;
+    }
     Ok(())
 }
 
@@ -327,7 +417,11 @@ pub fn run() {
             add_files_to_queue,
             remove_queue_items,
             clear_completed,
+            clear_non_pending,
             clear_all_queue,
+            requeue_items,
+            requeue_all,
+            move_queue_item,
             get_queue,
             probe_file,
             start_batch,
@@ -341,6 +435,8 @@ pub fn run() {
             check_ffmpeg_available,
             get_ffmpeg_dir,
             download_ffmpeg,
+            reveal_file,
+            open_file,
         ])
         .setup(move |app| {
 			// Resolve ffmpeg/ffprobe binary paths (sidecar or PATH)

@@ -28,6 +28,7 @@ pub struct AppConfig {
     pub hdr: bool,
     pub audio_codec: String, // "AC3" | "EAC3" | "AAC" | "Copy"
     pub audio_bitrate_cap: u32,
+    pub auto_clear_completed: bool,
     pub log_drawer_open: bool,
 }
 
@@ -54,6 +55,7 @@ impl Default for AppConfig {
             hdr: false,
             audio_codec: "AC3".to_string(),
             audio_bitrate_cap: 640,
+            auto_clear_completed: false,
             log_drawer_open: false,
         }
     }

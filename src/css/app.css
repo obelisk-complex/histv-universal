@@ -78,6 +78,13 @@ html, body {
   color: var(--base-content);
 }
 
+.queue-summary {
+  font-weight: 400;
+  font-size: 11px;
+  color: var(--secondary);
+  margin-left: 6px;
+}
+
 /* ── File queue table (§5) ── */
 #queue-container {
   flex: 1;
@@ -508,6 +515,48 @@ input[readonly] {
 }
 .ctx-item:hover { background: var(--primary); color: #fff; }
 .ctx-item.disabled { opacity: 0.4; pointer-events: none; }
+
+.ctx-separator {
+  height: 1px;
+  background: var(--base-300);
+  margin: 4px 0;
+}
+
+/* ── Drag reorder ── */
+#queue-table tr.drag-over-above { box-shadow: 0 -2px 0 0 var(--primary) inset; }
+#queue-table tr.drag-over-below { box-shadow: 0 2px 0 0 var(--primary) inset; }
+#queue-table tr[draggable="true"] { cursor: grab; }
+#queue-table tr[draggable="true"]:active { cursor: grabbing; }
+
+/* ── Start button disabled tooltip ── */
+#btn-start-wrapper {
+  position: relative;
+  display: inline-block;
+}
+#btn-start-wrapper .start-tooltip {
+  visibility: hidden;
+  opacity: 0;
+  position: absolute;
+  z-index: 80;
+  bottom: calc(100% + 6px);
+  left: 50%;
+  transform: translateX(-50%);
+  padding: 5px 10px;
+  background: var(--base-100);
+  border: 1px solid var(--base-300);
+  border-radius: 4px;
+  box-shadow: 0 4px 12px rgba(0,0,0,0.4);
+  color: var(--base-content);
+  font-size: 11px;
+  font-weight: 400;
+  white-space: nowrap;
+  transition: opacity 0.15s, visibility 0.15s;
+  pointer-events: none;
+}
+#btn-start-wrapper:hover .start-tooltip {
+  visibility: visible;
+  opacity: 1;
+}
 
 /* ── Modal dialogs ── */
 .modal-overlay {
