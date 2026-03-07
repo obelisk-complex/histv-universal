@@ -10,7 +10,8 @@ My hardware for testing is limited, and while this is a learning project for me,
 If you find an issue and you'd like me to fix it, or if you find an inefficiency that I've missed cleaning up, please by all means open an issue or leave a comment.
 
 Thanks for reading, I hope you find HISTV useful! 
------
+
+---
 
 <details>
    <summary>Screenshots</summary>
