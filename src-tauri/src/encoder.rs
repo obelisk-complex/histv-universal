@@ -366,10 +366,26 @@ pub async fn start_batch_encode(
     settings: serde_json::Value,
 ) -> Result<(), String> {
     // Parse settings from the frontend
-    let output_folder = settings["outputFolder"]
+    let raw_output_folder = settings["outputFolder"]
         .as_str()
         .unwrap_or("output")
         .to_string();
+
+    // Resolve relative output paths to an absolute location.
+    // AppImage (Linux) mounts a read-only squashfs as CWD, so relative paths
+    // like "output" would resolve inside the read-only mount and fail.
+    // Use $OWD (AppImage's original working directory) or $HOME as the base.
+    let output_folder = if Path::new(&raw_output_folder).is_relative() {
+        let base = resolve_base_dir();
+        let resolved = base.join(&raw_output_folder);
+        let _ = app.emit("log", format!(
+            "[batch] Resolved relative output '{}' to '{}'",
+            raw_output_folder, resolved.display()
+        ));
+        resolved.to_string_lossy().to_string()
+    } else {
+        raw_output_folder
+    };
     let output_container = settings["outputContainer"]
         .as_str()
         .unwrap_or("mkv")
@@ -1406,4 +1422,40 @@ fn parse_ffmpeg_time(s: &str) -> Option<f64> {
     let m: f64 = parts[1].parse().ok()?;
     let sec: f64 = parts[2].parse().ok()?;
     Some(h * 3600.0 + m * 60.0 + sec)
+}
+
+/// Resolve the base directory for relative output paths.
+/// On Linux/macOS: uses $OWD (set by AppImage to the launch directory),
+/// then falls back to $HOME, then to the current directory.
+/// On Windows: uses the executable's parent directory.
+fn resolve_base_dir() -> std::path::PathBuf {
+    #[cfg(target_os = "windows")]
+    {
+        // On Windows, CWD is typically the app's folder - but use exe dir to be safe
+        if let Ok(exe) = std::env::current_exe() {
+            if let Some(parent) = exe.parent() {
+                return parent.to_path_buf();
+            }
+        }
+        std::env::current_dir().unwrap_or_else(|_| std::path::PathBuf::from("."))
+    }
+
+    #[cfg(not(target_os = "windows"))]
+    {
+        // $OWD is set by AppImage to the directory the user launched from
+        if let Ok(owd) = std::env::var("OWD") {
+            let p = std::path::PathBuf::from(&owd);
+            if p.exists() {
+                return p;
+            }
+        }
+        // Fall back to $HOME
+        if let Ok(home) = std::env::var("HOME") {
+            let p = std::path::PathBuf::from(&home);
+            if p.exists() {
+                return p;
+            }
+        }
+        std::env::current_dir().unwrap_or_else(|_| std::path::PathBuf::from("."))
+    }
 }
