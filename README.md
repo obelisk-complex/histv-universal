@@ -13,8 +13,8 @@ Thanks for reading, I hope you find HISTV useful!
 
 ---
 
+### Screenshots
 <details>
-   <summary>Screenshots</summary>
   
 ![](https://media.piefed.ca/posts/Fk/Ba/FkBaiUnsD0GmZmY.png)  
 
@@ -27,15 +27,22 @@ Thanks for reading, I hope you find HISTV useful!
 </details>
 
 ### Why this exists
+<details>
 
 I was doing a lot of manual re-encoding down from insane source bitrates with ffmpeg, and I started wondering if I could put my PowerShell script into a nice GUI. Then I wondered if I could give it a dark theme... and a file queue... and on and on and on... until finally I had it working how I wanted. Then I wondered, because Windows is awful, if I could make it platform-agnostic. And here we are. It's got a dark theme because of course and a light theme because I guess, also it's themeable because why the hell not (see [THEMES.md](THEMES.md)).
 
 The core idea hasn't changed: point it at a file or folder, let it enumerate the multimedia files, pick a target bitrate, hit Start. You don't even have to pick an output folder; by default outputs go into /output in the same folder as the application is running from.
+</details>
+
+### Who HISTV is for
+
+HISTV is for people who have a collection of video files at various bitrates and codecs and want to compress the ones that need compressing - without babysitting each file, without setting up a server, and without writing scripts. It is a "set the target, add the files, walk away" tool.
 
 
-## How HISTV compares to other tools
+### How HISTV compares to other tools
+<details>
 
-There are already several ways to batch-encode video. Here is why HISTV exists alongside them and who it is for.
+There are already several ways to batch-encode video. Here is why I built HISTV to exist alongside them, and who it is for.
 
 ### vs. HandBrake
 
@@ -59,55 +66,54 @@ You can absolutely do everything HISTV does with raw ffmpeg commands. HISTV does
 
 If you are comfortable writing shell scripts and already have your own ffmpeg wrapper, HISTV probably does not offer much. If you find yourself repeatedly writing the same ffmpeg one-liners and wishing you had a queue with pause/resume and a progress bar, HISTV saves that effort.
 
-### Who HISTV is for
+</details>
 
-HISTV is for people who have a collection of video files at various bitrates and codecs and want to compress the ones that need compressing - without babysitting each file, without setting up a server, and without writing scripts. It is a "set the target, add the files, walk away" tool.
+### What It Does
+<details>
 
+- **Queue management** - drag-and-drop files or folders onto the queue, paste paths from the clipboard with Ctrl+V, or use the file/folder picker buttons. Select rows with click, Shift+click for range selection, Ctrl+click for multi-selection, Ctrl+A to select all, and Delete to remove selected items. Right-click for a context menu with options to re-queue, remove, clear completed/non-pending items, open the source file, or reveal it in your file manager.
 
-## What it does
+- **Smart bitrate decisions** - a single target bitrate drives the entire encoding strategy. Files above the target are VBR-encoded down to that bitrate (with a 1.5x peak cap). Files already at or below the target in the same codec are stream-copied untouched - no re-encoding, no generation loss. Files at or below the target but in a different codec are quality-transcoded using QP or CRF mode. The Target Bitrate column in the queue updates live as you change settings, so you can see exactly what the app plans to do before you start.
 
-**Queue management** - drag-and-drop files or folders onto the queue, paste paths from the clipboard with Ctrl+V, or use the file/folder picker buttons. Select rows with click, Shift+click for range selection, Ctrl+click for multi-selection, Ctrl+A to select all, and Delete to remove selected items. Right-click for a context menu with options to re-queue, remove, clear completed/non-pending items, open the source file, or reveal it in your file manager.
+- **Four-tier bitrate probing** - reads stream-level bitrate headers first, then MKV container tags, then format-level metadata, and falls back to full packet counting for files that have no bitrate metadata at all. All of this happens in a single ffprobe call per file (only the rare packet-counting fallback needs a second call), with audio stream data cached at probe time so no additional probing is needed during encoding.
 
-**Smart bitrate decisions** - a single target bitrate drives the entire encoding strategy. Files above the target are VBR-encoded down to that bitrate (with a 1.5x peak cap). Files already at or below the target in the same codec are stream-copied untouched - no re-encoding, no generation loss. Files at or below the target but in a different codec are quality-transcoded using QP or CRF mode. The Target Bitrate column in the queue updates live as you change settings, so you can see exactly what the app plans to do before you start.
+- **Hardware encoder detection** - on startup, the app test-encodes a short clip with each GPU encoder available on your platform (AMF, NVENC, QSV, VideoToolbox, VAAPI). The encoder dropdown only shows the ones that actually succeeded, so you never pick an encoder your hardware cannot run. Software encoders (libx265, libx264) are always available as a fallback.
 
-**Four-tier bitrate probing** - reads stream-level bitrate headers first, then MKV container tags, then format-level metadata, and falls back to full packet counting for files that have no bitrate metadata at all. All of this happens in a single ffprobe call per file (only the rare packet-counting fallback needs a second call), with audio stream data cached at probe time so no additional probing is needed during encoding.
+- **Hardware fallback** - if a GPU encode fails mid-file, a prompt offers to retry that file with the software encoder and continue the batch. You do not lose progress on the rest of the queue.
 
-**Hardware encoder detection** - on startup, the app test-encodes a short clip with each GPU encoder available on your platform (AMF, NVENC, QSV, VideoToolbox, VAAPI). The encoder dropdown only shows the ones that actually succeeded, so you never pick an encoder your hardware cannot run. Software encoders (libx265, libx264) are always available as a fallback.
+- **QP / CRF rate control** - software encoders (libx265, libx264) offer a choice between QP (fixed quantiser per frame) and CRF (perceptual quality target). A segmented toggle appears when a software encoder is selected. Hardware encoders use QP only, since CRF is not supported by their APIs.
 
-**Hardware fallback** - if a GPU encode fails mid-file, a prompt offers to retry that file with the software encoder and continue the batch. You do not lose progress on the rest of the queue.
+- **Per-stream audio handling** - each audio stream is evaluated individually. Streams already below the audio cap in the target codec are copied untouched. Everything else is re-encoded to your chosen codec (AC3, EAC3, or AAC) at the specified bitrate cap.
 
-**QP / CRF rate control** - software encoders (libx265, libx264) offer a choice between QP (fixed quantiser per frame) and CRF (perceptual quality target). A segmented toggle appears when a software encoder is selected. Hardware encoders use QP only, since CRF is not supported by their APIs.
+- **HDR awareness** - automatically detects HDR sources via colour metadata (transfer characteristics, colour primaries, matrix coefficients) and switches to 10-bit pixel format to preserve HDR. Untick the HDR checkbox to tonemap HDR sources down to SDR instead.
 
-**Per-stream audio handling** - each audio stream is evaluated individually. Streams already below the audio cap in the target codec are copied untouched. Everything else is re-encoded to your chosen codec (AC3, EAC3, or AAC) at the specified bitrate cap.
+- **Subtitle passthrough** - all subtitle streams are mapped and copied through to the output file without re-encoding.
 
-**HDR awareness** - automatically detects HDR sources via colour metadata (transfer characteristics, colour primaries, matrix coefficients) and switches to 10-bit pixel format to preserve HDR. Untick the HDR checkbox to tonemap HDR sources down to SDR instead.
+- **Output options** - choose MKV or MP4 container format, set a custom output folder, or tick "Put output next to input file" to create an output subfolder alongside each source file. Overwrite and delete-source behaviours can be set to always-on or prompted per file.
 
-**Subtitle passthrough** - all subtitle streams are mapped and copied through to the output file without re-encoding.
+- **Batch controls** - start, pause/resume, cancel current file, or cancel the entire batch. A progress bar and status line show the current file and encoding command in real time.
 
-**Output options** - choose MKV or MP4 container format, set a custom output folder, or tick "Put output next to input file" to create an output subfolder alongside each source file. Overwrite and delete-source behaviours can be set to always-on or prompted per file.
+- **Dry run** - probes every file in the queue and populates the Target Bitrate column without encoding anything, so you can preview the plan.
 
-**Batch controls** - start, pause/resume, cancel current file, or cancel the entire batch. A progress bar and status line show the current file and encoding command in real time.
+- **Post-batch actions** - schedule a shutdown, sleep, log out, or custom command to run when the batch finishes, with a cancellable countdown timer.
 
-**Dry run** - probes every file in the queue and populates the Target Bitrate column without encoding anything, so you can preview the plan.
+- **Log console** - a collapsible drawer at the bottom of the window showing ffmpeg output and app events in real time. Optionally save the log to a timestamped text file in the output directory.
 
-**Post-batch actions** - schedule a shutdown, sleep, log out, or custom command to run when the batch finishes, with a cancellable countdown timer.
+- **System notifications** - an OS-level notification when the batch completes, so you know it is done even if the app is in the background.
 
-**Log console** - a collapsible drawer at the bottom of the window showing ffmpeg output and app events in real time. Optionally save the log to a timestamped text file in the output directory.
+- **Auto-clear** - optionally remove completed items from the queue when the batch finishes, keeping only failed, skipped, and cancelled items.
 
-**System notifications** - an OS-level notification when the batch completes, so you know it is done even if the app is in the background.
+- **Themeable** - ships with dark and light themes. Drop custom JSON theme files into the themes folder and they appear in the dropdown. See [THEMES.md](THEMES.md) for the format.
 
-**Auto-clear** - optionally remove completed items from the queue when the batch finishes, keeping only failed, skipped, and cancelled items.
+- **Built-in ffmpeg downloader** - if ffmpeg is not found on your system, the app offers to download it automatically with a real-time progress indicator. Downloaded binaries are stored in your platform's app-data directory, not cluttering up your working folders.
 
-**Themeable** - ships with dark and light themes. Drop custom JSON theme files into the themes folder and they appear in the dropdown. See [THEMES.md](THEMES.md) for the format.
+- **Keyboard shortcuts** - Ctrl+V to paste paths, Ctrl+A to select all, Ctrl+R to re-queue selected, Delete/Backspace to remove selected items.
 
-**Built-in ffmpeg downloader** - if ffmpeg is not found on your system, the app offers to download it automatically with a real-time progress indicator. Downloaded binaries are stored in your platform's app-data directory, not cluttering up your working folders.
+- **Persistent settings** - all settings are saved automatically to a JSON config file in your platform's app-data directory and restored on next launch.
 
-**Keyboard shortcuts** - Ctrl+V to paste paths, Ctrl+A to select all, Ctrl+R to re-queue selected, Delete/Backspace to remove selected items.
+- **Differential rendering** - the queue table uses differential DOM updates rather than full rebuilds, and debounced refresh scheduling to stay responsive even with large queues.
 
-**Persistent settings** - all settings are saved automatically to a JSON config file in your platform's app-data directory and restored on next launch.
-
-**Differential rendering** - the queue table uses differential DOM updates rather than full rebuilds, and debounced refresh scheduling to stay responsive even with large queues.
-
+</details>
 
 ## Download
 
@@ -131,6 +137,7 @@ Grab the latest build for your system from the **[Releases page](https://github.
 | macOS | x86_64 / ARM64 | VideoToolbox |
 
 ### Building from source
+<details>
 
 You'll need Rust (stable) and the Tauri v2 CLI. See the [Tauri prerequisites guide](https://v2.tauri.app/start/prerequisites/) for platform-specific dependencies.
 
@@ -173,6 +180,8 @@ cargo tauri build        # release build
 ### Configuration
 
 Settings are saved automatically to a JSON file in your platform's app-data directory. Everything is accessible from the Encoding Settings and Output Settings tabs in the UI.
+
+</details>
 
 ### Licence
 
