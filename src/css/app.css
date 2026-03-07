@@ -57,17 +57,56 @@ html, body {
   cursor: col-resize;
   flex-shrink: 0;
   transition: background 0.15s;
+  position: relative;
 }
 #splitter:hover, #splitter.dragging { background: var(--primary); }
+
+#splitter-toggle {
+  position: absolute;
+  top: 50%;
+  left: 50%;
+  transform: translate(-50%, -50%);
+  width: 18px;
+  height: 36px;
+  background: var(--base-300);
+  border: 1px solid var(--neutral);
+  border-radius: 3px;
+  cursor: pointer;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  z-index: 5;
+  transition: background 0.15s, border-color 0.15s;
+  color: var(--secondary);
+  font-size: 10px;
+  line-height: 1;
+  padding: 0;
+}
+#splitter-toggle:hover {
+  background: var(--neutral);
+  border-color: var(--primary);
+  color: var(--primary);
+}
 
 #right-panel {
   display: flex;
   flex-direction: column;
-  min-width: 320px;
-  width: 480px;
-  flex-shrink: 0;
+  flex: 1;
+  min-width: 280px;
+  max-width: 520px;
   overflow: hidden;
   padding: 8px;
+}
+#right-panel > * {
+  min-width: 0;
+}
+#right-panel.collapsed {
+  width: 0 !important;
+  min-width: 0 !important;
+  max-width: 0 !important;
+  padding: 0;
+  overflow: hidden;
+  flex: 0 0 0px !important;
 }
 
 /* ── Queue header ── */
@@ -194,7 +233,8 @@ html, body {
 }
 
 .tab-btn {
-  padding: 6px 16px;
+  flex: 1;
+  padding: 6px 8px;
   background: transparent;
   border: none;
   color: var(--secondary);
@@ -203,6 +243,10 @@ html, body {
   border-bottom: 2px solid transparent;
   margin-bottom: -2px;
   transition: color 0.15s, border-color 0.15s;
+  white-space: nowrap;
+  text-align: center;
+  overflow: hidden;
+  text-overflow: ellipsis;
 }
 .tab-btn:hover { color: var(--base-content); }
 .tab-btn.active {
@@ -211,7 +255,7 @@ html, body {
   font-weight: 600;
 }
 
-.tab-content { display: none; flex: 1; overflow-y: auto; padding: 2px; }
+.tab-content { display: none; flex: 1; overflow-y: auto; overflow-x: hidden; padding: 2px; }
 .tab-content.active { display: block; }
 
 /* ── Settings form elements ── */
@@ -224,6 +268,7 @@ html, body {
   letter-spacing: 0.8px;
   padding-bottom: 4px;
   border-bottom: 1px solid rgba(255,255,255,0.06);
+  white-space: nowrap;
 }
 .section-header:first-child { margin-top: 4px; }
 
@@ -233,13 +278,21 @@ html, body {
   gap: 10px;
   margin-bottom: 8px;
   min-height: 28px;
+  flex-wrap: nowrap;
+  overflow: hidden;
+}
+
+/* Rows with multiple controls that should wrap when narrow */
+.form-row-wrap {
+  flex-wrap: wrap;
 }
 
 .form-row label {
-  min-width: 150px;
+  min-width: 0;
   font-size: 12px;
   color: var(--base-content);
   flex-shrink: 0;
+  white-space: nowrap;
 }
 
 .form-row select,
@@ -254,13 +307,15 @@ html, body {
   font-family: inherit;
   outline: none;
   transition: border-color 0.15s;
+  min-width: 0;
+  box-sizing: border-box;
 }
 .form-row select:focus,
 .form-row input:focus { border-color: var(--primary); }
 
-.form-row input[type="number"] { width: 70px; }
-.form-row input[type="text"] { flex: 1; }
-.form-row select { min-width: 110px; }
+.form-row input[type="number"] { width: 70px; min-width: 45px; flex-shrink: 1; }
+.form-row input[type="text"] { flex: 1 1 0px; min-width: 20px; }
+.form-row select { flex: 1 1 0px; min-width: 20px; width: 0; }
 
 input[readonly] {
   opacity: 0.6;
@@ -269,17 +324,24 @@ input[readonly] {
 
 .checkbox-row {
   display: flex;
-  align-items: center;
+  align-items: flex-start;
   gap: 8px;
   margin-bottom: 8px;
   font-size: 12px;
   min-height: 26px;
+}
+.checkbox-row label {
+  white-space: normal;
+  flex-shrink: 1;
+  line-height: 1.4;
+  padding-top: 1px;
 }
 .checkbox-row input[type="checkbox"] {
   accent-color: var(--primary);
   width: 15px;
   height: 15px;
   flex-shrink: 0;
+  margin-top: 2px;
 }
 
 .status-text {
@@ -316,14 +378,12 @@ input[readonly] {
   color: var(--primary);
   border-color: var(--primary);
 }
-.has-tooltip .tooltip-text {
-  visibility: hidden;
-  opacity: 0;
-  position: absolute;
-  z-index: 80;
-  bottom: calc(100% + 6px);
-  left: 0;
-  min-width: 220px;
+
+/* Tooltip popup — positioned by JS as position:fixed to avoid
+   clipping by ancestor overflow:hidden/auto containers */
+#tooltip-popup {
+  position: fixed;
+  z-index: 200;
   max-width: 300px;
   padding: 8px 10px;
   background: var(--base-100);
@@ -336,17 +396,16 @@ input[readonly] {
   font-style: normal;
   line-height: 1.5;
   white-space: normal;
-  transition: opacity 0.15s, visibility 0.15s;
   pointer-events: none;
+  display: none;
 }
-.has-tooltip:hover .tooltip-text {
-  visibility: visible;
-  opacity: 1;
+#tooltip-popup.visible {
+  display: block;
 }
-/* Tooltips that would overflow right — anchor to right instead */
-.has-tooltip.tip-right .tooltip-text {
-  left: auto;
-  right: 0;
+
+/* Hidden source text for tooltips — read by JS, never rendered */
+.tooltip-text {
+  display: none;
 }
 
 /* ── Rate control toggle (QP / CRF) ── */

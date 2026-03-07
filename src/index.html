@@ -36,7 +36,9 @@
       </div>
 
       <!-- ─── Splitter ─── -->
-      <div id="splitter"></div>
+      <div id="splitter">
+        <button id="splitter-toggle" title="Toggle settings panel">&#x25B6;</button>
+      </div>
 
       <!-- ─── Right panel: settings tabs (§6, §7) ─── -->
       <div id="right-panel">
@@ -49,7 +51,7 @@
         <div class="tab-content active" id="tab-encoding">
           <div class="section-header">Video</div>
 
-          <div class="form-row">
+          <div class="form-row form-row-wrap">
             <label for="sel-codec" class="has-tooltip">Codec
               <span class="tooltip-icon">?</span>
               <span class="tooltip-text">HEVC (H.265) offers better compression than H.264 at the cost of slower encoding. H.264 has wider device compatibility.</span>
@@ -108,7 +110,7 @@
 
           <div class="checkbox-row has-tooltip">
             <input type="checkbox" id="chk-hdr" />
-            <label for="chk-hdr">10-bit HDR — uncheck to encode HDR source as SDR</label>
+            <label for="chk-hdr">10-bit HDR - uncheck to encode HDR source as SDR</label>
             <span class="tooltip-icon">?</span>
             <span class="tooltip-text">When ticked, HDR metadata and 10-bit colour are preserved. Untick to tone-map HDR sources down to SDR.</span>
           </div>
@@ -350,6 +352,9 @@
 
   </div><!-- /app -->
 
+  <!-- Tooltip popup (positioned by JS, not clipped by overflow containers) -->
+  <div id="tooltip-popup"></div>
+
   <script>
     // ═══════════════════════════════════════════════════════════════
     //  HISTV Tauri Frontend — app.js (inline)
@@ -458,6 +463,7 @@
       setupClipboardPaste();
       setupKeyboardShortcuts();
       setupDragReorder();
+      setupTooltips();
       setupModalButtons();
       setupBottomButtons();
       listenTauriEvents();
@@ -637,13 +643,25 @@
     // ═══════════════════════════════════════════════════════════════
     //  SPLITTER (§4.1)
     // ═══════════════════════════════════════════════════════════════
+    let settingsPanelCollapsed = false;
+
     function setupSplitter() {
       const splitter = $('#splitter');
+      const splitterToggle = $('#splitter-toggle');
       const leftPanel = $('#left-panel');
+      const rightPanel = $('#right-panel');
       const mainArea = $('#main-area');
       let dragging = false;
 
+      // Read the CSS min/max constraints on the right panel
+      const rpStyle = getComputedStyle(rightPanel);
+      const rightMinW = parseInt(rpStyle.minWidth, 10) || 280;
+      const rightMaxW = parseInt(rpStyle.maxWidth, 10) || 520;
+
+      // ── Splitter drag ──
       splitter.addEventListener('mousedown', (e) => {
+        if (settingsPanelCollapsed) return;
+        if (e.target === splitterToggle || splitterToggle.contains(e.target)) return;
         dragging = true;
         splitter.classList.add('dragging');
         e.preventDefault();
@@ -654,8 +672,10 @@
         const rect = mainArea.getBoundingClientRect();
         const offset = e.clientX - rect.left;
         const minLeft = 220;
-        const maxLeft = rect.width - 320 - 5; // 320 = right-panel min-width, 5 = splitter
-        const clamped = Math.max(minLeft, Math.min(maxLeft, offset));
+        // Clamp so right panel stays between its min and max width
+        const maxLeft = rect.width - rightMinW - 5;
+        const minLeftFromMax = rect.width - rightMaxW - 5;
+        const clamped = Math.max(Math.max(minLeft, minLeftFromMax), Math.min(maxLeft, offset));
         leftPanel.style.flex = 'none';
         leftPanel.style.width = clamped + 'px';
       });
@@ -664,6 +684,46 @@
         if (dragging) {
           dragging = false;
           splitter.classList.remove('dragging');
+        }
+      });
+
+      // ── Toggle button ──
+      splitterToggle.addEventListener('click', (e) => {
+        e.stopPropagation();
+        settingsPanelCollapsed = !settingsPanelCollapsed;
+
+        if (settingsPanelCollapsed) {
+          rightPanel.classList.add('collapsed');
+          splitterToggle.innerHTML = '&#x25C0;';
+          splitterToggle.title = 'Show settings panel';
+          leftPanel.style.flex = '1';
+          leftPanel.style.width = '';
+        } else {
+          rightPanel.classList.remove('collapsed');
+          splitterToggle.innerHTML = '&#x25B6;';
+          splitterToggle.title = 'Hide settings panel';
+          // Let flex layout restore the split naturally
+          leftPanel.style.flex = 'none';
+          const mainRect = mainArea.getBoundingClientRect();
+          // Default to giving the right panel ~480px
+          const desiredRight = Math.min(rightMaxW, Math.max(rightMinW, 480));
+          leftPanel.style.width = (mainRect.width - desiredRight - 5) + 'px';
+        }
+      });
+
+      // ── Window resize — clamp left panel so right panel stays within min/max ──
+      window.addEventListener('resize', () => {
+        if (settingsPanelCollapsed) return;
+        if (!leftPanel.style.width) return;
+        const mainRect = mainArea.getBoundingClientRect();
+        let currentLeft = parseInt(leftPanel.style.width, 10);
+        // Don't let the right panel shrink below min-width
+        const maxLeft = mainRect.width - rightMinW - 5;
+        // Don't let the right panel grow beyond max-width
+        const minLeft = mainRect.width - rightMaxW - 5;
+        const clamped = Math.max(220, Math.max(minLeft, Math.min(maxLeft, currentLeft)));
+        if (clamped !== currentLeft) {
+          leftPanel.style.width = clamped + 'px';
         }
       });
     }
@@ -1405,6 +1465,65 @@
       line.textContent = msg;
       logContent.appendChild(line);
       logContent.scrollTop = logContent.scrollHeight;
+    }
+
+    // ═══════════════════════════════════════════════════════════════
+    //  TOOLTIPS (JS-positioned, not clipped by overflow)
+    // ═══════════════════════════════════════════════════════════════
+    function setupTooltips() {
+      const popup = $('#tooltip-popup');
+      let hideTimeout = null;
+
+      // Delegate hover events on all tooltip icons
+      document.addEventListener('mouseover', (e) => {
+        const icon = e.target.closest('.tooltip-icon');
+        if (!icon) return;
+        const container = icon.closest('.has-tooltip');
+        if (!container) return;
+        const textEl = container.querySelector('.tooltip-text');
+        if (!textEl) return;
+
+        if (hideTimeout) { clearTimeout(hideTimeout); hideTimeout = null; }
+
+        popup.textContent = textEl.textContent;
+        popup.classList.add('visible');
+
+        // Position: above the icon, clamped to viewport
+        const iconRect = icon.getBoundingClientRect();
+        const popupRect = popup.getBoundingClientRect();
+
+        // Try to position above the icon
+        let top = iconRect.top - popupRect.height - 6;
+        // If it would go off the top of the viewport, position below instead
+        if (top < 4) {
+          top = iconRect.bottom + 6;
+        }
+
+        // Horizontal: align left edge with the icon, but clamp to viewport
+        let left = iconRect.left;
+        const maxLeft = window.innerWidth - popupRect.width - 8;
+        if (left > maxLeft) left = maxLeft;
+        if (left < 4) left = 4;
+
+        // Constrain width to the right panel width if narrower
+        const rightPanel = $('#right-panel');
+        if (rightPanel) {
+          const rpRect = rightPanel.getBoundingClientRect();
+          const maxW = rpRect.width - 16;
+          popup.style.maxWidth = Math.max(150, maxW) + 'px';
+        }
+
+        popup.style.top = top + 'px';
+        popup.style.left = left + 'px';
+      });
+
+      document.addEventListener('mouseout', (e) => {
+        const icon = e.target.closest('.tooltip-icon');
+        if (!icon) return;
+        hideTimeout = setTimeout(() => {
+          popup.classList.remove('visible');
+        }, 100);
+      });
     }
 
     // ═══════════════════════════════════════════════════════════════
