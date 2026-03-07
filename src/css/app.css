@@ -381,7 +381,7 @@ html, body {
   height: 10px;
   background: var(--primary);
   width: 0%;
-  transition: width 0.3s ease;
+  transition: width 0.1s ease;
   border-radius: 3px;
 }
 
@@ -392,7 +392,7 @@ html, body {
   height: 10px;
   background: var(--primary);
   width: 0%;
-  transition: width 0.3s ease;
+  transition: width 0.1s ease;
   border-radius: 3px;
 }
 #drop-overlay {

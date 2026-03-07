@@ -1,4 +1,6 @@
 use serde::{Deserialize, Serialize};
+use std::collections::HashSet;
+use std::collections::VecDeque;
 use std::path::Path;
 
 /// Supported video file extensions (§5.2).
@@ -72,6 +74,15 @@ pub struct BatchState {
     pub fallback_response: Option<String>,
 }
 
+/// Result from add_paths_to_queue — includes the starting index so the
+/// frontend can probe by index range without O(N*M) path lookups (#2).
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct AddResult {
+    pub start_index: usize,
+    pub count: usize,
+}
+
 fn is_supported_extension(path: &str) -> bool {
     let p = Path::new(path);
     if let Some(ext) = p.extension() {
@@ -82,34 +93,41 @@ fn is_supported_extension(path: &str) -> bool {
     }
 }
 
-/// Recursively collect supported files from a list of paths (files and folders).
+/// Iteratively collect supported files from a list of paths (files and folders).
+/// Uses a VecDeque work queue instead of recursive allocation (#13).
 fn collect_files(paths: &[String]) -> Vec<String> {
     let mut result = Vec::new();
-    for path_str in paths {
-        let path = Path::new(path_str);
+    let mut work: VecDeque<std::path::PathBuf> = paths.iter().map(std::path::PathBuf::from).collect();
+
+    while let Some(path) = work.pop_front() {
         if path.is_dir() {
-            if let Ok(entries) = std::fs::read_dir(path) {
-                let child_paths: Vec<String> = entries
-                    .flatten()
-                    .map(|e| e.path().to_string_lossy().to_string())
-                    .collect();
-                result.extend(collect_files(&child_paths));
+            if let Ok(entries) = std::fs::read_dir(&path) {
+                for entry in entries.flatten() {
+                    work.push_back(entry.path());
+                }
             }
-        } else if path.is_file() && is_supported_extension(path_str) {
-            result.push(path_str.clone());
+        } else if path.is_file() {
+            let path_str = path.to_string_lossy().to_string();
+            if is_supported_extension(&path_str) {
+                result.push(path_str);
+            }
         }
     }
     result
 }
 
 /// Add files/folders to the queue, filtering by extension and deduplicating.
-pub fn add_paths_to_queue(queue: &mut Vec<QueueItem>, paths: &[String]) -> Vec<QueueItem> {
+/// Returns an AddResult with the starting index and count of added items,
+/// so the frontend can probe by index range without path lookups (#1, #2).
+pub fn add_paths_to_queue(queue: &mut Vec<QueueItem>, paths: &[String]) -> AddResult {
     let files = collect_files(paths);
-    let mut added = Vec::new();
+
+    // Build a HashSet of existing paths for O(1) dedup lookups (#1)
+    let existing: HashSet<String> = queue.iter().map(|item| item.full_path.clone()).collect();
+    let start_index = queue.len();
 
     for file_path in files {
-        // Duplicate check by full path
-        if queue.iter().any(|item| item.full_path == file_path) {
+        if existing.contains(&file_path) {
             continue;
         }
 
@@ -140,11 +158,13 @@ pub fn add_paths_to_queue(queue: &mut Vec<QueueItem>, paths: &[String]) -> Vec<Q
             audio_streams: Vec::new(),
             duration_secs: 0.0,
         };
-        queue.push(item.clone());
-        added.push(item);
+        queue.push(item);
     }
 
-    added
+    AddResult {
+        start_index,
+        count: queue.len() - start_index,
+    }
 }
 
 /// Remove queue items by indices (sorted descending internally).

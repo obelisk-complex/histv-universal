@@ -8,6 +8,16 @@ use tauri::{AppHandle, Emitter};
 use tokio::io::AsyncWriteExt;
 use tokio::process::Command;
 
+// ── Per-file progress event payload (#12 — avoids serde_json::json! allocation) ──
+
+#[derive(Debug, Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+struct FileProgress {
+    percent: f64,
+    time_secs: f64,
+    total_secs: f64,
+}
+
 // ── Encoder info & abstraction layer ────────────────────────────
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -733,6 +743,9 @@ pub async fn start_batch_encode(
                     let mut reader = tokio::io::BufReader::new(stderr);
                     let mut buf = vec![0u8; 4096];
                     let mut line_buf = String::new();
+                    // Throttle progress events to at most every 250ms (#5)
+                    let mut last_progress_emit = std::time::Instant::now()
+                        - std::time::Duration::from_millis(500);
 
                     loop {
                         match reader.read(&mut buf).await {
@@ -746,17 +759,22 @@ pub async fn start_batch_encode(
                                             // Parse ffmpeg progress: extract time=HH:MM:SS.ms
                                             if file_duration > 0.0 {
                                                 if let Some(pos) = line_buf.find("time=") {
-                                                    let time_str = &line_buf[pos + 5..];
-                                                    let end = time_str.find(|c: char| c == ' ' || c == '\t')
-                                                        .unwrap_or(time_str.len());
-                                                    let ts = &time_str[..end];
-                                                    if let Some(secs) = parse_ffmpeg_time(ts) {
-                                                        let pct = (secs / file_duration * 100.0).min(100.0);
-                                                        let _ = app_for_stderr.emit("file-progress", serde_json::json!({
-                                                            "percent": pct,
-                                                            "timeSecs": secs,
-                                                            "totalSecs": file_duration,
-                                                        }));
+                                                    let now = std::time::Instant::now();
+                                                    if now.duration_since(last_progress_emit).as_millis() >= 250 {
+                                                        let time_str = &line_buf[pos + 5..];
+                                                        let end = time_str.find(|c: char| c == ' ' || c == '\t')
+                                                            .unwrap_or(time_str.len());
+                                                        let ts = &time_str[..end];
+                                                        if let Some(secs) = parse_ffmpeg_time(ts) {
+                                                            let pct = (secs / file_duration * 100.0).min(100.0);
+                                                            let progress = FileProgress {
+                                                                percent: pct,
+                                                                time_secs: secs,
+                                                                total_secs: file_duration,
+                                                            };
+                                                            let _ = app_for_stderr.emit("file-progress", &progress);
+                                                            last_progress_emit = now;
+                                                        }
                                                     }
                                                 }
                                             }
@@ -773,6 +791,15 @@ pub async fn start_batch_encode(
                     // Flush any remaining content
                     if !line_buf.is_empty() {
                         let _ = app_for_stderr.emit("ffmpeg-stderr", &line_buf);
+                    }
+                    // Emit final 100% progress
+                    if file_duration > 0.0 {
+                        let progress = FileProgress {
+                            percent: 100.0,
+                            time_secs: file_duration,
+                            total_secs: file_duration,
+                        };
+                        let _ = app_for_stderr.emit("file-progress", &progress);
                     }
                 }))
             } else {

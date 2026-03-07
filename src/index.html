@@ -780,6 +780,9 @@
         return;
       }
 
+      // Read settings once for target bitrate labels (#6)
+      const settings = getTargetBitrateSettings();
+
       // Differential update — patch only what changed
       for (let i = 0; i < queueData.length; i++) {
         const item = queueData[i];
@@ -810,7 +813,7 @@
         if (c2.textContent !== srcText) c2.textContent = srcText;
 
         // Cell 3: target bitrate
-        const tgtText = computeTargetBitrateLabel(item);
+        const tgtText = computeTargetBitrateLabel(item, settings);
         const c3 = tr.children[3];
         if (c3.textContent !== tgtText) c3.textContent = tgtText;
 
@@ -818,11 +821,9 @@
         const c4 = tr.children[4];
         const badge = c4.firstChild;
         if (badge) {
-          // Update icon if status changed
           const currentStatus = tr.dataset.status || '';
           if (currentStatus !== statusLower) {
             const icon = STATUS_ICONS[statusLower] || '';
-            // Clear and rebuild badge content
             badge.innerHTML = '';
             if (icon) {
               const iconSpan = document.createElement('span');
@@ -841,6 +842,7 @@
     // ── Full queue rebuild (used when row count changes) ──
     function fullRenderQueue() {
       const fragment = document.createDocumentFragment();
+      const settings = getTargetBitrateSettings(); // read DOM once (#6)
       for (let i = 0; i < queueData.length; i++) {
         const item = queueData[i];
         const tr = document.createElement('tr');
@@ -870,7 +872,7 @@
 
         // Target bitrate (§5.7)
         const tdTgt = document.createElement('td');
-        tdTgt.textContent = computeTargetBitrateLabel(item);
+        tdTgt.textContent = computeTargetBitrateLabel(item, settings);
         tr.appendChild(tdTgt);
 
         // Status badge
@@ -926,8 +928,12 @@
       const i = parseInt(tr.dataset.index, 10);
       if (isNaN(i)) return;
 
+      const previousSelection = new Set(selectedRows);
+
       if (e.shiftKey && selectedRows.size > 0) {
-        const last = Math.max(...selectedRows);
+        // Safe max without spread — avoids stack overflow at 50k+ items (#9)
+        let last = -1;
+        for (const r of selectedRows) { if (r > last) last = r; }
         const lo = Math.min(last, i);
         const hi = Math.max(last, i);
         for (let r = lo; r <= hi; r++) selectedRows.add(r);
@@ -939,48 +945,62 @@
         selectedRows.add(i);
       }
 
-      // Update selection classes directly — no rebuild needed
+      // Only toggle rows whose selection state actually changed (#8)
       const rows = queueBody.children;
-      for (let r = 0; r < rows.length; r++) {
-        rows[r].classList.toggle('selected', selectedRows.has(r));
+      // Rows that were selected before but aren't now
+      for (const r of previousSelection) {
+        if (!selectedRows.has(r) && r < rows.length) {
+          rows[r].classList.remove('selected');
+        }
       }
+      // Rows that are selected now but weren't before
+      for (const r of selectedRows) {
+        if (!previousSelection.has(r) && r < rows.length) {
+          rows[r].classList.add('selected');
+        }
+      }
+    }
+
+    // ── Cached settings for target bitrate computation (#6) ──
+    function getTargetBitrateSettings() {
+      return {
+        target: parseFloat(numBitrate.value) || 5,
+        qpI: parseInt(numQpI.value, 10) || 20,
+        qpP: parseInt(numQpP.value, 10) || 22,
+        crf: parseInt(numCrf.value, 10) || 20,
+        rcMode: getCurrentRcMode(),
+        targetCodecFamily: selCodec.value === 'H.264' ? 'h264' : 'hevc',
+      };
     }
 
     // ── Target bitrate label (§5.7) ──
-    function computeTargetBitrateLabel(item) {
-      const target = parseFloat(numBitrate.value) || 5;
-      const qpI = parseInt(numQpI.value, 10) || 20;
-      const qpP = parseInt(numQpP.value, 10) || 22;
-      const crf = parseInt(numCrf.value, 10) || 20;
-      const rcMode = getCurrentRcMode();
+    function computeTargetBitrateLabel(item, settings) {
       const mbps = item.videoBitrateMbps;
       if (!mbps || mbps <= 0) return '?';
 
-      const targetCodecFamily = selCodec.value === 'H.264' ? 'h264' : 'hevc';
       const sourceCodec = (item.videoCodec || '').toLowerCase();
-      const isSameCodec = sourceCodec === targetCodecFamily;
+      const isSameCodec = sourceCodec === settings.targetCodecFamily;
 
-      if (mbps > target) {
-        return `${target}Mbps (VBR)`;
+      if (mbps > settings.target) {
+        return `${settings.target}Mbps (VBR)`;
       } else if (isSameCodec) {
         return 'Copy';
       } else {
-        if (rcMode === 'CRF') {
-          return `CRF ${crf}`;
+        if (settings.rcMode === 'CRF') {
+          return `CRF ${settings.crf}`;
         }
-        return `CQP (${qpI}/${qpP})`;
+        return `CQP (${settings.qpI}/${settings.qpP})`;
       }
     }
 
-    // ── Update all target bitrate labels ──
+    // ── Update all target bitrate labels (#11: uses .children not querySelectorAll) ──
     function refreshTargetBitrates() {
-      const rows = queueBody.querySelectorAll('tr');
-      rows.forEach((tr, i) => {
-        if (i < queueData.length) {
-          const td = tr.children[3];
-          if (td) td.textContent = computeTargetBitrateLabel(queueData[i]);
-        }
-      });
+      const rows = queueBody.children;
+      const settings = getTargetBitrateSettings();
+      for (let i = 0; i < rows.length && i < queueData.length; i++) {
+        const td = rows[i].children[3];
+        if (td) td.textContent = computeTargetBitrateLabel(queueData[i], settings);
+      }
     }
 
     // ── Debounced variant — coalesces rapid settings changes into one DOM walk ──
@@ -1006,16 +1026,14 @@
     async function addFilesToQueue(paths) {
       if (!paths || paths.length === 0) return;
       try {
-        const added = await invoke('add_files_to_queue', { paths });
+        const { startIndex, count } = await invoke('add_files_to_queue', { paths });
         // Re-fetch full queue to stay in sync
         queueData = await invoke('get_queue');
         renderQueue();
-        // Probe newly-added items — fire all probes concurrently,
-        // each one schedules a debounced refresh on completion
-        for (const item of added) {
-          const idx = queueData.findIndex(q => q.fullPath === item.fullPath);
-          if (idx >= 0 && queueData[idx].status === 'Pending') {
-            probeFileAt(idx);
+        // Probe newly-added items by index range — no path lookups (#2)
+        for (let i = startIndex; i < startIndex + count; i++) {
+          if (i < queueData.length && (queueData[i].status || '').toLowerCase() === 'pending') {
+            probeFileAt(i);
           }
         }
       } catch (e) {
@@ -1186,10 +1204,10 @@
           e.preventDefault();
           selectedRows.clear();
           for (let i = 0; i < queueData.length; i++) selectedRows.add(i);
-          // Update selection classes directly
+          // All rows need selected class — skip the has() check
           const rows = queueBody.children;
           for (let r = 0; r < rows.length; r++) {
-            rows[r].classList.toggle('selected', selectedRows.has(r));
+            rows[r].classList.add('selected');
           }
           return;
         }
@@ -1243,9 +1261,10 @@
           }
         }
 
-        // Clear all indicators
-        for (let i = 0; i < rows.length; i++) {
-          rows[i].classList.remove('drag-over-above', 'drag-over-below');
+        // Clear only the previous indicator (#7)
+        if (reorderLastIndicator) {
+          const prevRow = rows[reorderLastIndicator.index];
+          if (prevRow) prevRow.classList.remove('drag-over-above', 'drag-over-below');
         }
 
         // Find which gap the cursor is closest to.
@@ -1306,10 +1325,13 @@
         const fromIndex = reorderSourceIndex;
         const indicator = reorderLastIndicator;
 
-        // Clean up visual state
+        // Clean up visual state — only the affected rows (#7)
         const rows = queueBody.children;
-        for (let i = 0; i < rows.length; i++) {
-          rows[i].classList.remove('drag-over-above', 'drag-over-below', 'drag-source');
+        if (rows[fromIndex]) {
+          rows[fromIndex].classList.remove('drag-source');
+        }
+        if (indicator && rows[indicator.index]) {
+          rows[indicator.index].classList.remove('drag-over-above', 'drag-over-below');
         }
         reorderSourceIndex = null;
         reorderActive = false;
@@ -1549,6 +1571,8 @@
     let lastLogMessage = '';
     let lastLogElement = null;
     let lastLogCount = 0;
+    let logScrollPending = false;
+    const MAX_LOG_LINES = 5000;
 
     function appendLog(msg) {
       // Deduplicate consecutive identical messages
@@ -1561,7 +1585,7 @@
           lastLogElement.appendChild(counter);
         }
         counter.textContent = `(x${lastLogCount})`;
-        logContent.scrollTop = logContent.scrollHeight;
+        scheduleLogScroll();
         return;
       }
 
@@ -1571,8 +1595,24 @@
       const line = document.createElement('div');
       line.textContent = msg;
       logContent.appendChild(line);
-      logContent.scrollTop = logContent.scrollHeight;
       lastLogElement = line;
+
+      // Cap log at MAX_LOG_LINES (#4)
+      while (logContent.childElementCount > MAX_LOG_LINES) {
+        logContent.removeChild(logContent.firstChild);
+      }
+
+      scheduleLogScroll();
+    }
+
+    // Batch scroll updates via requestAnimationFrame (#4)
+    function scheduleLogScroll() {
+      if (logScrollPending) return;
+      logScrollPending = true;
+      requestAnimationFrame(() => {
+        logContent.scrollTop = logContent.scrollHeight;
+        logScrollPending = false;
+      });
     }
 
     // ═══════════════════════════════════════════════════════════════
@@ -1801,7 +1841,15 @@
     }
 
     function updateBatchButtons() {
-      const hasPending = queueData.some(i => (i.status || '').toLowerCase() === 'pending');
+      // Single pass over queueData for both button state and summary (#10)
+      let hasPending = false;
+      const counts = { pending: 0, done: 0, failed: 0, skipped: 0, cancelled: 0, encoding: 0, probing: 0 };
+      for (let i = 0; i < queueData.length; i++) {
+        const s = (queueData[i].status || 'pending').toLowerCase();
+        if (s === 'pending') hasPending = true;
+        if (counts.hasOwnProperty(s)) counts[s]++;
+      }
+
       btnStart.disabled = !encoderDetectionDone || batchRunning || !hasPending;
       btnDryRun.disabled = !encoderDetectionDone || batchRunning || !hasPending;
       btnCancelCur.disabled = !batchRunning;
@@ -1823,20 +1871,11 @@
         startTooltip.textContent = '';
       }
 
-      // Queue summary
-      updateQueueSummary();
-    }
-
-    function updateQueueSummary() {
+      // Queue summary (same pass data)
       const total = queueData.length;
       if (total === 0) {
         queueSummary.textContent = '';
         return;
-      }
-      const counts = { pending: 0, done: 0, failed: 0, skipped: 0, cancelled: 0, encoding: 0, probing: 0 };
-      for (const item of queueData) {
-        const s = (item.status || 'pending').toLowerCase();
-        if (counts.hasOwnProperty(s)) counts[s]++;
       }
       const parts = [];
       if (counts.pending > 0)   parts.push(`${counts.pending} pending`);

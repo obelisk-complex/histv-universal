@@ -203,11 +203,6 @@ pub async fn probe_file(file_path: &str, app: &AppHandle) -> Result<ProbeResult,
         .or(tag_duration)
         .unwrap_or(0.0);
 
-    let _ = app.emit("log", format!(
-        "[probe] Duration: {:.2}s for {}",
-        duration_secs, file_path
-    ));
-
     Ok(ProbeResult {
         video_codec,
         video_width,

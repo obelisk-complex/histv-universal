@@ -6,13 +6,13 @@ mod queue;
 mod themes;
 
 use std::sync::Arc;
-use tauri::{Emitter, Manager};
+use tauri::Emitter;
 use tokio::sync::Mutex;
 
 pub use config::AppConfig;
 pub use encoder::EncoderInfo;
 pub use probe::ProbeResult;
-pub use queue::{BatchState, QueueItem, QueueItemStatus};
+pub use queue::{AddResult, BatchState, QueueItem, QueueItemStatus};
 pub use themes::Theme;
 
 /// Shared application state accessible from all Tauri commands.
@@ -92,10 +92,10 @@ async fn get_detected_encoders(
 async fn add_files_to_queue(
     state: tauri::State<'_, Arc<AppState>>,
     paths: Vec<String>,
-) -> Result<Vec<QueueItem>, String> {
+) -> Result<AddResult, String> {
     let mut q = state.queue.lock().await;
-    let added = queue::add_paths_to_queue(&mut q, &paths);
-    Ok(added)
+    let result = queue::add_paths_to_queue(&mut q, &paths);
+    Ok(result)
 }
 
 #[tauri::command]
