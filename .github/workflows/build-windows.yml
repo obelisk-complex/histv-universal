@@ -1,0 +1,50 @@
+name: Build Windows
+
+on:
+  workflow_dispatch:
+    inputs:
+      ref:
+        description: 'Git ref to build (branch, tag, or SHA)'
+        required: false
+        default: 'main'
+
+permissions:
+  contents: write
+
+jobs:
+  build:
+    runs-on: windows-latest
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+        with:
+          ref: ${{ github.event.inputs.ref || github.ref }}
+
+      - name: Install Rust stable
+        uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: x86_64-pc-windows-msvc
+
+      - name: Install Tauri CLI
+        run: cargo install tauri-cli --version "^2" --locked
+
+      - name: Build
+        run: cargo tauri build --target x86_64-pc-windows-msvc
+
+      - name: Collect artefacts
+        shell: bash
+        run: |
+          mkdir -p artefacts
+          PORTABLE="$GITHUB_WORKSPACE/src-tauri/target/x86_64-pc-windows-msvc/release/histv.exe"
+          if [ -f "$PORTABLE" ]; then
+            cp "$PORTABLE" "artefacts/histv-windows.exe"
+          fi
+          ls -lh artefacts/
+
+      - name: Upload artefacts
+        uses: actions/upload-artifact@v4
+        with:
+          name: histv-windows-patch
+          path: artefacts/*
+          retention-days: 14

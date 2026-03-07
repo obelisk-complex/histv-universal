@@ -1,0 +1,47 @@
+name: Build macOS ARM64
+
+on:
+  workflow_dispatch:
+    inputs:
+      ref:
+        description: 'Git ref to build (branch, tag, or SHA)'
+        required: false
+        default: 'main'
+
+permissions:
+  contents: write
+
+jobs:
+  build:
+    runs-on: macos-latest
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+        with:
+          ref: ${{ github.event.inputs.ref || github.ref }}
+
+      - name: Install Rust stable
+        uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: aarch64-apple-darwin
+
+      - name: Install Tauri CLI
+        run: cargo install tauri-cli --version "^2" --locked
+
+      - name: Build
+        run: cargo tauri build --target aarch64-apple-darwin --bundles dmg
+
+      - name: Collect artefacts
+        shell: bash
+        run: |
+          mkdir -p artefacts
+          find "$GITHUB_WORKSPACE" -name "*.dmg" -exec cp {} artefacts/ \;
+          ls -lh artefacts/
+
+      - name: Upload artefacts
+        uses: actions/upload-artifact@v4
+        with:
+          name: histv-macos-arm64-patch
+          path: artefacts/*
+          retention-days: 14
