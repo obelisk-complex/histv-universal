@@ -441,10 +441,16 @@ pub async fn start_batch_encode(
 
     // Create output folder if needed (only when not using per-input output)
     if !output_next_to_input {
+        // Ensure the folder exists
         if !Path::new(&output_folder).exists() {
             std::fs::create_dir_all(&output_folder)
-                .map_err(|e| format!("Could not create output folder: {e}"))?;
+                .map_err(|e| format!("Could not create output folder '{}': {e}", output_folder))?;
         }
+        // Verify we can write to it by creating and removing a temp file
+        let test_path = Path::new(&output_folder).join(".histv_write_test");
+        std::fs::write(&test_path, b"")
+            .map_err(|e| format!("Output folder '{}' is not writable: {e}", output_folder))?;
+        let _ = std::fs::remove_file(&test_path);
     }
 
     // Set batch running

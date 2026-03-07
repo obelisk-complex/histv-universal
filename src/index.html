@@ -1921,7 +1921,9 @@
           }
         });
       } catch (e) {
-        appendLog('ERROR: ' + e);
+        const errMsg = typeof e === 'string' ? e : (e.message || JSON.stringify(e));
+        appendLog('ERROR: ' + errMsg);
+        jobStatus.textContent = 'Error: ' + errMsg;
       }
     }
 
