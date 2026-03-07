@@ -3,7 +3,7 @@
 A cross-platform batch video encoder with a GUI. Point it at your files, pick a target bitrate, hit Start. It figures out the rest.
 
 -----
-This project was created with the assistance of https://claude.ai, but don't let that stop you from checking it out. This is a learning experience for me, so I'm not just slapping things together with an AI model and until it does what I need it to on my system, and calling it done. I'm actively trying to understand the output, modify and fix it myself where I can, and eliminate redundancies and bloat and other issues.
+This project was created with the assistance of https://claude.ai, but don't let that stop you from checking it out. This is a learning experience for me, so I'm not just slapping things together with an AI model and poking it until it does what I need it to on my system, then calling it done. I'm actively trying to understand the output, modify and fix it myself where I can, and eliminate redundancies and bloat and other issues.
 
 My hardware for testing is limited, and while this is a learning project for me, one thing I do not need any practice with is test case design. I've done it professionally, I'm good at it, I hate it because it's so repetetive. If I were building commercial software I would write and run test cases, but it's not, so I'm not doing anything more than informal testing to make sure my updates generally work. Otherwise, I'll end up hating my hobbies.
 
@@ -15,15 +15,13 @@ Thanks for reading, I hope you find HISTV useful!
 <details>
    <summary>Screenshots</summary>
   
-![](https://media.piefed.ca/posts/Zh/5q/Zh5qETVk8VWnkks.png)  
+![](https://media.piefed.ca/posts/Fk/Ba/FkBaiUnsD0GmZmY.png)  
 
-![](https://media.piefed.ca/posts/R4/aC/R4aCX6NcjH5tjqU.png)  
+![](https://media.piefed.ca/posts/Qf/a2/Qfa2WQy6ieE5Nic.png)  
 
-![](https://media.piefed.ca/posts/Ok/Eo/OkEohnm6jMVh1Ei.png)  
+![](https://media.piefed.ca/posts/FA/a6/FAa6w1zwMHqEeKj.png)  
 
-![](https://media.piefed.ca/posts/D4/g3/D4g317xAHJTh9Uq.png)  
-
-![](https://media.piefed.ca/posts/rH/p5/rHp5X4I5v7CMw6Q.png)  
+![](https://media.piefed.ca/posts/9Q/B7/9QB78eFzN3sozTZ.png)  
 
 </details>
 
