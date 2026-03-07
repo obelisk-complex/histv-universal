@@ -1,6 +1,7 @@
 # ── Rust / Cargo ──
 target/
 **/*.rs.bk
+/src-tauri/Cargo.lock
 
 # ── Node / npm (if frontend tooling is ever added) ──
 node_modules/
@@ -37,3 +38,4 @@ _ffmpeg_download*
 # ── Logs & temp ──
 *.log
 encode_log_*.txt
+patchnotes.md

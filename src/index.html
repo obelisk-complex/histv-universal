@@ -33,6 +33,18 @@
           <button class="btn" id="btn-add-folder">Add Folder</button>
           <button class="btn" id="btn-clear-all">Clear All</button>
         </div>
+        <div id="batch-buttons">
+          <button class="btn" id="btn-dry-run" disabled>Probe</button>
+          <span id="btn-start-wrapper">
+            <button class="btn btn-primary" id="btn-start" disabled>Start</button>
+            <span class="start-tooltip" id="start-tooltip"></span>
+          </span>
+          <button class="btn" id="btn-pause" disabled>Pause</button>
+          <span class="btn-group-label">Cancel:</span>
+          <button class="btn" id="btn-cancel-current" disabled>Current</button>
+          <span class="btn-group-sep">/</span>
+          <button class="btn" id="btn-cancel-all" disabled>All</button>
+        </div>
       </div>
 
       <!-- ─── Splitter ─── -->
@@ -246,31 +258,49 @@
       </div><!-- /right-panel -->
     </div><!-- /main-area -->
 
-    <!-- ═══ Bottom bar (§12) ═══ -->
-    <div id="bottom-bar">
-      <div id="status-file">No job running</div>
-      <div id="status-cmd"></div>
-      <div id="progress-bar-container">
-        <div id="progress-bar"></div>
+    <!-- ═══ Bottom panel (§12) ═══ -->
+    <div id="bottom-panel">
+      <div id="bottom-panel-handle">
+        <button id="bottom-panel-toggle" title="Toggle job details & log">
+          <span id="bottom-panel-arrow">&#x25B2;</span> Job Details &amp; Log
+        </button>
       </div>
-      <div id="bottom-buttons">
-        <span id="btn-start-wrapper">
-          <button class="btn btn-primary" id="btn-start" disabled>Start</button>
-          <span class="start-tooltip" id="start-tooltip"></span>
-        </span>
-        <button class="btn" id="btn-cancel-current" disabled>Cancel Current</button>
-        <button class="btn" id="btn-cancel-all" disabled>Cancel All</button>
-        <button class="btn" id="btn-dry-run" disabled>Dry Run</button>
-        <button class="btn" id="btn-pause" disabled>Pause</button>
+      <div id="bottom-panel-body">
+        <!-- Left: log console -->
+        <div id="log-panel">
+          <div id="log-panel-header">Log Console</div>
+          <div id="log-content"></div>
+        </div>
+        <!-- Vertical splitter between log and job details -->
+        <div id="bottom-splitter"></div>
+        <!-- Right: job details -->
+        <div id="job-details">
+          <div class="job-detail-row">
+            <span class="job-label">Status</span>
+            <span class="job-value" id="job-status">No job running</span>
+          </div>
+          <div class="job-detail-row">
+            <span class="job-label">File</span>
+            <span class="job-value" id="job-file">-</span>
+          </div>
+          <div class="job-detail-row">
+            <span class="job-label">Progress</span>
+            <span class="job-value" id="job-progress-text">-</span>
+          </div>
+          <div class="job-detail-label">File</div>
+          <div class="progress-bar-container">
+            <div id="progress-bar"></div>
+          </div>
+          <div class="job-detail-label">Overall</div>
+          <div class="progress-bar-container">
+            <div id="batch-progress-bar"></div>
+          </div>
+          <div class="job-detail-row">
+            <span class="job-label">Command</span>
+            <span class="job-value job-cmd" id="job-cmd">-</span>
+          </div>
+        </div>
       </div>
-    </div>
-
-    <!-- ═══ Log drawer toggle & drawer (§11) ═══ -->
-    <button id="log-toggle">
-      <span id="log-toggle-arrow">&#x25B2;</span> Log Console
-    </button>
-    <div id="log-drawer">
-      <div id="log-content"></div>
     </div>
 
     <!-- ═══ Context menu (§5.5) ═══ -->
@@ -385,6 +415,8 @@
     let saveDebounce = null;
     let queueRefreshDebounce = null;   // coalesces rapid queue fetch+render cycles
     let targetBitrateDebounce = null;  // coalesces rapid refreshTargetBitrates calls
+    let batchCurrentFile = 0;          // current file index in batch (1-based)
+    let batchTotalFiles = 0;           // total files in batch
 
     // ── DOM refs ───────────────────────────────────────────────────
     const $ = (s) => document.querySelector(s);
@@ -420,9 +452,10 @@
     const txtCustomCmd    = $('#txt-custom-command');
     const numCountdown    = $('#num-countdown');
     const rowCustomCmd    = $('#row-custom-command');
-    const statusFile      = $('#status-file');
-    const statusCmd       = $('#status-cmd');
+    const jobStatus       = $('#job-status');
+    const statusCmd       = $('#job-cmd');
     const progressBar     = $('#progress-bar');
+    const batchProgressBar = $('#batch-progress-bar');
     const btnStart        = $('#btn-start');
     const startTooltip    = $('#start-tooltip');
     const queueSummary    = $('#queue-summary');
@@ -430,10 +463,12 @@
     const btnCancelAll    = $('#btn-cancel-all');
     const btnDryRun       = $('#btn-dry-run');
     const btnPause        = $('#btn-pause');
-    const logDrawer       = $('#log-drawer');
-    const logToggle       = $('#log-toggle');
-    const logToggleArrow  = $('#log-toggle-arrow');
+    const bottomPanelBody = $('#bottom-panel-body');
+    const bottomPanelToggle = $('#bottom-panel-toggle');
+    const bottomPanelArrow  = $('#bottom-panel-arrow');
     const logContent      = $('#log-content');
+    const jobFile         = $('#job-file');
+    const jobProgressText = $('#job-progress-text');
     const contextMenu     = $('#context-menu');
 
     // ── Status icons (SVG) ─────────────────────────────────────────
@@ -457,7 +492,7 @@
       setupSplitter();
       setupQueueButtons();
       setupSettingsListeners();
-      setupLogDrawer();
+      setupBottomPanel();
       setupContextMenu();
       setupDragAndDrop();
       setupClipboardPaste();
@@ -539,8 +574,8 @@
         txtCustomCmd.value = cfg.customCommand || '';
         numCountdown.value = cfg.postCountdown || 0;
         if (cfg.logDrawerOpen) {
-          logDrawer.classList.add('open');
-          logToggleArrow.textContent = '\u25BC';
+          bottomPanelBody.classList.add('open');
+          bottomPanelArrow.textContent = '\u25BC';
         }
         // Restore rate control mode
         const rcMode = cfg.rateControlMode || 'QP';
@@ -580,7 +615,7 @@
               hdr: chkHdr.checked,
               audioCodec: selAudioCodec.value,
               audioBitrateCap: parseInt(numAudioCap.value, 10) || 640,
-              logDrawerOpen: logDrawer.classList.contains('open'),
+              logDrawerOpen: bottomPanelBody.classList.contains('open'),
             }
           });
         } catch (e) {
@@ -1450,21 +1485,94 @@
     }
 
     // ═══════════════════════════════════════════════════════════════
-    //  LOG DRAWER (§11)
+    //  BOTTOM PANEL TOGGLE & RESIZE (§11)
     // ═══════════════════════════════════════════════════════════════
-    function setupLogDrawer() {
-      logToggle.addEventListener('click', () => {
-        const isOpen = logDrawer.classList.toggle('open');
-        logToggleArrow.textContent = isOpen ? '\u25BC' : '\u25B2';
+    function setupBottomPanel() {
+      const handle = $('#bottom-panel-handle');
+      const bSplitter = $('#bottom-splitter');
+      const jobDetails = $('#job-details');
+      const logPanel = $('#log-panel');
+      let draggingPanel = false;
+      let dragStartY = 0;
+      let dragStartHeight = 0;
+      let draggingBSplitter = false;
+      let bSplitterStartX = 0;
+      let bSplitterStartWidth = 0;
+
+      // Toggle open/close on click
+      bottomPanelToggle.addEventListener('click', () => {
+        const isOpen = bottomPanelBody.classList.toggle('open');
+        bottomPanelArrow.textContent = isOpen ? '\u25BC' : '\u25B2';
         scheduleConfigSave();
+      });
+
+      // Draggable resize — drag the handle bar to resize the panel height
+      handle.addEventListener('mousedown', (e) => {
+        if (e.target === bottomPanelToggle || bottomPanelToggle.contains(e.target)) return;
+        if (!bottomPanelBody.classList.contains('open')) return;
+        draggingPanel = true;
+        dragStartY = e.clientY;
+        dragStartHeight = bottomPanelBody.offsetHeight;
+        e.preventDefault();
+      });
+
+      // Bottom splitter — resize job details panel width
+      bSplitter.addEventListener('mousedown', (e) => {
+        draggingBSplitter = true;
+        bSplitterStartX = e.clientX;
+        bSplitterStartWidth = jobDetails.offsetWidth;
+        e.preventDefault();
+      });
+
+      document.addEventListener('mousemove', (e) => {
+        if (draggingPanel) {
+          const delta = dragStartY - e.clientY;
+          const newHeight = Math.max(80, Math.min(window.innerHeight * 0.6, dragStartHeight + delta));
+          bottomPanelBody.style.height = newHeight + 'px';
+        }
+        if (draggingBSplitter) {
+          // Dragging left makes job details wider, right makes it narrower
+          const delta = bSplitterStartX - e.clientX;
+          const bodyWidth = bottomPanelBody.offsetWidth;
+          const newWidth = Math.max(150, Math.min(bodyWidth - 200, bSplitterStartWidth + delta));
+          jobDetails.style.flex = 'none';
+          jobDetails.style.width = newWidth + 'px';
+        }
+      });
+
+      document.addEventListener('mouseup', () => {
+        draggingPanel = false;
+        draggingBSplitter = false;
       });
     }
 
+    let lastLogMessage = '';
+    let lastLogElement = null;
+    let lastLogCount = 0;
+
     function appendLog(msg) {
+      // Deduplicate consecutive identical messages
+      if (msg === lastLogMessage && lastLogElement) {
+        lastLogCount++;
+        let counter = lastLogElement.querySelector('.log-repeat-count');
+        if (!counter) {
+          counter = document.createElement('span');
+          counter.className = 'log-repeat-count';
+          lastLogElement.appendChild(counter);
+        }
+        counter.textContent = `(x${lastLogCount})`;
+        logContent.scrollTop = logContent.scrollHeight;
+        return;
+      }
+
+      lastLogMessage = msg;
+      lastLogCount = 1;
+
       const line = document.createElement('div');
       line.textContent = msg;
       logContent.appendChild(line);
       logContent.scrollTop = logContent.scrollHeight;
+      lastLogElement = line;
     }
 
     // ═══════════════════════════════════════════════════════════════
@@ -1778,16 +1886,16 @@
       }
     }
 
-    // ── Dry run (§14) ──
+    // ── Probe all (§14) ──
     async function dryRun() {
-      appendLog('[dry-run] Probing all unprobed files...');
+      appendLog('[probe] Probing all unprobed files...');
       for (let i = 0; i < queueData.length; i++) {
         const status = (queueData[i].status || '').toLowerCase();
         if (status === 'pending' && queueData[i].videoBitrateMbps <= 0) {
           await probeFileAt(i);
         }
       }
-      appendLog('[dry-run] Complete.');
+      appendLog('[probe] Complete.');
     }
 
     // ── Pause / Resume (§10.5) ──
@@ -1905,6 +2013,15 @@
       }
     }
 
+    // ── Format seconds as HH:MM:SS ──
+    function formatDuration(secs) {
+      const h = Math.floor(secs / 3600);
+      const m = Math.floor((secs % 3600) / 60);
+      const s = Math.floor(secs % 60);
+      if (h > 0) return `${h}:${String(m).padStart(2,'0')}:${String(s).padStart(2,'0')}`;
+      return `${m}:${String(s).padStart(2,'0')}`;
+    }
+
     // ═══════════════════════════════════════════════════════════════
     //  TAURI EVENT LISTENERS
     // ═══════════════════════════════════════════════════════════════
@@ -1975,6 +2092,21 @@
         appendLog(event.payload);
       });
 
+      // Per-file progress (duration-based)
+      listen('file-progress', (event) => {
+        const { percent, timeSecs, totalSecs } = event.payload;
+        progressBar.style.width = percent.toFixed(1) + '%';
+        const elapsed = formatDuration(timeSecs);
+        const total = formatDuration(totalSecs);
+        jobProgressText.textContent = `${elapsed} / ${total} (${percent.toFixed(0)}%)`;
+        // Interpolate into overall batch bar
+        if (batchTotalFiles > 0) {
+          const completedPct = ((batchCurrentFile - 1) / batchTotalFiles) * 100;
+          const filePortion = (1 / batchTotalFiles) * percent;
+          batchProgressBar.style.width = (completedPct + filePortion).toFixed(1) + '%';
+        }
+      });
+
       // Queue item updated (status change) — debounced to coalesce
       // with any direct-call refreshes already in flight
       listen('queue-item-updated', () => {
@@ -1992,33 +2124,47 @@
       listen('batch-started', () => {
         batchRunning = true;
         btnPause.textContent = 'Pause';
+        jobStatus.textContent = 'Encoding...';
         updateBatchButtons();
       });
 
-      // Batch progress
+      // Batch progress (file count)
       listen('batch-progress', (event) => {
         const { current, total } = event.payload;
-        const pct = total > 0 ? (current / total) * 100 : 0;
-        progressBar.style.width = pct + '%';
+        batchCurrentFile = current;
+        batchTotalFiles = total;
+        jobStatus.textContent = `Encoding file ${current} of ${total}`;
+        // Reset per-file progress bar when a new file starts
+        progressBar.style.width = '0%';
+        jobProgressText.textContent = '0%';
+        // Update overall batch progress bar (completed files only)
+        const batchPct = total > 0 ? ((current - 1) / total) * 100 : 0;
+        batchProgressBar.style.width = batchPct + '%';
       });
 
-      // Batch status label
+      // Batch status label (current file name)
       listen('batch-status', (event) => {
-        statusFile.textContent = event.payload;
+        jobStatus.textContent = 'Encoding...';
+        jobFile.textContent = event.payload;
+        jobFile.title = event.payload;
       });
 
       // Batch command label
       listen('batch-command', (event) => {
         statusCmd.textContent = event.payload;
+        statusCmd.title = event.payload;
       });
 
       // Batch finished
       listen('batch-finished', async (event) => {
         batchRunning = false;
         btnPause.textContent = 'Pause';
-        statusFile.textContent = 'No job running';
-        statusCmd.textContent = '';
+        jobStatus.textContent = 'No job running';
+        statusCmd.textContent = '-';
+        jobFile.textContent = '-';
+        jobProgressText.textContent = '-';
         progressBar.style.width = '0%';
+        batchProgressBar.style.width = '0%';
         updateBatchButtons();
 
         // Auto-clear completed items if enabled

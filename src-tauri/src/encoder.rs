@@ -722,15 +722,57 @@ pub async fn start_batch_encode(
             let _ = app_clone.emit("log", format!("  ffmpeg PID: {}", child.id().unwrap_or(0)));
 
             // Stream stderr for progress (§10.2)
+            // ffmpeg uses \r to overwrite progress lines in-place, so we
+            // read bytes and split on both \r and \n to catch every update.
             let stderr = child.stderr.take();
             let app_for_stderr = app_clone.clone();
+            let file_duration = item.duration_secs;
             let stderr_task = if let Some(stderr) = stderr {
                 Some(tauri::async_runtime::spawn(async move {
-                    use tokio::io::{AsyncBufReadExt, BufReader};
-                    let reader = BufReader::new(stderr);
-                    let mut lines = reader.lines();
-                    while let Ok(Some(line)) = lines.next_line().await {
-                        let _ = app_for_stderr.emit("ffmpeg-stderr", &line);
+                    use tokio::io::AsyncReadExt;
+                    let mut reader = tokio::io::BufReader::new(stderr);
+                    let mut buf = vec![0u8; 4096];
+                    let mut line_buf = String::new();
+
+                    loop {
+                        match reader.read(&mut buf).await {
+                            Ok(0) => break, // EOF
+                            Ok(n) => {
+                                let chunk = String::from_utf8_lossy(&buf[..n]);
+                                for ch in chunk.chars() {
+                                    if ch == '\r' || ch == '\n' {
+                                        if !line_buf.is_empty() {
+                                            let _ = app_for_stderr.emit("ffmpeg-stderr", &line_buf);
+                                            // Parse ffmpeg progress: extract time=HH:MM:SS.ms
+                                            if file_duration > 0.0 {
+                                                if let Some(pos) = line_buf.find("time=") {
+                                                    let time_str = &line_buf[pos + 5..];
+                                                    let end = time_str.find(|c: char| c == ' ' || c == '\t')
+                                                        .unwrap_or(time_str.len());
+                                                    let ts = &time_str[..end];
+                                                    if let Some(secs) = parse_ffmpeg_time(ts) {
+                                                        let pct = (secs / file_duration * 100.0).min(100.0);
+                                                        let _ = app_for_stderr.emit("file-progress", serde_json::json!({
+                                                            "percent": pct,
+                                                            "timeSecs": secs,
+                                                            "totalSecs": file_duration,
+                                                        }));
+                                                    }
+                                                }
+                                            }
+                                            line_buf.clear();
+                                        }
+                                    } else {
+                                        line_buf.push(ch);
+                                    }
+                                }
+                            }
+                            Err(_) => break,
+                        }
+                    }
+                    // Flush any remaining content
+                    if !line_buf.is_empty() {
+                        let _ = app_for_stderr.emit("ffmpeg-stderr", &line_buf);
                     }
                 }))
             } else {
@@ -1319,4 +1361,16 @@ pub async fn execute_post_action(action: &str) -> Result<(), String> {
         .map_err(|e| format!("Failed to execute {}: {}", action, e))?;
 
     Ok(())
+}
+
+/// Parse ffmpeg's time= format "HH:MM:SS.ms" or "HH:MM:SS" into seconds.
+fn parse_ffmpeg_time(s: &str) -> Option<f64> {
+    let parts: Vec<&str> = s.split(':').collect();
+    if parts.len() != 3 {
+        return None;
+    }
+    let h: f64 = parts[0].parse().ok()?;
+    let m: f64 = parts[1].parse().ok()?;
+    let sec: f64 = parts[2].parse().ok()?;
+    Some(h * 3600.0 + m * 60.0 + sec)
 }

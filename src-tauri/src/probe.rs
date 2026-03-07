@@ -15,6 +15,7 @@ pub struct ProbeResult {
     pub is_hdr: bool,
     pub color_transfer: String,
     pub audio_streams: Vec<AudioStreamInfo>,
+    pub duration_secs: f64,
 }
 
 /// Run ffprobe with the given arguments and return trimmed stdout.
@@ -105,10 +106,10 @@ pub async fn probe_file(file_path: &str, app: &AppHandle) -> Result<ProbeResult,
                     stream_bitrate = parse_numeric(br_str);
                 }
 
-                // Tier 2: MKV stream tags (NUMBER_OF_BYTES / DURATION)
+                // MKV stream tags — always extract for duration even if bitrate is found
+                let tags = &s["tags"];
                 if stream_bitrate.is_none() {
-                    let tags = &s["tags"];
-                    // Try several capitalisation variants (ffprobe is inconsistent)
+                    // Tier 2: NUMBER_OF_BYTES for bitrate calculation
                     for key in &["NUMBER_OF_BYTES", "number_of_bytes", "Number_Of_Bytes"] {
                         if let Some(v) = tags[*key].as_str() {
                             tag_bytes = parse_numeric(v);
@@ -117,6 +118,9 @@ pub async fn probe_file(file_path: &str, app: &AppHandle) -> Result<ProbeResult,
                             }
                         }
                     }
+                }
+                // Always try to extract DURATION tag (needed for duration_secs)
+                if tag_duration.is_none() {
                     for key in &["DURATION", "duration", "Duration"] {
                         if let Some(v) = tags[*key].as_str() {
                             tag_duration = parse_duration_tag(v);
@@ -181,6 +185,29 @@ pub async fn probe_file(file_path: &str, app: &AppHandle) -> Result<ProbeResult,
         }
     }
 
+    // ── Extract duration (prefer format, fall back to video stream, then MKV tags) ──
+    let duration_secs = format["duration"]
+        .as_str()
+        .and_then(parse_numeric)
+        .or_else(|| {
+            streams.and_then(|arr| {
+                arr.iter().find_map(|s| {
+                    if s["codec_type"].as_str().unwrap_or("") == "video" {
+                        s["duration"].as_str().and_then(parse_numeric)
+                    } else {
+                        None
+                    }
+                })
+            })
+        })
+        .or(tag_duration)
+        .unwrap_or(0.0);
+
+    let _ = app.emit("log", format!(
+        "[probe] Duration: {:.2}s for {}",
+        duration_secs, file_path
+    ));
+
     Ok(ProbeResult {
         video_codec,
         video_width,
@@ -190,6 +217,7 @@ pub async fn probe_file(file_path: &str, app: &AppHandle) -> Result<ProbeResult,
         is_hdr,
         color_transfer,
         audio_streams,
+        duration_secs,
     })
 }
 

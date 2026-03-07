@@ -200,14 +200,201 @@ html, body {
 }
 .status-icon svg { width: 100%; height: 100%; }
 
-/* ── Queue buttons ── */
+/* ── Queue & batch buttons ── */
 #queue-buttons {
   display: flex;
   gap: 6px;
   padding: 6px 0 0 0;
 }
 
-/* ── Drop zone overlay ── */
+#batch-buttons {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  padding: 4px 0 0 0;
+  margin-right: 5px; /* keep clear of the splitter */
+}
+
+.btn-group-label {
+  font-size: 12px;
+  color: var(--secondary);
+  margin-left: 4px;
+}
+
+.btn-group-sep {
+  font-size: 12px;
+  color: var(--secondary);
+}
+
+/* ── Bottom panel (§12) ── */
+#bottom-panel {
+  flex-shrink: 0;
+  display: flex;
+  flex-direction: column;
+  border-top: 1px solid var(--base-300);
+}
+
+#bottom-panel-handle {
+  flex-shrink: 0;
+  position: relative;
+  cursor: row-resize;
+  background: var(--base-300);
+}
+
+#bottom-panel-toggle {
+  width: 100%;
+  background: transparent;
+  border: none;
+  color: var(--secondary);
+  padding: 2px 12px;
+  font-size: 11px;
+  cursor: pointer;
+  text-align: center;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  gap: 6px;
+}
+#bottom-panel-toggle:hover { color: var(--base-content); }
+
+#bottom-panel-body {
+  display: none;
+  height: 200px;
+  background: var(--base-100);
+  overflow: hidden;
+}
+#bottom-panel-body.open {
+  display: flex;
+}
+
+/* ── Log panel (left side) ── */
+#log-panel {
+  flex: 1;
+  display: flex;
+  flex-direction: column;
+  min-width: 0;
+  overflow: hidden;
+}
+
+#log-panel-header {
+  font-size: 11px;
+  font-weight: 600;
+  color: var(--secondary);
+  padding: 4px 10px;
+  background: var(--base-200);
+  border-bottom: 1px solid var(--base-300);
+  flex-shrink: 0;
+}
+
+#log-content {
+  flex: 1;
+  overflow-y: auto;
+  padding: 6px 10px;
+  font-family: 'Consolas', 'Courier New', monospace;
+  font-size: 11px;
+  color: #00FF00;
+  line-height: 1.5;
+  white-space: pre-wrap;
+  word-break: break-all;
+  background: #0F0F0F;
+}
+
+.log-repeat-count {
+  color: var(--secondary);
+  font-size: 10px;
+  margin-left: 6px;
+}
+
+/* ── Job details (right side) ── */
+#job-details {
+  flex: 0 0 280px;
+  min-width: 150px;
+  padding: 10px 12px;
+  overflow-y: auto;
+  border-left: 1px solid var(--base-300);
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+}
+
+/* Bottom panel vertical splitter */
+#bottom-splitter {
+  width: 5px;
+  background: var(--base-300);
+  cursor: col-resize;
+  flex-shrink: 0;
+}
+#bottom-splitter:hover { background: var(--primary); }
+
+.job-detail-row {
+  display: flex;
+  gap: 10px;
+  font-size: 12px;
+  line-height: 1.4;
+}
+
+.job-label {
+  min-width: 65px;
+  color: var(--secondary);
+  flex-shrink: 0;
+  font-weight: 600;
+  font-size: 11px;
+  text-transform: uppercase;
+  letter-spacing: 0.3px;
+}
+
+.job-value {
+  color: var(--base-content);
+  white-space: normal;
+  word-break: break-all;
+  overflow-wrap: break-word;
+}
+
+.job-cmd {
+  font-family: 'Consolas', 'Courier New', monospace;
+  font-size: 10px;
+  color: var(--secondary);
+}
+
+.job-detail-label {
+  font-size: 10px;
+  color: var(--secondary);
+  text-transform: uppercase;
+  letter-spacing: 0.3px;
+  margin-top: 2px;
+}
+
+.progress-bar-container {
+  height: 10px;
+  min-height: 10px;
+  background: var(--base-300);
+  border-radius: 3px;
+  overflow: hidden;
+  width: 100%;
+  position: relative;
+}
+
+#progress-bar {
+  position: absolute;
+  top: 0;
+  left: 0;
+  height: 10px;
+  background: var(--primary);
+  width: 0%;
+  transition: width 0.3s ease;
+  border-radius: 3px;
+}
+
+#batch-progress-bar {
+  position: absolute;
+  top: 0;
+  left: 0;
+  height: 10px;
+  background: var(--primary);
+  width: 0%;
+  transition: width 0.3s ease;
+  border-radius: 3px;
+}
 #drop-overlay {
   display: none;
   position: absolute;
@@ -460,97 +647,9 @@ input[readonly] {
 }
 .btn-primary:hover:not(:disabled) { filter: brightness(1.15); }
 
-/* ── Bottom bar (§12) ── */
-#bottom-bar {
-  background: var(--base-100);
-  border-top: 1px solid var(--base-300);
-  padding: 6px 12px;
-  display: flex;
-  flex-direction: column;
-  gap: 3px;
-  flex-shrink: 0;
-}
+/* ── (bottom bar removed — replaced by bottom-panel) ── */
 
-#status-file {
-  font-size: 12px;
-  font-style: italic;
-  color: var(--secondary);
-  white-space: nowrap;
-  overflow: hidden;
-  text-overflow: ellipsis;
-}
-
-#status-cmd {
-  font-family: 'Consolas', 'Courier New', monospace;
-  font-size: 10px;
-  color: var(--secondary);
-  white-space: nowrap;
-  overflow: hidden;
-  text-overflow: ellipsis;
-  max-height: 14px;
-}
-
-#progress-bar-container {
-  height: 16px;
-  background: var(--base-300);
-  border-radius: 3px;
-  overflow: hidden;
-}
-
-#progress-bar {
-  height: 100%;
-  background: var(--primary);
-  width: 0%;
-  transition: width 0.3s ease;
-  border-radius: 3px;
-}
-
-#bottom-buttons {
-  display: flex;
-  gap: 6px;
-  padding-top: 4px;
-}
-
-/* ── Log drawer (§11) ── */
-#log-drawer {
-  background: #0F0F0F;
-  border-top: 1px solid var(--base-300);
-  display: flex;
-  flex-direction: column;
-  overflow: hidden;
-  flex-shrink: 1;
-  height: 0;
-  transition: height 0.2s ease;
-}
-#log-drawer.open { height: 200px; max-height: 30vh; }
-
-#log-toggle {
-  background: var(--base-300);
-  border: none;
-  color: var(--secondary);
-  padding: 2px 12px;
-  font-size: 11px;
-  cursor: pointer;
-  text-align: center;
-  display: flex;
-  align-items: center;
-  justify-content: center;
-  gap: 6px;
-  flex-shrink: 0;
-}
-#log-toggle:hover { color: var(--base-content); background: var(--neutral); }
-
-#log-content {
-  flex: 1;
-  overflow-y: auto;
-  padding: 6px 10px;
-  font-family: 'Consolas', 'Courier New', monospace;
-  font-size: 11px;
-  color: #00FF00;
-  line-height: 1.5;
-  white-space: pre-wrap;
-  word-break: break-all;
-}
+/* ── (log drawer removed — replaced by bottom-panel log) ── */
 
 /* ── Context menu (§5.5) ── */
 #context-menu {
@@ -619,7 +718,7 @@ input[readonly] {
   transition: opacity 0.15s, visibility 0.15s;
   pointer-events: none;
 }
-#btn-start-wrapper:hover .start-tooltip {
+#btn-start-wrapper:hover .start-tooltip:not(:empty) {
   visibility: visible;
   opacity: 1;
 }

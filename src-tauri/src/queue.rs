@@ -47,6 +47,7 @@ pub struct QueueItem {
     pub is_hdr: bool,
     pub color_transfer: String,
     pub audio_streams: Vec<AudioStreamInfo>,
+    pub duration_secs: f64,
 }
 
 /// Per-stream audio metadata collected during probing.
@@ -137,6 +138,7 @@ pub fn add_paths_to_queue(queue: &mut Vec<QueueItem>, paths: &[String]) -> Vec<Q
             is_hdr: false,
             color_transfer: String::new(),
             audio_streams: Vec::new(),
+            duration_secs: 0.0,
         };
         queue.push(item.clone());
         added.push(item);
