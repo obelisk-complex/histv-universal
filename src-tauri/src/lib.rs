@@ -1,18 +1,27 @@
-mod config;
+pub mod events;
 mod encoder;
 mod ffmpeg;
 mod probe;
-mod queue;
+pub mod queue;
+
+#[cfg(feature = "custom-protocol")]
+mod config;
+#[cfg(feature = "custom-protocol")]
+mod tauri_sink;
+#[cfg(feature = "custom-protocol")]
 mod themes;
 
 use std::sync::Arc;
-use tauri::Emitter;
 use tokio::sync::Mutex;
 
-pub use config::AppConfig;
 pub use encoder::EncoderInfo;
+pub use events::EventSink;
 pub use probe::ProbeResult;
 pub use queue::{AddResult, BatchState, QueueItem, QueueItemStatus};
+
+#[cfg(feature = "custom-protocol")]
+pub use config::AppConfig;
+#[cfg(feature = "custom-protocol")]
 pub use themes::Theme;
 
 /// Shared application state accessible from all Tauri commands.
@@ -21,374 +30,412 @@ pub struct AppState {
     pub batch: Mutex<BatchState>,
     pub detected_video_encoders: Mutex<Vec<EncoderInfo>>,
     pub detected_audio_encoders: Mutex<Vec<String>>,
+    #[cfg(feature = "custom-protocol")]
     pub config: Mutex<AppConfig>,
     pub encoder_detection_done: Mutex<bool>,
     pub ffmpeg_missing: Mutex<bool>,
+    #[cfg(feature = "custom-protocol")]
     pub themes: Mutex<Vec<Theme>>,
 }
 
 // ── Tauri commands ──────────────────────────────────────────────
+//
+// All commands below are GUI-only and gated behind the custom-protocol feature.
 
-#[tauri::command]
-async fn get_themes(state: tauri::State<'_, Arc<AppState>>) -> Result<Vec<Theme>, String> {
-    let t = state.themes.lock().await;
-    Ok(t.clone())
-}
+#[cfg(feature = "custom-protocol")]
+mod gui_commands {
+    use super::*;
+    use tauri::Emitter;
 
-#[tauri::command]
-async fn load_themes(
-    app: tauri::AppHandle,
-    state: tauri::State<'_, Arc<AppState>>,
-) -> Result<Vec<Theme>, String> {
-    let loaded = themes::scan_themes_folder(&app);
-    let mut t = state.themes.lock().await;
-    *t = loaded.clone();
-    Ok(loaded)
-}
-
-#[tauri::command]
-async fn get_config(state: tauri::State<'_, Arc<AppState>>) -> Result<AppConfig, String> {
-    let c = state.config.lock().await;
-    Ok(c.clone())
-}
-
-#[tauri::command]
-async fn save_config(
-    app: tauri::AppHandle,
-    state: tauri::State<'_, Arc<AppState>>,
-    config: AppConfig,
-) -> Result<(), String> {
-    let mut c = state.config.lock().await;
-    *c = config.clone();
-    config::save_config(&app, &config).map_err(|e| e.to_string())
-}
-
-#[tauri::command]
-async fn get_encoder_detection_status(
-    state: tauri::State<'_, Arc<AppState>>,
-) -> Result<bool, String> {
-    let done = state.encoder_detection_done.lock().await;
-    Ok(*done)
-}
-
-#[tauri::command]
-async fn get_ffmpeg_missing_status(
-    state: tauri::State<'_, Arc<AppState>>,
-) -> Result<bool, String> {
-    let missing = state.ffmpeg_missing.lock().await;
-    Ok(*missing)
-}
-
-#[tauri::command]
-async fn get_detected_encoders(
-    state: tauri::State<'_, Arc<AppState>>,
-) -> Result<(Vec<EncoderInfo>, Vec<String>), String> {
-    let ve = state.detected_video_encoders.lock().await;
-    let ae = state.detected_audio_encoders.lock().await;
-    Ok((ve.clone(), ae.clone()))
-}
-
-#[tauri::command]
-async fn add_files_to_queue(
-    state: tauri::State<'_, Arc<AppState>>,
-    paths: Vec<String>,
-) -> Result<AddResult, String> {
-    let mut q = state.queue.lock().await;
-    let result = queue::add_paths_to_queue(&mut q, &paths);
-    Ok(result)
-}
-
-#[tauri::command]
-async fn remove_queue_items(
-    state: tauri::State<'_, Arc<AppState>>,
-    indices: Vec<usize>,
-) -> Result<(), String> {
-    let mut q = state.queue.lock().await;
-    queue::remove_items(&mut q, &indices);
-    Ok(())
-}
-
-#[tauri::command]
-async fn clear_completed(state: tauri::State<'_, Arc<AppState>>) -> Result<(), String> {
-    let mut q = state.queue.lock().await;
-    q.retain(|item| item.status != QueueItemStatus::Done);
-    Ok(())
-}
-
-#[tauri::command]
-async fn clear_non_pending(state: tauri::State<'_, Arc<AppState>>) -> Result<(), String> {
-    let mut q = state.queue.lock().await;
-    queue::clear_non_pending(&mut q);
-    Ok(())
-}
-
-#[tauri::command]
-async fn clear_all_queue(state: tauri::State<'_, Arc<AppState>>) -> Result<(), String> {
-    let mut q = state.queue.lock().await;
-    q.clear();
-    Ok(())
-}
-
-#[tauri::command]
-async fn requeue_items(
-    state: tauri::State<'_, Arc<AppState>>,
-    indices: Vec<usize>,
-) -> Result<(), String> {
-    let mut q = state.queue.lock().await;
-    queue::requeue_items(&mut q, &indices);
-    Ok(())
-}
-
-#[tauri::command]
-async fn requeue_all(state: tauri::State<'_, Arc<AppState>>) -> Result<(), String> {
-    let mut q = state.queue.lock().await;
-    queue::requeue_all(&mut q);
-    Ok(())
-}
-
-#[tauri::command]
-async fn move_queue_item(
-    state: tauri::State<'_, Arc<AppState>>,
-    from: usize,
-    to: usize,
-) -> Result<(), String> {
-    let mut q = state.queue.lock().await;
-    queue::move_item(&mut q, from, to);
-    Ok(())
-}
-
-#[tauri::command]
-async fn reveal_file(path: String) -> Result<(), String> {
-    #[cfg(target_os = "windows")]
-    {
-        tokio::process::Command::new("explorer")
-            .args(["/select,", &path])
-            .spawn()
-            .map_err(|e| format!("Could not reveal file: {e}"))?;
+    #[tauri::command]
+    pub async fn get_themes(state: tauri::State<'_, Arc<AppState>>) -> Result<Vec<Theme>, String> {
+        let t = state.themes.lock().await;
+        Ok(t.clone())
     }
-    #[cfg(target_os = "macos")]
-    {
-        tokio::process::Command::new("open")
-            .args(["-R", &path])
-            .spawn()
-            .map_err(|e| format!("Could not reveal file: {e}"))?;
+
+    #[tauri::command]
+    pub async fn load_themes(
+        app: tauri::AppHandle,
+        state: tauri::State<'_, Arc<AppState>>,
+    ) -> Result<Vec<Theme>, String> {
+        let loaded = themes::scan_themes_folder(&app);
+        let mut t = state.themes.lock().await;
+        *t = loaded.clone();
+        Ok(loaded)
     }
-    #[cfg(target_os = "linux")]
-    {
-        // Try xdg-open on the parent directory
-        if let Some(parent) = std::path::Path::new(&path).parent() {
-            tokio::process::Command::new("xdg-open")
-                .arg(parent.to_string_lossy().as_ref())
+
+    #[tauri::command]
+    pub async fn get_config(state: tauri::State<'_, Arc<AppState>>) -> Result<AppConfig, String> {
+        let c = state.config.lock().await;
+        Ok(c.clone())
+    }
+
+    #[tauri::command]
+    pub async fn save_config(
+        app: tauri::AppHandle,
+        state: tauri::State<'_, Arc<AppState>>,
+        config: AppConfig,
+    ) -> Result<(), String> {
+        let mut c = state.config.lock().await;
+        *c = config.clone();
+        config::save_config(&app, &config).map_err(|e| e.to_string())
+    }
+
+    #[tauri::command]
+    pub async fn get_encoder_detection_status(
+        state: tauri::State<'_, Arc<AppState>>,
+    ) -> Result<bool, String> {
+        let done = state.encoder_detection_done.lock().await;
+        Ok(*done)
+    }
+
+    #[tauri::command]
+    pub async fn get_ffmpeg_missing_status(
+        state: tauri::State<'_, Arc<AppState>>,
+    ) -> Result<bool, String> {
+        let missing = state.ffmpeg_missing.lock().await;
+        Ok(*missing)
+    }
+
+    #[tauri::command]
+    pub async fn get_detected_encoders(
+        state: tauri::State<'_, Arc<AppState>>,
+    ) -> Result<(Vec<EncoderInfo>, Vec<String>), String> {
+        let ve = state.detected_video_encoders.lock().await;
+        let ae = state.detected_audio_encoders.lock().await;
+        Ok((ve.clone(), ae.clone()))
+    }
+
+    #[tauri::command]
+    pub async fn add_files_to_queue(
+        state: tauri::State<'_, Arc<AppState>>,
+        paths: Vec<String>,
+    ) -> Result<AddResult, String> {
+        let mut q = state.queue.lock().await;
+        let result = queue::add_paths_to_queue(&mut q, &paths);
+        Ok(result)
+    }
+
+    #[tauri::command]
+    pub async fn remove_queue_items(
+        state: tauri::State<'_, Arc<AppState>>,
+        indices: Vec<usize>,
+    ) -> Result<(), String> {
+        let mut q = state.queue.lock().await;
+        queue::remove_items(&mut q, &indices);
+        Ok(())
+    }
+
+    #[tauri::command]
+    pub async fn clear_completed(state: tauri::State<'_, Arc<AppState>>) -> Result<(), String> {
+        let mut q = state.queue.lock().await;
+        q.retain(|item| item.status != QueueItemStatus::Done);
+        Ok(())
+    }
+
+    #[tauri::command]
+    pub async fn clear_non_pending(state: tauri::State<'_, Arc<AppState>>) -> Result<(), String> {
+        let mut q = state.queue.lock().await;
+        queue::clear_non_pending(&mut q);
+        Ok(())
+    }
+
+    #[tauri::command]
+    pub async fn clear_all_queue(state: tauri::State<'_, Arc<AppState>>) -> Result<(), String> {
+        let mut q = state.queue.lock().await;
+        q.clear();
+        Ok(())
+    }
+
+    #[tauri::command]
+    pub async fn requeue_items(
+        state: tauri::State<'_, Arc<AppState>>,
+        indices: Vec<usize>,
+    ) -> Result<(), String> {
+        let mut q = state.queue.lock().await;
+        queue::requeue_items(&mut q, &indices);
+        Ok(())
+    }
+
+    #[tauri::command]
+    pub async fn requeue_all(state: tauri::State<'_, Arc<AppState>>) -> Result<(), String> {
+        let mut q = state.queue.lock().await;
+        queue::requeue_all(&mut q);
+        Ok(())
+    }
+
+    #[tauri::command]
+    pub async fn move_queue_item(
+        state: tauri::State<'_, Arc<AppState>>,
+        from: usize,
+        to: usize,
+    ) -> Result<(), String> {
+        let mut q = state.queue.lock().await;
+        queue::move_item(&mut q, from, to);
+        Ok(())
+    }
+
+    #[tauri::command]
+    pub async fn reveal_file(path: String) -> Result<(), String> {
+        #[cfg(target_os = "windows")]
+        {
+            tokio::process::Command::new("explorer")
+                .args(["/select,", &path])
                 .spawn()
                 .map_err(|e| format!("Could not reveal file: {e}"))?;
         }
+        #[cfg(target_os = "macos")]
+        {
+            tokio::process::Command::new("open")
+                .args(["-R", &path])
+                .spawn()
+                .map_err(|e| format!("Could not reveal file: {e}"))?;
+        }
+        #[cfg(target_os = "linux")]
+        {
+            if let Some(parent) = std::path::Path::new(&path).parent() {
+                tokio::process::Command::new("xdg-open")
+                    .arg(parent.to_string_lossy().as_ref())
+                    .spawn()
+                    .map_err(|e| format!("Could not reveal file: {e}"))?;
+            }
+        }
+        Ok(())
     }
-    Ok(())
-}
 
-#[tauri::command]
-async fn open_file(path: String) -> Result<(), String> {
-    #[cfg(target_os = "windows")]
-    {
-        tokio::process::Command::new("cmd")
-            .args(["/C", "start", "", &path])
-            .spawn()
-            .map_err(|e| format!("Could not open file: {e}"))?;
+    #[tauri::command]
+    pub async fn open_file(path: String) -> Result<(), String> {
+        #[cfg(target_os = "windows")]
+        {
+            tokio::process::Command::new("cmd")
+                .args(["/C", "start", "", &path])
+                .spawn()
+                .map_err(|e| format!("Could not open file: {e}"))?;
+        }
+        #[cfg(target_os = "macos")]
+        {
+            tokio::process::Command::new("open")
+                .arg(&path)
+                .spawn()
+                .map_err(|e| format!("Could not open file: {e}"))?;
+        }
+        #[cfg(target_os = "linux")]
+        {
+            tokio::process::Command::new("xdg-open")
+                .arg(&path)
+                .spawn()
+                .map_err(|e| format!("Could not open file: {e}"))?;
+        }
+        Ok(())
     }
-    #[cfg(target_os = "macos")]
-    {
-        tokio::process::Command::new("open")
-            .arg(&path)
-            .spawn()
-            .map_err(|e| format!("Could not open file: {e}"))?;
-    }
-    #[cfg(target_os = "linux")]
-    {
-        tokio::process::Command::new("xdg-open")
-            .arg(&path)
-            .spawn()
-            .map_err(|e| format!("Could not open file: {e}"))?;
-    }
-    Ok(())
-}
 
-#[tauri::command]
-async fn get_queue(state: tauri::State<'_, Arc<AppState>>) -> Result<Vec<QueueItem>, String> {
-    let q = state.queue.lock().await;
-    Ok(q.clone())
-}
-
-#[tauri::command]
-async fn probe_file(
-    app: tauri::AppHandle,
-    state: tauri::State<'_, Arc<AppState>>,
-    index: usize,
-) -> Result<ProbeResult, String> {
-    let file_path = {
+    #[tauri::command]
+    pub async fn get_queue(state: tauri::State<'_, Arc<AppState>>) -> Result<Vec<QueueItem>, String> {
         let q = state.queue.lock().await;
-        if index >= q.len() {
-            return Err("Index out of range".to_string());
-        }
-        q[index].full_path.clone()
-    };
-
-    // Update status to Probing
-    {
-        let mut q = state.queue.lock().await;
-        if index < q.len() {
-            q[index].status = QueueItemStatus::Probing;
-        }
+        Ok(q.clone())
     }
-    let _ = app.emit("queue-item-updated", (index, "Probing"));
 
-    let result = probe::probe_file(&file_path, &app).await;
+    #[tauri::command]
+    pub async fn probe_file(
+        app: tauri::AppHandle,
+        state: tauri::State<'_, Arc<AppState>>,
+        index: usize,
+    ) -> Result<ProbeResult, String> {
+        let sink = tauri_sink::TauriSink::new(app.clone());
 
-    // Update the queue item with probe results
-    {
-        let mut q = state.queue.lock().await;
-        if index < q.len() {
-            match &result {
-                Ok(pr) => {
-                    q[index].video_codec = pr.video_codec.clone();
-                    q[index].video_width = pr.video_width;
-                    q[index].video_height = pr.video_height;
-                    q[index].video_bitrate_bps = pr.video_bitrate_bps;
-                    q[index].video_bitrate_mbps = pr.video_bitrate_mbps;
-                    q[index].is_hdr = pr.is_hdr;
-                    q[index].color_transfer = pr.color_transfer.clone();
-                    q[index].audio_streams = pr.audio_streams.clone();
-                    q[index].duration_secs = pr.duration_secs;
-                    q[index].status = QueueItemStatus::Pending;
-                }
-                Err(_) => {
-                    q[index].status = QueueItemStatus::Failed;
+        let file_path = {
+            let q = state.queue.lock().await;
+            if index >= q.len() {
+                return Err("Index out of range".to_string());
+            }
+            q[index].full_path.clone()
+        };
+
+        // Update status to Probing
+        {
+            let mut q = state.queue.lock().await;
+            if index < q.len() {
+                q[index].status = QueueItemStatus::Probing;
+            }
+        }
+        sink.queue_item_updated(index, "Probing");
+
+        let result = probe::probe_file(&file_path, &sink).await;
+
+        // Update the queue item with probe results
+        {
+            let mut q = state.queue.lock().await;
+            if index < q.len() {
+                match &result {
+                    Ok(pr) => {
+                        q[index].video_codec = pr.video_codec.clone();
+                        q[index].video_width = pr.video_width;
+                        q[index].video_height = pr.video_height;
+                        q[index].video_bitrate_bps = pr.video_bitrate_bps;
+                        q[index].video_bitrate_mbps = pr.video_bitrate_mbps;
+                        q[index].is_hdr = pr.is_hdr;
+                        q[index].color_transfer = pr.color_transfer.clone();
+                        q[index].audio_streams = pr.audio_streams.clone();
+                        q[index].duration_secs = pr.duration_secs;
+                        q[index].status = QueueItemStatus::Pending;
+                    }
+                    Err(_) => {
+                        q[index].status = QueueItemStatus::Failed;
+                    }
                 }
             }
         }
+        sink.queue_item_probed(index);
+
+        result
     }
-    let _ = app.emit("queue-item-probed", index);
 
-    result
-}
+    #[tauri::command]
+    pub async fn start_batch(
+        app: tauri::AppHandle,
+        state: tauri::State<'_, Arc<AppState>>,
+        settings: serde_json::Value,
+    ) -> Result<(), String> {
+        let state_arc = state.inner().clone();
+        let sink: Arc<dyn EventSink> = Arc::new(tauri_sink::TauriSink::new(app.clone()));
 
-#[tauri::command]
-async fn start_batch(
-    app: tauri::AppHandle,
-    state: tauri::State<'_, Arc<AppState>>,
-    settings: serde_json::Value,
-) -> Result<(), String> {
-    let state_arc = state.inner().clone();
-    encoder::start_batch_encode(app, state_arc, settings).await
-}
-
-#[tauri::command]
-async fn cancel_current(state: tauri::State<'_, Arc<AppState>>) -> Result<(), String> {
-    let mut b = state.batch.lock().await;
-    b.cancel_current = true;
-    Ok(())
-}
-
-#[tauri::command]
-async fn cancel_all(state: tauri::State<'_, Arc<AppState>>) -> Result<(), String> {
-    let mut b = state.batch.lock().await;
-    b.cancel_all = true;
-    Ok(())
-}
-
-#[tauri::command]
-async fn toggle_pause(state: tauri::State<'_, Arc<AppState>>) -> Result<bool, String> {
-    let mut b = state.batch.lock().await;
-    b.paused = !b.paused;
-    Ok(b.paused)
-}
-
-#[tauri::command]
-async fn is_batch_running(state: tauri::State<'_, Arc<AppState>>) -> Result<bool, String> {
-    let b = state.batch.lock().await;
-    Ok(b.running)
-}
-
-#[tauri::command]
-async fn respond_overwrite(
-    state: tauri::State<'_, Arc<AppState>>,
-    response: String,
-) -> Result<(), String> {
-    let mut b = state.batch.lock().await;
-    b.overwrite_response = Some(response);
-    Ok(())
-}
-
-#[tauri::command]
-async fn respond_fallback(
-    state: tauri::State<'_, Arc<AppState>>,
-    response: String,
-) -> Result<(), String> {
-    let mut b = state.batch.lock().await;
-    b.fallback_response = Some(response);
-    Ok(())
-}
-
-#[tauri::command]
-async fn execute_post_batch_action(action: String) -> Result<(), String> {
-    encoder::execute_post_action(&action).await
-}
-
-#[tauri::command]
-async fn check_ffmpeg_available() -> Result<bool, String> {
-    Ok(ffmpeg::is_available().await)
-}
-
-#[tauri::command]
-fn get_ffmpeg_dir() -> Result<String, String> {
-    ffmpeg::exe_dir()
-        .map(|d| d.to_string_lossy().to_string())
-        .ok_or_else(|| "Could not determine executable directory".to_string())
-}
-
-#[tauri::command]
-async fn download_ffmpeg(
-    app: tauri::AppHandle,
-    state: tauri::State<'_, Arc<AppState>>,
-) -> Result<(), String> {
-    let target_dir = ffmpeg::app_data_bin_dir()
-        .ok_or_else(|| "Could not determine app data directory".to_string())?;
-
-    // Create the directory if it doesn't exist
-    std::fs::create_dir_all(&target_dir)
-        .map_err(|e| format!("Could not create directory {}: {e}", target_dir.display()))?;
-
-    ffmpeg::download_to_dir(&target_dir, &app).await?;
-
-    // Re-resolve binary paths now that ffmpeg is in app-data
-    ffmpeg::reinit(&app.clone());
-
-    // Re-run encoder detection now that ffmpeg is available
-    let _ = app.emit("log", "[detect] ffmpeg downloaded, re-running encoder detection...");
-    let (video, audio) = encoder::detect_encoders(&app).await;
-    {
-        let mut ve = state.detected_video_encoders.lock().await;
-        *ve = video;
+        // The overwrite-prompt and fallback-prompt events need to go through the
+        // AppHandle directly since they are GUI-specific prompt triggers, not
+        // generic EventSink output. We handle this by having the TauriSink's
+        // queue_item_updated emit the overwrite-prompt and fallback-prompt events
+        // when it sees the special status prefix. This is a temporary bridge
+        // until BatchControl is implemented in Phase 3.
+        encoder::start_batch_encode(sink, state_arc, settings).await
     }
-    {
-        let mut ae = state.detected_audio_encoders.lock().await;
-        *ae = audio;
+
+    #[tauri::command]
+    pub async fn cancel_current(state: tauri::State<'_, Arc<AppState>>) -> Result<(), String> {
+        let mut b = state.batch.lock().await;
+        b.cancel_current = true;
+        Ok(())
     }
-    {
-        let mut done = state.encoder_detection_done.lock().await;
-        *done = true;
+
+    #[tauri::command]
+    pub async fn cancel_all(state: tauri::State<'_, Arc<AppState>>) -> Result<(), String> {
+        let mut b = state.batch.lock().await;
+        b.cancel_all = true;
+        Ok(())
     }
-    {
-        let mut missing = state.ffmpeg_missing.lock().await;
-        *missing = false;
+
+    #[tauri::command]
+    pub async fn toggle_pause(state: tauri::State<'_, Arc<AppState>>) -> Result<bool, String> {
+        let mut b = state.batch.lock().await;
+        b.paused = !b.paused;
+        Ok(b.paused)
     }
-    let _ = app.emit("encoder-detection-done", ());
-    Ok(())
+
+    #[tauri::command]
+    pub async fn is_batch_running(state: tauri::State<'_, Arc<AppState>>) -> Result<bool, String> {
+        let b = state.batch.lock().await;
+        Ok(b.running)
+    }
+
+    #[tauri::command]
+    pub async fn respond_overwrite(
+        state: tauri::State<'_, Arc<AppState>>,
+        response: String,
+    ) -> Result<(), String> {
+        let mut b = state.batch.lock().await;
+        b.overwrite_response = Some(response);
+        Ok(())
+    }
+
+    #[tauri::command]
+    pub async fn respond_fallback(
+        state: tauri::State<'_, Arc<AppState>>,
+        response: String,
+    ) -> Result<(), String> {
+        let mut b = state.batch.lock().await;
+        b.fallback_response = Some(response);
+        Ok(())
+    }
+
+    #[tauri::command]
+    pub async fn execute_post_batch_action(action: String) -> Result<(), String> {
+        encoder::execute_post_action(&action).await
+    }
+
+    #[tauri::command]
+    pub async fn check_ffmpeg_available() -> Result<bool, String> {
+        Ok(ffmpeg::is_available().await)
+    }
+
+    #[tauri::command]
+    pub fn get_ffmpeg_dir() -> Result<String, String> {
+        ffmpeg::exe_dir()
+            .map(|d| d.to_string_lossy().to_string())
+            .ok_or_else(|| "Could not determine executable directory".to_string())
+    }
+
+    #[cfg(feature = "downloader")]
+    #[tauri::command]
+    pub async fn download_ffmpeg(
+        app: tauri::AppHandle,
+        state: tauri::State<'_, Arc<AppState>>,
+    ) -> Result<(), String> {
+        use tauri::Manager;
+
+        let sink = tauri_sink::TauriSink::new(app.clone());
+
+        let target_dir = ffmpeg::app_data_bin_dir()
+            .ok_or_else(|| "Could not determine app data directory".to_string())?;
+
+        // Create the directory if it doesn't exist
+        std::fs::create_dir_all(&target_dir)
+            .map_err(|e| format!("Could not create directory {}: {e}", target_dir.display()))?;
+
+        ffmpeg::download_to_dir(&target_dir, &sink).await?;
+
+        // Re-resolve binary paths now that ffmpeg is in app-data
+        let resource_dir = app.path().resource_dir().ok();
+        ffmpeg::reinit(resource_dir.as_deref(), &sink);
+
+        // Re-run encoder detection now that ffmpeg is available
+        sink.log("[detect] ffmpeg downloaded, re-running encoder detection...");
+        let (video, audio) = encoder::detect_encoders(&sink).await;
+        {
+            let mut ve = state.detected_video_encoders.lock().await;
+            *ve = video;
+        }
+        {
+            let mut ae = state.detected_audio_encoders.lock().await;
+            *ae = audio;
+        }
+        {
+            let mut done = state.encoder_detection_done.lock().await;
+            *done = true;
+        }
+        {
+            let mut missing = state.ffmpeg_missing.lock().await;
+            *missing = false;
+        }
+        let _ = app.emit("encoder-detection-done", ());
+        Ok(())
+    }
+
+    #[cfg(not(feature = "downloader"))]
+    #[tauri::command]
+    pub async fn download_ffmpeg(
+        _app: tauri::AppHandle,
+        _state: tauri::State<'_, Arc<AppState>>,
+    ) -> Result<(), String> {
+        Err("Download feature not available in this build.".to_string())
+    }
 }
 
 // ── App entry ───────────────────────────────────────────────────
 
+#[cfg(feature = "custom-protocol")]
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
+    use gui_commands::*;
+    use tauri::{Emitter, Manager};
+
     let app_state = Arc::new(AppState {
         queue: Mutex::new(Vec::new()),
         batch: Mutex::new(BatchState::default()),
@@ -440,8 +487,12 @@ pub fn run() {
             open_file,
         ])
         .setup(move |app| {
-			// Resolve ffmpeg/ffprobe binary paths (sidecar or PATH)
-            ffmpeg::init(&app.handle());
+            let sink = tauri_sink::TauriSink::new(app.handle().clone());
+
+            // Resolve ffmpeg/ffprobe binary paths (sidecar or PATH)
+            let resource_dir = app.path().resource_dir().ok();
+            ffmpeg::init(resource_dir.as_deref(), None, &sink);
+
             // Load config
             let loaded_config = config::load_config(&app.handle());
             let themes_loaded = themes::scan_themes_folder(&app.handle());
@@ -465,6 +516,8 @@ pub fn run() {
             let state_for_detect = app_state.clone();
             let handle_for_detect = app_handle.clone();
             tauri::async_runtime::spawn(async move {
+                let detect_sink = tauri_sink::TauriSink::new(handle_for_detect.clone());
+
                 // Check if ffmpeg is reachable first
                 if !ffmpeg::is_available().await {
                     {
@@ -472,12 +525,12 @@ pub fn run() {
                         *missing = true;
                     }
                     let _ = handle_for_detect.emit("ffmpeg-missing", ());
-                    let _ = handle_for_detect.emit("log", "[detect] ffmpeg not found — waiting for user to install or download it");
+                    detect_sink.log("[detect] ffmpeg not found — waiting for user to install or download it");
                     return;
                 }
 
                 let (video, audio) =
-                    encoder::detect_encoders(&handle_for_detect).await;
+                    encoder::detect_encoders(&detect_sink).await;
                 {
                     let mut ve = state_for_detect.detected_video_encoders.lock().await;
                     *ve = video;

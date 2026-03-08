@@ -1,6 +1,6 @@
 use serde::{Deserialize, Serialize};
-use tauri::{AppHandle, Emitter};
 
+use crate::events::EventSink;
 use crate::ffmpeg;
 use crate::queue::AudioStreamInfo;
 
@@ -64,7 +64,7 @@ fn parse_numeric(s: &str) -> Option<f64> {
 /// Now the primary call requests all video/audio stream data plus format
 /// metadata in one go. Only the packet-counting bitrate fallback (tier 4)
 /// requires a second invocation, and that's rare.
-pub async fn probe_file(file_path: &str, app: &AppHandle) -> Result<ProbeResult, String> {
+pub async fn probe_file(file_path: &str, sink: &dyn EventSink) -> Result<ProbeResult, String> {
     // ── Single-pass probe: all streams + format in one call ──
     let json_raw = run_ffprobe(&[
         "-v", "error",
@@ -156,7 +156,7 @@ pub async fn probe_file(file_path: &str, app: &AppHandle) -> Result<ProbeResult,
         bps
     } else {
         // Tier 4: packet counting fallback — requires a second ffprobe call
-        packet_count_bitrate(file_path, app).await
+        packet_count_bitrate(file_path, sink).await
     };
 
     let video_bitrate_mbps = video_bitrate_bps / 1_000_000.0;
@@ -220,14 +220,11 @@ pub async fn probe_file(file_path: &str, app: &AppHandle) -> Result<ProbeResult,
 /// This is the only case that requires a second ffprobe invocation — it's
 /// needed for files where neither stream headers, MKV tags, nor format
 /// metadata contain a usable bitrate (e.g. some older AVI files).
-async fn packet_count_bitrate(file_path: &str, app: &AppHandle) -> f64 {
-    let _ = app.emit(
-        "log",
-        format!(
-            "[probe] Scanning packets for bitrate (this may take a moment)... {}",
-            file_path
-        ),
-    );
+async fn packet_count_bitrate(file_path: &str, sink: &dyn EventSink) -> f64 {
+    sink.log(&format!(
+        "[probe] Scanning packets for bitrate (this may take a moment)... {}",
+        file_path
+    ));
 
     let raw = match run_ffprobe(&[
         "-v", "error",

@@ -19,12 +19,11 @@
 //! - macOS 10.12 Sierra+ (x86_64 / ARM64) — Xcode CLT, Homebrew (Intel & AS), MacPorts
 //! - Linux (x86_64) — FHS paths, snap, flatpak, Nix, linuxbrew
 
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 use std::sync::RwLock;
-use tauri::AppHandle;
-use tauri::Emitter;
-use tauri::Manager;
 use tokio::process::Command;
+
+use crate::events::EventSink;
 
 static FFMPEG_PATH: RwLock<Option<PathBuf>> = RwLock::new(None);
 static FFPROBE_PATH: RwLock<Option<PathBuf>> = RwLock::new(None);
@@ -91,45 +90,57 @@ fn dirs_next() -> Option<PathBuf> {
 }
 
 /// Call once during app setup to resolve and cache the binary paths.
-pub fn init(app: &AppHandle) {
+///
+/// `resource_dir` — Tauri resource/sidecar directory (pass `None` for CLI).
+/// `_app_data_dir` — reserved for future use; app-data bin dir is resolved
+///                   internally via `app_data_bin_dir()`.
+/// `sink` — event output for logging which paths were resolved.
+pub fn init(
+    resource_dir: Option<&Path>,
+    _app_data_dir: Option<&Path>,
+    sink: &dyn EventSink,
+) {
     let ffmpeg_name = format!("ffmpeg{EXE_EXT}");
     let ffprobe_name = format!("ffprobe{EXE_EXT}");
 
-    let ffmpeg = resolve_binary(app, &ffmpeg_name);
-    let ffprobe = resolve_binary(app, &ffprobe_name);
+    let ffmpeg = resolve_binary(resource_dir, &ffmpeg_name);
+    let ffprobe = resolve_binary(resource_dir, &ffprobe_name);
 
-    log_resolved_path(app, "ffmpeg", &ffmpeg);
-    log_resolved_path(app, "ffprobe", &ffprobe);
+    log_resolved_path(sink, "ffmpeg", &ffmpeg);
+    log_resolved_path(sink, "ffprobe", &ffprobe);
 
     if let Ok(mut w) = FFMPEG_PATH.write() { *w = Some(ffmpeg); }
     if let Ok(mut w) = FFPROBE_PATH.write() { *w = Some(ffprobe); }
 }
 
 /// Re-resolve the binary paths after a download.
-pub fn reinit(app: &AppHandle) {
+pub fn reinit(
+    resource_dir: Option<&Path>,
+    sink: &dyn EventSink,
+) {
     let ffmpeg_name = format!("ffmpeg{EXE_EXT}");
     let ffprobe_name = format!("ffprobe{EXE_EXT}");
 
-    let ffmpeg = resolve_binary(app, &ffmpeg_name);
-    let ffprobe = resolve_binary(app, &ffprobe_name);
+    let ffmpeg = resolve_binary(resource_dir, &ffmpeg_name);
+    let ffprobe = resolve_binary(resource_dir, &ffprobe_name);
 
-    log_resolved_path(app, "ffmpeg", &ffmpeg);
-    log_resolved_path(app, "ffprobe", &ffprobe);
+    log_resolved_path(sink, "ffmpeg", &ffmpeg);
+    log_resolved_path(sink, "ffprobe", &ffprobe);
 
     if let Ok(mut w) = FFMPEG_PATH.write() { *w = Some(ffmpeg); }
     if let Ok(mut w) = FFPROBE_PATH.write() { *w = Some(ffprobe); }
 }
 
 /// Log which path was resolved for a binary (helps diagnose "not found" reports).
-fn log_resolved_path(app: &AppHandle, label: &str, path: &PathBuf) {
+fn log_resolved_path(sink: &dyn EventSink, label: &str, path: &PathBuf) {
     let display = path.display();
     if path.exists() {
-        let _ = app.emit("log", format!("[ffmpeg] {label} resolved: {display}"));
+        sink.log(&format!("[ffmpeg] {label} resolved: {display}"));
     } else if path.components().count() == 1 {
         // Bare name — will rely on OS PATH lookup at spawn time
-        let _ = app.emit("log", format!("[ffmpeg] {label} not found in known locations, will try PATH"));
+        sink.log(&format!("[ffmpeg] {label} not found in known locations, will try PATH"));
     } else {
-        let _ = app.emit("log", format!("[ffmpeg] {label} resolved to {display} (does not exist yet)"));
+        sink.log(&format!("[ffmpeg] {label} resolved to {display} (does not exist yet)"));
     }
 }
 
@@ -180,6 +191,7 @@ pub fn exe_dir() -> Option<PathBuf> {
 // ── Download URLs ───────────────────────────────────────────────
 
 /// Download URL for the platform-appropriate ffmpeg static build.
+#[cfg(feature = "downloader")]
 fn download_url() -> Option<(&'static str, &'static str)> {
     // Returns (url, archive_type)
     #[cfg(all(target_os = "windows", target_arch = "x86_64"))]
@@ -198,7 +210,6 @@ fn download_url() -> Option<(&'static str, &'static str)> {
     }
     #[cfg(all(target_os = "macos", target_arch = "x86_64"))]
     {
-        // evermeet.cx provides static macOS builds; x86_64 for Intel Macs (~2012+)
         Some((
             "https://evermeet.cx/ffmpeg/get/zip",
             "zip",
@@ -206,7 +217,6 @@ fn download_url() -> Option<(&'static str, &'static str)> {
     }
     #[cfg(all(target_os = "macos", target_arch = "aarch64"))]
     {
-        // evermeet.cx builds work on Apple Silicon natively
         Some((
             "https://evermeet.cx/ffmpeg/get/zip",
             "zip",
@@ -226,12 +236,12 @@ fn download_url() -> Option<(&'static str, &'static str)> {
 
 /// Download URL for ffprobe on platforms where it is bundled separately.
 /// On macOS (evermeet.cx), ffmpeg and ffprobe are separate downloads.
-#[cfg(target_os = "macos")]
+#[cfg(all(feature = "downloader", target_os = "macos"))]
 fn ffprobe_download_url() -> Option<(&'static str, &'static str)> {
     Some(("https://evermeet.cx/ffmpeg/get/ffprobe/zip", "zip"))
 }
 
-#[cfg(not(target_os = "macos"))]
+#[cfg(all(feature = "downloader", not(target_os = "macos")))]
 fn ffprobe_download_url() -> Option<(&'static str, &'static str)> {
     // On Windows/Linux, ffprobe is included in the main archive
     None
@@ -242,14 +252,15 @@ fn ffprobe_download_url() -> Option<(&'static str, &'static str)> {
 /// Download ffmpeg and ffprobe to the given directory.
 /// Uses reqwest for cross-platform HTTP with progress reporting.
 /// Returns Ok(()) on success.
+#[cfg(feature = "downloader")]
 pub async fn download_to_dir(
     target_dir: &std::path::Path,
-    app: &AppHandle,
+    sink: &dyn EventSink,
 ) -> Result<(), String> {
     let (url, archive_type) = download_url()
         .ok_or_else(|| "Automatic download is not available for this platform. Please install ffmpeg manually (e.g. via Homebrew on macOS).".to_string())?;
 
-    let _ = app.emit("ffmpeg-download-progress", "Downloading ffmpeg... 0%");
+    sink.ffmpeg_download_progress("Downloading ffmpeg... 0%");
 
     // Stream-download a URL to a file, reporting progress
     let client = reqwest::Client::builder()
@@ -257,12 +268,12 @@ pub async fn download_to_dir(
         .build()
         .map_err(|e| format!("Failed to create HTTP client: {e}"))?;
 
-    download_file(&client, url, target_dir, archive_type, "ffmpeg", app).await?;
+    download_file(&client, url, target_dir, archive_type, "ffmpeg", sink).await?;
 
     // On macOS, ffprobe is a separate download from evermeet.cx
     if let Some((probe_url, probe_archive)) = ffprobe_download_url() {
-        let _ = app.emit("ffmpeg-download-progress", "Downloading ffprobe...");
-        download_file(&client, probe_url, target_dir, probe_archive, "ffprobe", app).await?;
+        sink.ffmpeg_download_progress("Downloading ffprobe...");
+        download_file(&client, probe_url, target_dir, probe_archive, "ffprobe", sink).await?;
     }
 
     // Verify the binaries exist
@@ -272,18 +283,19 @@ pub async fn download_to_dir(
         return Err("Extraction completed but ffmpeg/ffprobe not found in archive.".to_string());
     }
 
-    let _ = app.emit("ffmpeg-download-progress", "Done!");
+    sink.ffmpeg_download_progress("Done!");
     Ok(())
 }
 
 /// Download a single archive, extract the relevant binary, and clean up.
+#[cfg(feature = "downloader")]
 async fn download_file(
     client: &reqwest::Client,
     url: &str,
     target_dir: &std::path::Path,
     archive_type: &str,
     label: &str,
-    app: &AppHandle,
+    sink: &dyn EventSink,
 ) -> Result<(), String> {
     let tmp_path = target_dir.join(format!("_histv_dl_{label}.{}", archive_type.replace('.', "_")));
 
@@ -318,9 +330,8 @@ async fn download_file(
                 last_pct = pct;
                 let mb_done = downloaded as f64 / 1_048_576.0;
                 let mb_total = total_size as f64 / 1_048_576.0;
-                let _ = app.emit(
-                    "ffmpeg-download-progress",
-                    format!("Downloading {label}... {pct}% ({mb_done:.1} / {mb_total:.1} MB)"),
+                sink.ffmpeg_download_progress(
+                    &format!("Downloading {label}... {pct}% ({mb_done:.1} / {mb_total:.1} MB)"),
                 );
             }
         }
@@ -339,7 +350,7 @@ async fn download_file(
         return Err(format!("{label} download appears incomplete. Check your internet connection."));
     }
 
-    let _ = app.emit("ffmpeg-download-progress", format!("Extracting {label}..."));
+    sink.ffmpeg_download_progress(&format!("Extracting {label}..."));
 
     // Extract the binary from the archive
     #[cfg(target_os = "windows")]
@@ -363,10 +374,8 @@ async fn download_file(
     Ok(())
 }
 
-#[cfg(target_os = "windows")]
+#[cfg(all(feature = "downloader", target_os = "windows"))]
 fn extract_from_zip(zip_path: &std::path::Path, target_dir: &std::path::Path) -> Result<(), String> {
-    // Use PowerShell to extract just ffmpeg.exe and ffprobe.exe.
-    // System.IO.Compression.FileSystem is available from .NET 4.5+ (Windows 7 SP1+).
     let script = format!(
         r#"
 Add-Type -AssemblyName System.IO.Compression.FileSystem
@@ -397,11 +406,8 @@ $zip.Dispose()
     Ok(())
 }
 
-#[cfg(target_os = "linux")]
+#[cfg(all(feature = "downloader", target_os = "linux"))]
 fn extract_from_tar_xz(tar_path: &std::path::Path, target_dir: &std::path::Path) -> Result<(), String> {
-    // Use tar to extract just ffmpeg and ffprobe.
-    // The BtbN archives have files like ffmpeg-master-latest-linux64-gpl/bin/ffmpeg.
-    // --wildcards is GNU tar (standard on Linux); safe for glibc-based distros back to ~2014.
     let mut extract_cmd = std::process::Command::new("tar");
     extract_cmd.args([
             "xf",
@@ -422,19 +428,13 @@ fn extract_from_tar_xz(tar_path: &std::path::Path, target_dir: &std::path::Path)
         return Err(format!("Extraction failed: {stderr}"));
     }
 
-    // Ensure extracted binaries are executable
     set_executable(target_dir);
 
     Ok(())
 }
 
-/// Extract a flat zip archive (evermeet.cx style) where the binary is at the
-/// root of the archive. Used on macOS where ffmpeg and ffprobe are separate
-/// downloads, each containing just the single binary.
-#[cfg(target_os = "macos")]
+#[cfg(all(feature = "downloader", target_os = "macos"))]
 fn extract_from_zip_flat(zip_path: &std::path::Path, target_dir: &std::path::Path) -> Result<(), String> {
-    // Try unzip first (ships with macOS since 10.0), fall back to ditto (since 10.4).
-    // Both are safe for macOS 10.12 Sierra+ (our ~2016 compatibility floor).
     let mut extract_cmd = std::process::Command::new("unzip");
     extract_cmd.args([
         "-o",
@@ -451,7 +451,6 @@ fn extract_from_zip_flat(zip_path: &std::path::Path, target_dir: &std::path::Pat
             Ok(())
         }
         _ => {
-            // Fallback to ditto (always present on macOS, handles zip natively)
             let mut ditto_cmd = std::process::Command::new("ditto");
             ditto_cmd.args([
                 "-xk",
@@ -488,74 +487,49 @@ fn set_executable(dir: &std::path::Path) {
 }
 
 // ── Well-known directories ──────────────────────────────────────
-//
-// GUI apps (especially on macOS) often do not inherit the user's shell PATH.
-// Older systems may also have ffmpeg installed via package managers whose
-// bin directories are not on the default PATH for GUI-launched processes.
-// We check all well-known locations to maximise discoverability.
 
-/// Well-known binary directories to check on macOS.
-/// Covers Homebrew (Intel since ~2012, Apple Silicon since 2020), MacPorts
-/// (popular on older Macs), Xcode Command Line Tools (ships /usr/bin
-/// symlinks on 10.9+, but the actual CLT path is checked for completeness),
-/// Nix, and the standard /usr/local/bin used by manual installs.
 #[cfg(target_os = "macos")]
 const WELL_KNOWN_DIRS: &[&str] = &[
-    "/opt/homebrew/bin",                    // Homebrew on Apple Silicon (macOS 11+)
-    "/usr/local/bin",                       // Homebrew on Intel, manual installs, CLT symlinks
-    "/opt/local/bin",                       // MacPorts (popular on pre-2020 Macs)
-    "/usr/local/Cellar/ffmpeg",             // Homebrew Cellar (edge case: unlinked formula)
-    "/nix/var/nix/profiles/default/bin",    // Nix
+    "/opt/homebrew/bin",
+    "/usr/local/bin",
+    "/opt/local/bin",
+    "/usr/local/Cellar/ffmpeg",
+    "/nix/var/nix/profiles/default/bin",
 ];
 
-/// Well-known binary directories to check on Linux.
-/// Covers standard FHS paths, snap (Ubuntu 16.04+), flatpak exports,
-/// Linuxbrew (/home/linuxbrew), and Nix.
 #[cfg(target_os = "linux")]
 const WELL_KNOWN_DIRS: &[&str] = &[
-    "/usr/bin",                             // Standard FHS (most distros)
-    "/usr/local/bin",                       // Manual installs, source builds
-    "/snap/bin",                            // Snap packages (Ubuntu 16.04+)
-    "/var/lib/flatpak/exports/bin",         // Flatpak system installs
-    "/home/linuxbrew/.linuxbrew/bin",       // Linuxbrew
-    "/nix/var/nix/profiles/default/bin",    // Nix
+    "/usr/bin",
+    "/usr/local/bin",
+    "/snap/bin",
+    "/var/lib/flatpak/exports/bin",
+    "/home/linuxbrew/.linuxbrew/bin",
+    "/nix/var/nix/profiles/default/bin",
 ];
 
-// Static slice not used on Windows (dynamic env-var lookup needed),
-// but we still need the const for the catch-all cfg fallback.
 #[cfg(not(any(target_os = "windows", target_os = "macos", target_os = "linux")))]
 const WELL_KNOWN_DIRS: &[&str] = &[];
 
-/// Well-known binary directories to check on Windows.
-/// Chocolatey and Scoop are popular package managers; both default to
-/// well-known install locations. We also check common manual-extract
-/// locations (forums often advise extracting ffmpeg to the user profile).
 #[cfg(target_os = "windows")]
 fn well_known_dirs_windows() -> Vec<PathBuf> {
     let mut dirs: Vec<PathBuf> = Vec::new();
 
-    // Chocolatey — default install path (works on Windows 7+)
     if let Ok(choco) = std::env::var("ChocolateyInstall") {
         dirs.push(PathBuf::from(&choco).join("bin"));
     } else if let Ok(sd) = std::env::var("SystemDrive") {
-        // Chocolatey default when env var is missing
         dirs.push(PathBuf::from(&sd).join("ProgramData").join("chocolatey").join("bin"));
     }
 
-    // Scoop — user-level install (Windows 7+)
     if let Ok(home) = std::env::var("USERPROFILE") {
         dirs.push(PathBuf::from(&home).join("scoop").join("shims"));
-        // Common manual-extract locations
         dirs.push(PathBuf::from(&home).join("ffmpeg").join("bin"));
         dirs.push(PathBuf::from(&home).join("Downloads").join("ffmpeg").join("bin"));
     }
 
-    // winget packages — common linked location
     if let Ok(localappdata) = std::env::var("LOCALAPPDATA") {
         dirs.push(PathBuf::from(&localappdata).join("Microsoft").join("WinGet").join("Links"));
     }
 
-    // Program Files (both native and x86)
     if let Ok(pf) = std::env::var("ProgramFiles") {
         dirs.push(PathBuf::from(&pf).join("ffmpeg").join("bin"));
     }
@@ -567,28 +541,11 @@ fn well_known_dirs_windows() -> Vec<PathBuf> {
 }
 
 // ── macOS shell PATH resolution ─────────────────────────────────
-//
-// On macOS, GUI apps launched from Finder / Dock / Spotlight do not inherit
-// the user's shell PATH. This means `brew install ffmpeg` works perfectly
-// in Terminal but the binary is invisible to a Tauri app. This is the root
-// cause of the "installed ffmpeg but HISTV can't find it" report.
-//
-// We resolve this by spawning the user's login shell in non-interactive mode
-// and printing its PATH. This captures anything set in .zshrc, .bash_profile,
-// .profile, /etc/paths, /etc/paths.d/*, etc. — even on macOS 10.12 where
-// zsh wasn't yet the default (bash was used until Catalina 10.15).
-//
-// The shell is only spawned once at init time; the result is cached.
 
 #[cfg(target_os = "macos")]
 fn shell_path_dirs() -> Vec<PathBuf> {
-    // Determine the user's login shell. $SHELL is set by the system even for
-    // GUI apps (it comes from the user record, not from a parent shell).
     let shell = std::env::var("SHELL").unwrap_or_else(|_| "/bin/zsh".to_string());
 
-    // Use -l (login) -c to source the full login profile chain.
-    // -i (interactive) is deliberately omitted — it can trigger .zshrc
-    // prompts or other interactive-only setup that would hang.
     let output = std::process::Command::new(&shell)
         .args(["-l", "-c", "echo $PATH"])
         .stdout(std::process::Stdio::piped())
@@ -613,10 +570,10 @@ fn shell_path_dirs() -> Vec<PathBuf> {
 
 /// Resolve a binary name to a full path. Checks multiple locations
 /// in priority order, falling back to a bare name for PATH lookup.
-fn resolve_binary(app: &AppHandle, name: &str) -> PathBuf {
+fn resolve_binary(resource_dir: Option<&Path>, name: &str) -> PathBuf {
     // 1. Tauri resource directory (where sidecars are placed by the bundler)
-    if let Ok(resource_dir) = app.path().resource_dir() {
-        let candidate: PathBuf = resource_dir.join(name);
+    if let Some(res_dir) = resource_dir {
+        let candidate: PathBuf = res_dir.join(name);
         if candidate.exists() {
             return candidate;
         }
@@ -662,8 +619,6 @@ fn resolve_binary(app: &AppHandle, name: &str) -> PathBuf {
     }
 
     // 5. (macOS only) Directories from the user's login shell PATH.
-    //    This catches Homebrew, MacPorts, pyenv-installed ffmpeg, or anything
-    //    else the user has configured — even on old macOS with Xcode 8.x CLT.
     #[cfg(target_os = "macos")]
     {
         for dir in shell_path_dirs() {

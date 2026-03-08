@@ -1,22 +1,12 @@
+use crate::events::EventSink;
 use crate::queue::{QueueItem, QueueItemStatus};
 use crate::AppState;
 use crate::ffmpeg as ffbin;
 use serde::{Deserialize, Serialize};
 use std::path::Path;
 use std::sync::Arc;
-use tauri::{AppHandle, Emitter};
 use tokio::io::AsyncWriteExt;
 use tokio::process::Command;
-
-// ── Per-file progress event payload (#12 — avoids serde_json::json! allocation) ──
-
-#[derive(Debug, Clone, Serialize)]
-#[serde(rename_all = "camelCase")]
-struct FileProgress {
-    percent: f64,
-    time_secs: f64,
-    total_secs: f64,
-}
 
 // ── Encoder info & abstraction layer ────────────────────────────
 
@@ -158,8 +148,8 @@ pub fn software_fallback(codec_family: &str) -> &'static str {
 /// Detect available encoders by running `ffmpeg -encoders`, then verifying
 /// each hardware encoder with a single-frame test encode.
 /// Software encoders (libx265/libx264) skip the test — they always work.
-pub async fn detect_encoders(app: &AppHandle) -> (Vec<EncoderInfo>, Vec<String>) {
-    let _ = app.emit("log", "[detect] Starting encoder detection...");
+pub async fn detect_encoders(sink: &dyn EventSink) -> (Vec<EncoderInfo>, Vec<String>) {
+    sink.log("[detect] Starting encoder detection...");
 
     let output = match ffbin::ffmpeg_command()
         .args(["-encoders"])
@@ -170,12 +160,12 @@ pub async fn detect_encoders(app: &AppHandle) -> (Vec<EncoderInfo>, Vec<String>)
         Ok(child) => match child.wait_with_output().await {
             Ok(o) => o,
             Err(e) => {
-                let _ = app.emit("log", format!("[detect] ffmpeg wait error: {e}"));
+                sink.log(&format!("[detect] ffmpeg wait error: {e}"));
                 return fallback_encoders();
             }
         },
         Err(e) => {
-            let _ = app.emit("log", format!("[detect] ffmpeg not found: {e}"));
+            sink.log(&format!("[detect] ffmpeg not found: {e}"));
             return fallback_encoders();
         }
     };
@@ -193,7 +183,7 @@ pub async fn detect_encoders(app: &AppHandle) -> (Vec<EncoderInfo>, Vec<String>)
         });
 
         if !found {
-            let _ = app.emit("log", format!("[detect] {enc_name} not listed in ffmpeg"));
+            sink.log(&format!("[detect] {enc_name} not listed in ffmpeg"));
             continue;
         }
 
@@ -206,7 +196,7 @@ pub async fn detect_encoders(app: &AppHandle) -> (Vec<EncoderInfo>, Vec<String>)
 
         // Software encoders always work — skip test encode
         if !is_hw {
-            let _ = app.emit("log", format!("[detect] {enc_name} (SW) — available"));
+            sink.log(&format!("[detect] {enc_name} (SW) — available"));
             video_encoders.push(EncoderInfo {
                 name: enc_name.to_string(),
                 codec_family: family.to_string(),
@@ -216,16 +206,16 @@ pub async fn detect_encoders(app: &AppHandle) -> (Vec<EncoderInfo>, Vec<String>)
         }
 
         // Hardware encoder — verify with a 1-frame test encode
-        let _ = app.emit("log", format!("[detect] {enc_name} — testing..."));
+        sink.log(&format!("[detect] {enc_name} — testing..."));
         if test_encode(enc_name).await {
-            let _ = app.emit("log", format!("[detect] {enc_name} (HW) — works"));
+            sink.log(&format!("[detect] {enc_name} (HW) — works"));
             video_encoders.push(EncoderInfo {
                 name: enc_name.to_string(),
                 codec_family: family.to_string(),
                 is_hardware: true,
             });
         } else {
-            let _ = app.emit("log", format!("[detect] {enc_name} (HW) — not available (test encode failed)"));
+            sink.log(&format!("[detect] {enc_name} (HW) — not available (test encode failed)"));
         }
     }
 
@@ -247,15 +237,12 @@ pub async fn detect_encoders(app: &AppHandle) -> (Vec<EncoderInfo>, Vec<String>)
     }
 
     let total = video_encoders.len() + audio_encoders.len();
-    let _ = app.emit(
-        "log",
-        format!(
-            "[detect] Detection complete: {} encoders ({} video, {} audio)",
-            total,
-            video_encoders.len(),
-            audio_encoders.len()
-        ),
-    );
+    sink.log(&format!(
+        "[detect] Detection complete: {} encoders ({} video, {} audio)",
+        total,
+        video_encoders.len(),
+        audio_encoders.len()
+    ));
 
     (video_encoders, audio_encoders)
 }
@@ -360,8 +347,11 @@ fn assemble_ffmpeg_args(
 }
 
 /// Start the batch encoding loop in a background task.
+///
+/// `sink` is used for all output events (logging, progress, status).
+/// `state` provides access to queue items and batch control state.
 pub async fn start_batch_encode(
-    app: AppHandle,
+    sink: Arc<dyn EventSink>,
     state: Arc<AppState>,
     settings: serde_json::Value,
 ) -> Result<(), String> {
@@ -378,7 +368,7 @@ pub async fn start_batch_encode(
     let output_folder = if Path::new(&raw_output_folder).is_relative() {
         let base = resolve_base_dir();
         let resolved = base.join(&raw_output_folder);
-        let _ = app.emit("log", format!(
+        sink.log(&format!(
             "[batch] Resolved relative output '{}' to '{}'",
             raw_output_folder, resolved.display()
         ));
@@ -481,12 +471,12 @@ pub async fn start_batch_encode(
         b.overwrite_response = None;
         b.fallback_response = None;
     }
-    let _ = app.emit("batch-started", ());
+    sink.batch_started();
 
     // Spawn the encoding loop
     let state_clone = state.clone();
-    let app_clone = app.clone();
-    tauri::async_runtime::spawn(async move {
+    let sink_clone = sink.clone();
+    tokio::spawn(async move {
         let total = pending_indices.len();
         let mut done_count: u32 = 0;
         let mut fail_count: u32 = 0;
@@ -522,13 +512,7 @@ pub async fn start_batch_encode(
             }
 
             file_counter += 1;
-            let _ = app_clone.emit(
-                "batch-progress",
-                serde_json::json!({
-                    "current": file_counter,
-                    "total": total,
-                }),
-            );
+            sink_clone.batch_progress(file_counter, total);
 
             // Get item info
             let item: QueueItem = {
@@ -539,10 +523,7 @@ pub async fn start_batch_encode(
                 q[idx].clone()
             };
 
-            let _ = app_clone.emit(
-                "batch-status",
-                format!("[{}/{}] {}", file_counter, total, item.file_name),
-            );
+            sink_clone.batch_status(&format!("[{}/{}] {}", file_counter, total, item.file_name));
 
             // Update queue status to Encoding
             {
@@ -551,7 +532,7 @@ pub async fn start_batch_encode(
                     q[idx].status = QueueItemStatus::Encoding;
                 }
             }
-            let _ = app_clone.emit("queue-item-updated", (idx, "Encoding"));
+            sink_clone.queue_item_updated(idx, "Encoding");
 
             let ext = if output_container == "mp4" { "mp4" } else { "mkv" };
             let actual_output_folder = if output_next_to_input {
@@ -563,7 +544,7 @@ pub async fn start_batch_encode(
                 if !out_dir.exists() {
                     if let Err(e) = std::fs::create_dir_all(&out_dir) {
                         let err_msg = format!("  ERROR: Could not create output folder next to input: {e}");
-                        let _ = app_clone.emit("log", &err_msg);
+                        sink_clone.log(&err_msg);
                         log_lines.push(err_msg);
                         {
                             let mut q = state_clone.queue.lock().await;
@@ -571,7 +552,7 @@ pub async fn start_batch_encode(
                                 q[idx].status = QueueItemStatus::Failed;
                             }
                         }
-                        let _ = app_clone.emit("queue-item-updated", (idx, "Failed"));
+                        sink_clone.queue_item_updated(idx, "Failed");
                         fail_count += 1;
                         continue;
                     }
@@ -586,7 +567,7 @@ pub async fn start_batch_encode(
 
             // Log file being processed
             let log_msg = format!("[{}/{}] {}", file_counter, total, item.file_name);
-            let _ = app_clone.emit("log", &log_msg);
+            sink_clone.log(&log_msg);
             log_lines.push(log_msg);
 
             // Overwrite check (§7.3)
@@ -597,10 +578,7 @@ pub async fn start_batch_encode(
                 };
                 if !ow_always {
                     // Ask the frontend
-                    let _ = app_clone.emit(
-                        "overwrite-prompt",
-                        output_str.clone(),
-                    );
+                    sink_clone.queue_item_updated(idx, &format!("overwrite-prompt:{}", output_str));
 
                     // Wait for response
                     let response = wait_for_response(&state_clone, |b| {
@@ -610,7 +588,7 @@ pub async fn start_batch_encode(
 
                     match response.as_str() {
                         "no" => {
-                            let _ = app_clone.emit("log", "  Skipped (output exists)");
+                            sink_clone.log("  Skipped (output exists)");
                             log_lines.push("  Skipped (output exists)".into());
                             {
                                 let mut q = state_clone.queue.lock().await;
@@ -618,7 +596,7 @@ pub async fn start_batch_encode(
                                     q[idx].status = QueueItemStatus::Skipped;
                                 }
                             }
-                            let _ = app_clone.emit("queue-item-updated", (idx, "Skipped"));
+                            sink_clone.queue_item_updated(idx, "Skipped");
                             skip_count += 1;
                             continue;
                         }
@@ -699,7 +677,7 @@ pub async fn start_batch_encode(
                 );
             };
 
-            let _ = app_clone.emit("log", &mode_desc);
+            sink_clone.log(&mode_desc);
             log_lines.push(mode_desc);
 
             // Build audio args from pre-probed stream data (§6.2)
@@ -707,7 +685,7 @@ pub async fn start_batch_encode(
                 &item.audio_streams,
                 &audio_encoder,
                 audio_cap,
-                &app_clone,
+                sink_clone.as_ref(),
             );
 
             // Assemble full ffmpeg command (§10.3)
@@ -721,8 +699,8 @@ pub async fn start_batch_encode(
             );
 
             let cmd_line = format!("ffmpeg {}", ffmpeg_args.join(" "));
-            let _ = app_clone.emit("batch-command", &cmd_line);
-            let _ = app_clone.emit("log", format!("  CMD: {}", cmd_line));
+            sink_clone.batch_command(&cmd_line);
+            sink_clone.log(&format!("  CMD: {}", cmd_line));
             log_lines.push(format!("  CMD: {}", cmd_line));
 
             // Spawn ffmpeg (§10.2)
@@ -737,7 +715,7 @@ pub async fn start_batch_encode(
                 Ok(c) => c,
                 Err(e) => {
                     let err_msg = format!("  ERROR: Failed to launch ffmpeg: {e}");
-                    let _ = app_clone.emit("log", &err_msg);
+                    sink_clone.log(&err_msg);
                     log_lines.push(err_msg);
                     {
                         let mut q = state_clone.queue.lock().await;
@@ -745,27 +723,24 @@ pub async fn start_batch_encode(
                             q[idx].status = QueueItemStatus::Failed;
                         }
                     }
-                    let _ = app_clone.emit("queue-item-updated", (idx, "Failed"));
+                    sink_clone.queue_item_updated(idx, "Failed");
                     fail_count += 1;
                     continue;
                 }
             };
 
-            let _ = app_clone.emit("log", format!("  ffmpeg PID: {}", child.id().unwrap_or(0)));
+            sink_clone.log(&format!("  ffmpeg PID: {}", child.id().unwrap_or(0)));
 
             // Stream stderr for progress (§10.2)
-            // ffmpeg uses \r to overwrite progress lines in-place, so we
-            // read bytes and split on both \r and \n to catch every update.
             let stderr = child.stderr.take();
-            let app_for_stderr = app_clone.clone();
+            let sink_for_stderr = sink_clone.clone();
             let file_duration = item.duration_secs;
             let stderr_task = if let Some(stderr) = stderr {
-                Some(tauri::async_runtime::spawn(async move {
+                Some(tokio::spawn(async move {
                     use tokio::io::AsyncReadExt;
                     let mut reader = tokio::io::BufReader::new(stderr);
                     let mut buf = vec![0u8; 4096];
                     let mut line_buf = String::new();
-                    // Throttle progress events to at most every 250ms (#5)
                     let mut last_progress_emit = std::time::Instant::now()
                         - std::time::Duration::from_millis(500);
 
@@ -777,7 +752,7 @@ pub async fn start_batch_encode(
                                 for ch in chunk.chars() {
                                     if ch == '\r' || ch == '\n' {
                                         if !line_buf.is_empty() {
-                                            let _ = app_for_stderr.emit("ffmpeg-stderr", &line_buf);
+                                            sink_for_stderr.ffmpeg_stderr(&line_buf);
                                             // Parse ffmpeg progress: extract time=HH:MM:SS.ms
                                             if file_duration > 0.0 {
                                                 if let Some(pos) = line_buf.find("time=") {
@@ -789,12 +764,7 @@ pub async fn start_batch_encode(
                                                         let ts = &time_str[..end];
                                                         if let Some(secs) = parse_ffmpeg_time(ts) {
                                                             let pct = (secs / file_duration * 100.0).min(100.0);
-                                                            let progress = FileProgress {
-                                                                percent: pct,
-                                                                time_secs: secs,
-                                                                total_secs: file_duration,
-                                                            };
-                                                            let _ = app_for_stderr.emit("file-progress", &progress);
+                                                            sink_for_stderr.file_progress(pct, secs, file_duration);
                                                             last_progress_emit = now;
                                                         }
                                                     }
@@ -812,16 +782,11 @@ pub async fn start_batch_encode(
                     }
                     // Flush any remaining content
                     if !line_buf.is_empty() {
-                        let _ = app_for_stderr.emit("ffmpeg-stderr", &line_buf);
+                        sink_for_stderr.ffmpeg_stderr(&line_buf);
                     }
                     // Emit final 100% progress
                     if file_duration > 0.0 {
-                        let progress = FileProgress {
-                            percent: 100.0,
-                            time_secs: file_duration,
-                            total_secs: file_duration,
-                        };
-                        let _ = app_for_stderr.emit("file-progress", &progress);
+                        sink_for_stderr.file_progress(100.0, file_duration, file_duration);
                     }
                 }))
             } else {
@@ -881,11 +846,11 @@ pub async fn start_batch_encode(
             };
 
             if cancel_current && !cancel_all {
-                let _ = app_clone.emit("log", "  Cancelled current file");
+                sink_clone.log("  Cancelled current file");
                 log_lines.push("  Cancelled".into());
                 if output_file.exists() {
                     let _ = std::fs::remove_file(&output_file);
-                    let _ = app_clone.emit("log", "  Partial output removed");
+                    sink_clone.log("  Partial output removed");
                 }
                 {
                     let mut q = state_clone.queue.lock().await;
@@ -893,12 +858,12 @@ pub async fn start_batch_encode(
                         q[idx].status = QueueItemStatus::Cancelled;
                     }
                 }
-                let _ = app_clone.emit("queue-item-updated", (idx, "Cancelled"));
+                sink_clone.queue_item_updated(idx, "Cancelled");
                 continue;
             }
 
             if cancel_all {
-                let _ = app_clone.emit("log", "  Cancelled (batch cancel)");
+                sink_clone.log("  Cancelled (batch cancel)");
                 log_lines.push("  Cancelled (batch cancel)".into());
                 if output_file.exists() {
                     let _ = std::fs::remove_file(&output_file);
@@ -909,7 +874,7 @@ pub async fn start_batch_encode(
                         q[idx].status = QueueItemStatus::Cancelled;
                     }
                 }
-                let _ = app_clone.emit("queue-item-updated", (idx, "Cancelled"));
+                sink_clone.queue_item_updated(idx, "Cancelled");
                 break;
             }
 
@@ -934,7 +899,11 @@ pub async fn start_batch_encode(
                         let mut b = state_clone.batch.lock().await;
                         b.hw_fallback_offered = true;
                     }
-                    let _ = app_clone.emit("fallback-prompt", item.file_name.clone());
+                    // Signal fallback prompt via the queue_item_updated bridge.
+                    // TauriSink intercepts the "fallback-prompt:" prefix and emits
+                    // the dedicated "fallback-prompt" event for the GUI.
+                    sink_clone.log(&format!("  HW encoder failed for {}", item.file_name));
+                    sink_clone.queue_item_updated(idx, &format!("fallback-prompt:{}", item.file_name));
 
                     let response = wait_for_response(&state_clone, |b| {
                         b.fallback_response.take()
@@ -942,10 +911,9 @@ pub async fn start_batch_encode(
                     .await;
 
                     if response == "yes" {
-                        let _ = app_clone.emit(
-                            "log",
-                            format!("  Falling back to software encoder ({})...", sw_fallback),
-                        );
+                        sink_clone.log(&format!(
+                            "  Falling back to software encoder ({})...", sw_fallback
+                        ));
                         log_lines.push(format!("  Fallback to {}", sw_fallback));
 
                         if output_file.exists() {
@@ -971,7 +939,7 @@ pub async fn start_batch_encode(
                             &item.audio_streams,
                             &audio_encoder,
                             audio_cap,
-                            &app_clone,
+                            sink_clone.as_ref(),
                         );
                         let sw_video_ref: Vec<&str> = sw_video_args.iter().map(|s| s.as_str()).collect();
                         let sw_ffmpeg_args = assemble_ffmpeg_args(
@@ -983,8 +951,8 @@ pub async fn start_batch_encode(
                         );
 
                         let sw_cmd = format!("ffmpeg {}", sw_ffmpeg_args.join(" "));
-                        let _ = app_clone.emit("batch-command", &sw_cmd);
-                        let _ = app_clone.emit("log", format!("  CMD (fallback): {}", sw_cmd));
+                        sink_clone.batch_command(&sw_cmd);
+                        sink_clone.log(&format!("  CMD (fallback): {}", sw_cmd));
                         log_lines.push(format!("  CMD (fallback): {}", sw_cmd));
 
                         match ffbin::ffmpeg_command()
@@ -1026,7 +994,7 @@ pub async fn start_batch_encode(
                                 let sw_code = sw_exit.as_ref().map(|s| s.code().unwrap_or(-1)).unwrap_or(-1);
 
                                 if sw_code != 0 {
-                                    let _ = app_clone.emit("log", "  ERROR: Software encoder also failed — stopping batch");
+                                    sink_clone.log("  ERROR: Software encoder also failed — stopping batch");
                                     log_lines.push("  ERROR: Software encoder also failed".into());
                                     if output_file.exists() {
                                         let _ = std::fs::remove_file(&output_file);
@@ -1037,14 +1005,14 @@ pub async fn start_batch_encode(
                                             q[idx].status = QueueItemStatus::Failed;
                                         }
                                     }
-                                    let _ = app_clone.emit("queue-item-updated", (idx, "Failed"));
+                                    sink_clone.queue_item_updated(idx, "Failed");
                                     fail_count += 1;
                                     break; // Stop batch
                                 }
                                 // Fallback succeeded — fall through to size check
                             }
                             Err(e) => {
-                                let _ = app_clone.emit("log", format!("  ERROR: Could not launch fallback: {e}"));
+                                sink_clone.log(&format!("  ERROR: Could not launch fallback: {e}"));
                                 log_lines.push(format!("  ERROR: Fallback launch failed: {e}"));
                                 {
                                     let mut q = state_clone.queue.lock().await;
@@ -1052,14 +1020,14 @@ pub async fn start_batch_encode(
                                         q[idx].status = QueueItemStatus::Failed;
                                     }
                                 }
-                                let _ = app_clone.emit("queue-item-updated", (idx, "Failed"));
+                                sink_clone.queue_item_updated(idx, "Failed");
                                 fail_count += 1;
                                 break;
                             }
                         }
                     } else {
                         // User said no to fallback — stop batch
-                        let _ = app_clone.emit("log", "  Stopping batch due to encoder failure");
+                        sink_clone.log("  Stopping batch due to encoder failure");
                         log_lines.push("  Batch stopped (encoder failure)".into());
                         if output_file.exists() {
                             let _ = std::fs::remove_file(&output_file);
@@ -1070,18 +1038,18 @@ pub async fn start_batch_encode(
                                 q[idx].status = QueueItemStatus::Failed;
                             }
                         }
-                        let _ = app_clone.emit("queue-item-updated", (idx, "Failed"));
+                        sink_clone.queue_item_updated(idx, "Failed");
                         fail_count += 1;
                         break;
                     }
                 }
             } else if exit_code != 0 {
                 let err_msg = format!("  ERROR: ffmpeg exited with code {}", exit_code);
-                let _ = app_clone.emit("log", &err_msg);
+                sink_clone.log(&err_msg);
                 log_lines.push(err_msg);
                 if output_file.exists() {
                     let _ = std::fs::remove_file(&output_file);
-                    let _ = app_clone.emit("log", "  Failed output removed");
+                    sink_clone.log("  Failed output removed");
                 }
                 {
                     let mut q = state_clone.queue.lock().await;
@@ -1089,7 +1057,7 @@ pub async fn start_batch_encode(
                         q[idx].status = QueueItemStatus::Failed;
                     }
                 }
-                let _ = app_clone.emit("queue-item-updated", (idx, "Failed"));
+                sink_clone.queue_item_updated(idx, "Failed");
                 fail_count += 1;
                 continue;
             }
@@ -1104,14 +1072,11 @@ pub async fn start_batch_encode(
                     .unwrap_or(0);
 
                 if dst_size > src_size && src_size > 0 {
-                    let _ = app_clone.emit(
-                        "log",
-                        format!(
-                            "  WARNING: Output ({:.1}MB) larger than source ({:.1}MB) — remuxing source instead",
-                            dst_size as f64 / 1_000_000.0,
-                            src_size as f64 / 1_000_000.0
-                        ),
-                    );
+                    sink_clone.log(&format!(
+                        "  WARNING: Output ({:.1}MB) larger than source ({:.1}MB) — remuxing source instead",
+                        dst_size as f64 / 1_000_000.0,
+                        src_size as f64 / 1_000_000.0
+                    ));
                     log_lines.push("  Output larger than source — remuxing".into());
                     let _ = std::fs::remove_file(&output_file);
 
@@ -1131,14 +1096,13 @@ pub async fn start_batch_encode(
 
                     match remux_status {
                         Ok(s) if s.success() => {
-                            let _ = app_clone.emit(
-                                "log",
-                                format!("  Remuxed source to {} → {}", ext.to_uppercase(), output_str),
-                            );
+                            sink_clone.log(&format!(
+                                "  Remuxed source to {} → {}", ext.to_uppercase(), output_str
+                            ));
                             log_lines.push(format!("  Remuxed to {}", ext.to_uppercase()));
                         }
                         _ => {
-                            let _ = app_clone.emit("log", "  ERROR: Remux failed");
+                            sink_clone.log("  ERROR: Remux failed");
                             log_lines.push("  ERROR: Remux failed".into());
                             if output_file.exists() {
                                 let _ = std::fs::remove_file(&output_file);
@@ -1149,21 +1113,18 @@ pub async fn start_batch_encode(
                                     q[idx].status = QueueItemStatus::Failed;
                                 }
                             }
-                            let _ = app_clone.emit("queue-item-updated", (idx, "Failed"));
+                            sink_clone.queue_item_updated(idx, "Failed");
                             fail_count += 1;
                             continue;
                         }
                     }
                 } else {
-                    let _ = app_clone.emit(
-                        "log",
-                        format!(
-                            "  Done → {} ({:.1}MB from {:.1}MB)",
-                            output_str,
-                            dst_size as f64 / 1_000_000.0,
-                            src_size as f64 / 1_000_000.0
-                        ),
-                    );
+                    sink_clone.log(&format!(
+                        "  Done → {} ({:.1}MB from {:.1}MB)",
+                        output_str,
+                        dst_size as f64 / 1_000_000.0,
+                        src_size as f64 / 1_000_000.0
+                    ));
                     log_lines.push(format!(
                         "  Done: {:.1}MB from {:.1}MB",
                         dst_size as f64 / 1_000_000.0,
@@ -1175,12 +1136,12 @@ pub async fn start_batch_encode(
                 if delete_source && output_file.exists() {
                     match std::fs::remove_file(&item.full_path) {
                         Ok(_) => {
-                            let _ = app_clone.emit("log", "  Source file deleted");
+                            sink_clone.log("  Source file deleted");
                             log_lines.push("  Source deleted".into());
                         }
                         Err(e) => {
                             let warn = format!("  WARNING: Could not delete source: {e}");
-                            let _ = app_clone.emit("log", &warn);
+                            sink_clone.log(&warn);
                             log_lines.push(warn);
                         }
                     }
@@ -1192,10 +1153,10 @@ pub async fn start_batch_encode(
                         q[idx].status = QueueItemStatus::Done;
                     }
                 }
-                let _ = app_clone.emit("queue-item-updated", (idx, "Done"));
+                sink_clone.queue_item_updated(idx, "Done");
                 done_count += 1;
             } else {
-                let _ = app_clone.emit("log", "  ERROR: Output file not found after encode");
+                sink_clone.log("  ERROR: Output file not found after encode");
                 log_lines.push("  ERROR: Output file not found".into());
                 {
                     let mut q = state_clone.queue.lock().await;
@@ -1203,7 +1164,7 @@ pub async fn start_batch_encode(
                         q[idx].status = QueueItemStatus::Failed;
                     }
                 }
-                let _ = app_clone.emit("queue-item-updated", (idx, "Failed"));
+                sink_clone.queue_item_updated(idx, "Failed");
                 fail_count += 1;
             }
         }
@@ -1227,8 +1188,8 @@ pub async fn start_batch_encode(
             "Batch {}. Done: {}, Failed: {}, Skipped: {}. Duration: {}",
             status_msg, done_count, fail_count, skip_count, dur_string
         );
-        let _ = app_clone.emit("log", "");
-        let _ = app_clone.emit("log", &summary);
+        sink_clone.log("");
+        sink_clone.log(&summary);
         log_lines.push(String::new());
         log_lines.push(summary.clone());
 
@@ -1241,40 +1202,25 @@ pub async fn start_batch_encode(
             let log_path = Path::new(&output_folder).join(log_filename);
             match std::fs::write(&log_path, log_lines.join("\n")) {
                 Ok(_) => {
-                    let _ = app_clone.emit(
-                        "log",
-                        format!("  Log saved to {}", log_path.display()),
-                    );
+                    sink_clone.log(&format!("  Log saved to {}", log_path.display()));
                 }
                 Err(e) => {
-                    let _ = app_clone.emit(
-                        "log",
-                        format!("  WARNING: Could not save log: {e}"),
-                    );
+                    sink_clone.log(&format!("  WARNING: Could not save log: {e}"));
                 }
             }
         }
 
         // Toast notification (§7.7)
         if show_toast {
-            let _ = app_clone.emit(
-                "toast",
-                format!(
-                    "Done: {}  Failed: {}  Skipped: {}  Duration: {}",
-                    done_count, fail_count, skip_count, dur_string
-                ),
-            );
+            sink_clone.toast(&format!(
+                "Done: {}  Failed: {}  Skipped: {}  Duration: {}",
+                done_count, fail_count, skip_count, dur_string
+            ));
         }
 
         // Post-batch action (§7.6)
         if post_action != "None" {
-            let _ = app_clone.emit(
-                "post-batch",
-                serde_json::json!({
-                    "action": post_action,
-                    "countdown": post_countdown,
-                }),
-            );
+            sink_clone.post_batch(&post_action, post_countdown);
         }
 
         // Mark batch as finished
@@ -1282,12 +1228,7 @@ pub async fn start_batch_encode(
             let mut b = state_clone.batch.lock().await;
             b.running = false;
         }
-        let _ = app_clone.emit("batch-finished", serde_json::json!({
-            "done": done_count,
-            "failed": fail_count,
-            "skipped": skip_count,
-            "duration": dur_string,
-        }));
+        sink_clone.batch_finished(done_count, fail_count, skip_count, &dur_string);
     });
 
     Ok(())
@@ -1300,15 +1241,15 @@ fn build_audio_args_from_probe(
     audio_streams: &[crate::queue::AudioStreamInfo],
     audio_encoder: &str,
     audio_cap: u32,
-    app: &AppHandle,
+    sink: &dyn EventSink,
 ) -> Vec<String> {
     if audio_encoder == "copy" {
-        let _ = app.emit("log", "  Audio: copying all streams");
+        sink.log("  Audio: copying all streams");
         return vec!["-c:a".into(), "copy".into()];
     }
 
     if audio_streams.is_empty() {
-        let _ = app.emit("log", "  WARNING: No audio streams found");
+        sink.log("  WARNING: No audio streams found");
         return Vec::new();
     }
 
@@ -1324,13 +1265,10 @@ fn build_audio_args_from_probe(
                 format!("-c:a:{}", stream.index),
                 "copy".into(),
             ]);
-            let _ = app.emit(
-                "log",
-                format!(
-                    "  Audio {} : {} @ {}kbps — copying",
-                    stream.index, stream.codec, stream.bitrate_kbps
-                ),
-            );
+            sink.log(&format!(
+                "  Audio {} : {} @ {}kbps — copying",
+                stream.index, stream.codec, stream.bitrate_kbps
+            ));
         } else {
             let target_br = stream.bitrate_kbps.min(audio_cap);
             args.extend(vec![
@@ -1339,14 +1277,11 @@ fn build_audio_args_from_probe(
                 format!("-b:a:{}", stream.index),
                 format!("{}k", target_br),
             ]);
-            let _ = app.emit(
-                "log",
-                format!(
-                    "  Audio {} : {} @ {}kbps — encoding to {} {}kbps",
-                    stream.index, stream.codec, stream.bitrate_kbps,
-                    audio_encoder, target_br
-                ),
-            );
+            sink.log(&format!(
+                "  Audio {} : {} @ {}kbps — encoding to {} {}kbps",
+                stream.index, stream.codec, stream.bitrate_kbps,
+                audio_encoder, target_br
+            ));
         }
     }
 
