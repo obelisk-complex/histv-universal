@@ -170,11 +170,16 @@
             <button class="btn" id="btn-browse-output">Browse</button>
           </div>
 
-          <div class="checkbox-row has-tooltip">
-            <input type="checkbox" id="chk-output-next-to-input" />
-            <label for="chk-output-next-to-input">Put output next to input file</label>
-            <span class="tooltip-icon">?</span>
-            <span class="tooltip-text">Creates an "output" subfolder alongside each input file and saves the encoded file there. Overrides the output folder above.</span>
+          <div class="form-row has-tooltip">
+            <label class="has-tooltip">Output mode
+              <span class="tooltip-icon">?</span>
+              <span class="tooltip-text">Where encoded files are saved. "Use output folder" saves to the directory above. "Place next to source" creates an "output" subfolder alongside each input file. "Replace source" encodes to a temp file then replaces the original.</span>
+            </label>
+            <div class="radio-group" id="radio-output-mode">
+              <label class="radio-label"><input type="radio" name="output-mode" value="folder" checked /> Use output folder</label>
+              <label class="radio-label"><input type="radio" name="output-mode" value="beside" /> Place next to source</label>
+              <label class="radio-label"><input type="radio" name="output-mode" value="replace" /> Replace source</label>
+            </div>
           </div>
 
           <div class="form-row">
@@ -441,7 +446,7 @@
     const numAudioCap     = $('#num-audio-cap');
     const selTheme        = $('#sel-theme');
     const txtOutputFolder = $('#txt-output-folder');
-    const chkOutputNextTo = $('#chk-output-next-to-input');
+    const radioOutputMode = document.querySelectorAll('input[name="output-mode"]');
     const selContainer    = $('#sel-container');
     const chkOverwrite    = $('#chk-overwrite');
     const chkDeleteSource = $('#chk-delete-source');
@@ -561,8 +566,7 @@
         selAudioCodec.value = cfg.audioCodec || 'AC3';
         numAudioCap.value = cfg.audioBitrateCap || 640;
         txtOutputFolder.value = cfg.outputFolder || 'output';
-        chkOutputNextTo.checked = cfg.outputNextToInput || false;
-        toggleOutputNextTo();
+        setOutputMode(cfg.outputMode || 'folder');
         selContainer.value = cfg.outputContainer || 'mkv';
         chkOverwrite.checked = cfg.overwrite || false;
         chkDeleteSource.checked = cfg.deleteSource || false;
@@ -597,7 +601,7 @@
               theme: selTheme.value || 'Default Dark',
               outputFolder: txtOutputFolder.value,
               outputContainer: selContainer.value,
-              outputNextToInput: chkOutputNextTo.checked,
+              outputMode: getOutputMode(),
               overwrite: chkOverwrite.checked,
               deleteSource: chkDeleteSource.checked,
               saveLog: chkSaveLog.checked,
@@ -1419,11 +1423,13 @@
         });
       }
 
-      // Output next to input toggle
-      chkOutputNextTo.addEventListener('change', () => {
-        toggleOutputNextTo();
-        scheduleConfigSave();
-      });
+      // Output mode radio group
+      for (const radio of radioOutputMode) {
+        radio.addEventListener('change', () => {
+          updateOutputModeUI();
+          scheduleConfigSave();
+        });
+      }
 
       // Simple save-on-change for remaining controls
       const simpleSaveControls = [
@@ -1443,12 +1449,25 @@
       rowCustomCmd.style.display = selPostAction.value === 'Custom Command' ? 'flex' : 'none';
     }
 
-    function toggleOutputNextTo() {
-      const nextTo = chkOutputNextTo.checked;
-      txtOutputFolder.disabled = nextTo;
-      txtOutputFolder.style.opacity = nextTo ? '0.4' : '1';
-      $('#btn-browse-output').disabled = nextTo;
-      $('#btn-browse-output').style.opacity = nextTo ? '0.4' : '1';
+    function getOutputMode() {
+      const checked = document.querySelector('input[name="output-mode"]:checked');
+      return checked ? checked.value : 'folder';
+    }
+
+    function setOutputMode(mode) {
+      for (const radio of radioOutputMode) {
+        radio.checked = radio.value === mode;
+      }
+      updateOutputModeUI();
+    }
+
+    function updateOutputModeUI() {
+      const mode = getOutputMode();
+      const disableFolder = mode !== 'folder';
+      txtOutputFolder.disabled = disableFolder;
+      txtOutputFolder.style.opacity = disableFolder ? '0.4' : '1';
+      $('#btn-browse-output').disabled = disableFolder;
+      $('#btn-browse-output').style.opacity = disableFolder ? '0.4' : '1';
     }
 
     // ── Rate control mode helpers ──
@@ -1901,7 +1920,7 @@
           settings: {
             outputFolder: txtOutputFolder.value,
             outputContainer: selContainer.value,
-            outputNextToInput: chkOutputNextTo.checked,
+            outputMode: getOutputMode(),
             targetBitrate: parseFloat(numBitrate.value) || 5,
             qpI: parseInt(numQpI.value, 10) || 20,
             qpP: parseInt(numQpP.value, 10) || 22,

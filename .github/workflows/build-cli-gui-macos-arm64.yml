@@ -1,4 +1,4 @@
-name: Build macOS x64
+name: Build macOS ARM64
 
 on:
   workflow_dispatch:
@@ -13,7 +13,7 @@ permissions:
 
 jobs:
   build:
-    runs-on: macos-14
+    runs-on: macos-latest
 
     steps:
       - name: Checkout
@@ -24,24 +24,32 @@ jobs:
       - name: Install Rust stable
         uses: dtolnay/rust-toolchain@stable
         with:
-          targets: x86_64-apple-darwin
+          targets: aarch64-apple-darwin
 
       - name: Install Tauri CLI
         run: cargo install tauri-cli --version "^2" --locked
 
-      - name: Build
-        run: cargo tauri build --target x86_64-apple-darwin --bundles dmg
+      - name: Build GUI
+        run: cargo tauri build --target aarch64-apple-darwin --bundles dmg
+
+      - name: Build CLI
+        working-directory: src-tauri
+        run: cargo build --release --bin histv-cli --no-default-features --features cli --target aarch64-apple-darwin
 
       - name: Collect artefacts
         shell: bash
         run: |
           mkdir -p artefacts
           find "$GITHUB_WORKSPACE" -name "*.dmg" -exec cp {} artefacts/ \;
+          CLI_BIN="$GITHUB_WORKSPACE/src-tauri/target/aarch64-apple-darwin/release/histv-cli"
+          if [ -f "$CLI_BIN" ]; then
+            cp "$CLI_BIN" "artefacts/histv-cli-macos-arm64"
+          fi
           ls -lh artefacts/
 
       - name: Upload artefacts
         uses: actions/upload-artifact@v4
         with:
-          name: histv-macos-x64-patch
+          name: histv-macos-arm64-patch
           path: artefacts/*
           retention-days: 14

@@ -5,7 +5,7 @@ use std::path::Path;
 
 /// Supported video file extensions (§5.2).
 const SUPPORTED_EXTENSIONS: &[&str] = &[
-    "mkv", "mp4", "avi", "ts", "m2ts", "wmv", "mov", "webm", "m4v",
+    "mkv", "mp4", "avi", "ts", "m2ts", "wmv", "mov", "webm",
 ];
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]

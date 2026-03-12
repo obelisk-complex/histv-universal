@@ -41,14 +41,22 @@ jobs:
       - name: Install Tauri CLI
         run: cargo install tauri-cli --version "^2" --locked
 
-      - name: Build
+      - name: Build GUI
         run: cargo tauri build --target x86_64-unknown-linux-gnu --bundles appimage
+
+      - name: Build CLI
+        working-directory: src-tauri
+        run: cargo build --release --bin histv-cli --no-default-features --features cli --target x86_64-unknown-linux-gnu
 
       - name: Collect artefacts
         shell: bash
         run: |
           mkdir -p artefacts
           find "$GITHUB_WORKSPACE" -name "*.AppImage" -exec cp {} artefacts/ \;
+          CLI_BIN="$GITHUB_WORKSPACE/src-tauri/target/x86_64-unknown-linux-gnu/release/histv-cli"
+          if [ -f "$CLI_BIN" ]; then
+            cp "$CLI_BIN" "artefacts/histv-cli-linux"
+          fi
           ls -lh artefacts/
 
       - name: Upload artefacts

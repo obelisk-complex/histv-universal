@@ -16,18 +16,26 @@ jobs:
           - os: windows-latest
             target: x86_64-pc-windows-msvc
             label: windows
+            cli-name: histv-cli.exe
+            cli-artefact: histv-cli-windows.exe
           - os: ubuntu-22.04
             target: x86_64-unknown-linux-gnu
             label: linux
             bundles: appimage
+            cli-name: histv-cli
+            cli-artefact: histv-cli-linux
           - os: macos-latest
             target: aarch64-apple-darwin
             label: macos-arm64
             bundles: dmg
+            cli-name: histv-cli
+            cli-artefact: histv-cli-macos-arm64
           - os: macos-14
             target: x86_64-apple-darwin
             label: macos-x64
             bundles: dmg
+            cli-name: histv-cli
+            cli-artefact: histv-cli-macos-x64
 
     runs-on: ${{ matrix.os }}
 
@@ -56,7 +64,7 @@ jobs:
       - name: Install Tauri CLI
         run: cargo install tauri-cli --version "^2" --locked
 
-      - name: Build
+      - name: Build GUI
         shell: bash
         run: |
           if [ -n "${{ matrix.bundles }}" ]; then
@@ -65,19 +73,28 @@ jobs:
             cargo tauri build --target ${{ matrix.target }}
           fi
 
+      - name: Build CLI
+        working-directory: src-tauri
+        run: cargo build --release --bin histv-cli --no-default-features --features cli --target ${{ matrix.target }}
+
       - name: Collect artefacts
         shell: bash
         run: |
           mkdir -p artefacts
-          # Portable Windows exe
+          # Portable Windows exe (GUI)
           PORTABLE="$GITHUB_WORKSPACE/src-tauri/target/${{ matrix.target }}/release/histv.exe"
           if [ -f "$PORTABLE" ]; then
             cp "$PORTABLE" "artefacts/histv-${{ matrix.label }}.exe"
           fi
-          # AppImage (Linux portable)
+          # AppImage (Linux portable GUI)
           find "$GITHUB_WORKSPACE" -name "*.AppImage" -exec cp {} artefacts/ \;
-          # DMG (macOS portable)
+          # DMG (macOS portable GUI)
           find "$GITHUB_WORKSPACE" -name "*.dmg" -exec cp {} artefacts/ \;
+          # CLI binary
+          CLI_BIN="$GITHUB_WORKSPACE/src-tauri/target/${{ matrix.target }}/release/${{ matrix.cli-name }}"
+          if [ -f "$CLI_BIN" ]; then
+            cp "$CLI_BIN" "artefacts/${{ matrix.cli-artefact }}"
+          fi
           ls -lh artefacts/
 
       - name: Upload artefacts

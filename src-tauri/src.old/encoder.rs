@@ -1,8 +1,11 @@
 use crate::events::{EventSink, BatchControl};
 use crate::queue::{QueueItem, QueueItemStatus};
+use crate::AppState;
 use crate::ffmpeg as ffbin;
 use serde::{Deserialize, Serialize};
+use std::path::Path;
 use std::sync::Arc;
+use tokio::io::AsyncWriteExt;
 use tokio::process::Command;
 
 // ── Encoder info & abstraction layer ────────────────────────────
@@ -1073,7 +1076,7 @@ pub async fn run_encode_loop(
     (done_count, fail_count, skip_count, was_cancelled)
 }
 
-// ── Shared helpers ──────────────────────────────────────────────
+// ── Legacy GUI batch encoding ──────────────────────────────────
 
 /// Assemble the full ffmpeg argument list from its component parts.
 /// Used by both the primary encode and the software-fallback path
@@ -1104,6 +1107,922 @@ fn assemble_ffmpeg_args(
         output_path.to_string(),
     ]);
     args
+}
+
+/// Start the batch encoding loop in a background task.
+///
+/// `sink` is used for all output events (logging, progress, status).
+/// `state` provides access to queue items and batch control state.
+pub async fn start_batch_encode(
+    sink: Arc<dyn EventSink>,
+    state: Arc<AppState>,
+    settings: serde_json::Value,
+) -> Result<(), String> {
+    // Parse settings from the frontend
+    let raw_output_folder = settings["outputFolder"]
+        .as_str()
+        .unwrap_or("output")
+        .to_string();
+
+    // Resolve relative output paths to an absolute location.
+    // AppImage (Linux) mounts a read-only squashfs as CWD, so relative paths
+    // like "output" would resolve inside the read-only mount and fail.
+    // Use $OWD (AppImage's original working directory) or $HOME as the base.
+    let output_folder = if Path::new(&raw_output_folder).is_relative() {
+        let base = resolve_base_dir();
+        let resolved = base.join(&raw_output_folder);
+        sink.log(&format!(
+            "[batch] Resolved relative output '{}' to '{}'",
+            raw_output_folder, resolved.display()
+        ));
+        resolved.to_string_lossy().to_string()
+    } else {
+        raw_output_folder
+    };
+    let output_container = settings["outputContainer"]
+        .as_str()
+        .unwrap_or("mkv")
+        .to_string();
+    let output_mode = settings["outputMode"]
+        .as_str()
+        .unwrap_or("folder")
+        .to_string();
+    let output_next_to_input = output_mode == "beside";
+    let is_replace_mode = output_mode == "replace";
+    let threshold: f64 = settings["targetBitrate"]
+        .as_f64()
+        .unwrap_or(5.0);
+    let qp_i: u32 = settings["qpI"].as_u64().unwrap_or(20) as u32;
+    let qp_p: u32 = settings["qpP"].as_u64().unwrap_or(22) as u32;
+    let crf_val: u32 = settings["crf"].as_u64().unwrap_or(20) as u32;
+    let rate_control_mode = settings["rateControlMode"]
+        .as_str()
+        .unwrap_or("QP")
+        .to_string();
+    let video_encoder = settings["videoEncoder"]
+        .as_str()
+        .unwrap_or("libx265")
+        .to_string();
+    let codec_family = settings["codecFamily"]
+        .as_str()
+        .unwrap_or("HEVC")
+        .to_string();
+    let audio_encoder = settings["audioEncoder"]
+        .as_str()
+        .unwrap_or("ac3")
+        .to_string();
+    let audio_cap: u32 = settings["audioBitrateCap"]
+        .as_u64()
+        .unwrap_or(640) as u32;
+    let pix_fmt = settings["pixFmt"]
+        .as_str()
+        .unwrap_or("yuv420p")
+        .to_string();
+    let overwrite = settings["overwrite"].as_bool().unwrap_or(false);
+    let delete_source = settings["deleteSource"].as_bool().unwrap_or(false);
+    let save_log = settings["saveLog"].as_bool().unwrap_or(false);
+    let show_toast = settings["showToast"].as_bool().unwrap_or(false);
+    let post_action = settings["postAction"]
+        .as_str()
+        .unwrap_or("None")
+        .to_string();
+    let post_countdown: u32 = settings["postCountdown"]
+        .as_u64()
+        .unwrap_or(0) as u32;
+
+    let sw_fallback = software_fallback(&codec_family).to_string();
+
+    // Pre-format numeric values as strings once, reused across all files
+    let qi_str = qp_i.to_string();
+    let qp_str = qp_p.to_string();
+    let crf_str = crf_val.to_string();
+
+    // Collect pending indices
+    let pending_indices: Vec<usize> = {
+        let q = state.queue.lock().await;
+        q.iter()
+            .enumerate()
+            .filter(|(_, item)| item.status == QueueItemStatus::Pending)
+            .map(|(i, _)| i)
+            .collect()
+    };
+
+    if pending_indices.is_empty() {
+        return Err("No pending files in the queue.".into());
+    }
+
+    // Create output folder if needed (only in "folder" mode)
+    if !output_next_to_input && !is_replace_mode {
+        // Ensure the folder exists
+        if !Path::new(&output_folder).exists() {
+            std::fs::create_dir_all(&output_folder)
+                .map_err(|e| format!("Could not create output folder '{}': {e}", output_folder))?;
+        }
+        // Verify we can write to it by creating and removing a temp file
+        let test_path = Path::new(&output_folder).join(".histv_write_test");
+        std::fs::write(&test_path, b"")
+            .map_err(|e| format!("Output folder '{}' is not writable: {e}", output_folder))?;
+        let _ = std::fs::remove_file(&test_path);
+    }
+
+    // Set batch running
+    {
+        let mut b = state.batch.lock().await;
+        b.running = true;
+        b.cancel_current = false;
+        b.cancel_all = false;
+        b.paused = false;
+        b.overwrite_always = false;
+        b.hw_fallback_offered = false;
+        b.overwrite_response = None;
+        b.fallback_response = None;
+    }
+    sink.batch_started();
+
+    // Spawn the encoding loop
+    let state_clone = state.clone();
+    let sink_clone = sink.clone();
+    tokio::spawn(async move {
+        let total = pending_indices.len();
+        let mut done_count: u32 = 0;
+        let mut fail_count: u32 = 0;
+        let mut skip_count: u32 = 0;
+        let mut log_lines: Vec<String> = Vec::new();
+        let batch_start = std::time::Instant::now();
+        let mut file_counter: u32 = 0;
+
+        for &idx in &pending_indices {
+            // ── Pause / cancel check (single lock acquisition) ──
+            loop {
+                let mut b = state_clone.batch.lock().await;
+                if b.cancel_all {
+                    // Drop lock before breaking out of both loops
+                    drop(b);
+                    break;
+                }
+                if !b.paused {
+                    b.cancel_current = false;
+                    drop(b);
+                    break;
+                }
+                drop(b);
+                tokio::time::sleep(std::time::Duration::from_millis(300)).await;
+            }
+
+            // Check if we broke out due to cancel_all
+            {
+                let b = state_clone.batch.lock().await;
+                if b.cancel_all {
+                    break;
+                }
+            }
+
+            file_counter += 1;
+            sink_clone.batch_progress(file_counter, total);
+
+            // Get item info
+            let item: QueueItem = {
+                let q = state_clone.queue.lock().await;
+                if idx >= q.len() {
+                    continue;
+                }
+                q[idx].clone()
+            };
+
+            sink_clone.batch_status(&format!("[{}/{}] {}", file_counter, total, item.file_name));
+
+            // Update queue status to Encoding
+            {
+                let mut q = state_clone.queue.lock().await;
+                if idx < q.len() {
+                    q[idx].status = QueueItemStatus::Encoding;
+                }
+            }
+            sink_clone.queue_item_updated(idx, "Encoding");
+
+            let ext = if output_container == "mp4" { "mp4" } else { "mkv" };
+            let (output_file, temp_output_file) = if is_replace_mode {
+                let input_path = Path::new(&item.full_path);
+                let input_dir = input_path.parent().unwrap_or_else(|| Path::new("."));
+                let final_path = input_dir.join(format!("{}.{}", item.base_name, ext));
+                let temp_path = input_dir.join(format!("{}.histv-tmp.{}", item.base_name, ext));
+                (final_path, temp_path)
+            } else if output_next_to_input {
+                // Create an "output" subfolder next to the input file
+                let input_dir = Path::new(&item.full_path)
+                    .parent()
+                    .unwrap_or_else(|| Path::new("."));
+                let out_dir = input_dir.join("output");
+                if !out_dir.exists() {
+                    if let Err(e) = std::fs::create_dir_all(&out_dir) {
+                        let err_msg = format!("  ERROR: Could not create output folder next to input: {e}");
+                        sink_clone.log(&err_msg);
+                        log_lines.push(err_msg);
+                        {
+                            let mut q = state_clone.queue.lock().await;
+                            if idx < q.len() {
+                                q[idx].status = QueueItemStatus::Failed;
+                            }
+                        }
+                        sink_clone.queue_item_updated(idx, "Failed");
+                        fail_count += 1;
+                        continue;
+                    }
+                }
+                let out = out_dir.join(format!("{}.{}", item.base_name, ext));
+                (out.clone(), out)
+            } else {
+                let out = Path::new(&output_folder)
+                    .join(format!("{}.{}", item.base_name, ext));
+                (out.clone(), out)
+            };
+            let output_str = temp_output_file.to_string_lossy().to_string();
+
+            // Log file being processed
+            let log_msg = format!("[{}/{}] {}", file_counter, total, item.file_name);
+            sink_clone.log(&log_msg);
+            log_lines.push(log_msg);
+
+            // Overwrite check (§7.3) — skip in replace mode
+            if !is_replace_mode && output_file.exists() && !overwrite {
+                let ow_always = {
+                    let b = state_clone.batch.lock().await;
+                    b.overwrite_always
+                };
+                if !ow_always {
+                    // Ask the frontend
+                    sink_clone.queue_item_updated(idx, &format!("overwrite-prompt:{}", output_str));
+
+                    // Wait for response
+                    let response = wait_for_response(&state_clone, |b| {
+                        b.overwrite_response.take()
+                    })
+                    .await;
+
+                    match response.as_str() {
+                        "no" => {
+                            sink_clone.log("  Skipped (output exists)");
+                            log_lines.push("  Skipped (output exists)".into());
+                            {
+                                let mut q = state_clone.queue.lock().await;
+                                if idx < q.len() {
+                                    q[idx].status = QueueItemStatus::Skipped;
+                                }
+                            }
+                            sink_clone.queue_item_updated(idx, "Skipped");
+                            skip_count += 1;
+                            continue;
+                        }
+                        "always" => {
+                            let mut b = state_clone.batch.lock().await;
+                            b.overwrite_always = true;
+                        }
+                        _ => {} // "yes" — proceed
+                    }
+                }
+            }
+
+            // Determine encoding strategy (§10.3)
+            let bitrate_mbps = item.video_bitrate_mbps;
+            let target_codec_name = if codec_family == "H.264" {
+                "h264"
+            } else {
+                "hevc"
+            };
+            let is_already_target = (target_codec_name == "hevc" && item.video_codec == "hevc")
+                || (target_codec_name == "h264" && item.video_codec == "h264");
+
+            let mut video_args: Vec<String>;
+            let mode_desc: String;
+
+            if bitrate_mbps <= threshold || bitrate_mbps <= 0.0 {
+                if is_already_target && bitrate_mbps > 0.0 {
+                    // Copy
+                    video_args = vec!["-c:v".into(), "copy".into()];
+                    mode_desc = format!(
+                        "  Already {} at {:.2}Mbps (at/below target) — copying video",
+                        codec_family,
+                        bitrate_mbps
+                    );
+                } else if rate_control_mode == "CRF" {
+                    // CRF transcode (software encoders only; crf_flags falls back to CQP for HW)
+                    video_args = vec!["-c:v".into(), video_encoder.clone()];
+                    video_args.extend(crf_flags(&video_encoder, &crf_str, &qi_str, &qp_str));
+                    mode_desc = format!(
+                        "  Video: {:.2}Mbps [{}] {}x{} — CRF {}",
+                        bitrate_mbps,
+                        item.video_codec,
+                        item.video_width,
+                        item.video_height,
+                        crf_val
+                    );
+                } else {
+                    // CQP transcode
+                    video_args = vec!["-c:v".into(), video_encoder.clone()];
+                    video_args.extend(cqp_flags(&video_encoder, &qi_str, &qp_str));
+                    mode_desc = format!(
+                        "  Video: {:.2}Mbps [{}] {}x{} — CQP ({}/{})",
+                        bitrate_mbps,
+                        item.video_codec,
+                        item.video_width,
+                        item.video_height,
+                        qp_i,
+                        qp_p
+                    );
+                }
+            } else {
+                // VBR
+                let target_bps = (threshold * 1_000_000.0) as u64;
+                let peak_bps = (target_bps as f64 * 1.5) as u64;
+                let target_str = target_bps.to_string();
+                let peak_str = peak_bps.to_string();
+                video_args = vec!["-c:v".into(), video_encoder.clone()];
+                video_args.extend(vbr_flags(&video_encoder, &target_str, &peak_str));
+                let peak_mbps = peak_bps as f64 / 1_000_000.0;
+                mode_desc = format!(
+                    "  Video: {:.2}Mbps [{}] {}x{} — VBR target {}Mbps peak {:.2}Mbps",
+                    bitrate_mbps,
+                    item.video_codec,
+                    item.video_width,
+                    item.video_height,
+                    threshold,
+                    peak_mbps
+                );
+            };
+
+            sink_clone.log(&mode_desc);
+            log_lines.push(mode_desc);
+
+            // Build audio args from pre-probed stream data (§6.2)
+            let audio_args = build_audio_args_from_probe(
+                &item.audio_streams,
+                &audio_encoder,
+                audio_cap,
+                sink_clone.as_ref(),
+            );
+
+            // Assemble full ffmpeg command (§10.3)
+            let video_arg_refs: Vec<&str> = video_args.iter().map(|s| s.as_str()).collect();
+            let ffmpeg_args = assemble_ffmpeg_args(
+                &item.full_path,
+                &video_arg_refs,
+                &pix_fmt,
+                &audio_args,
+                &output_str,
+            );
+
+            let cmd_line = format!("ffmpeg {}", ffmpeg_args.join(" "));
+            sink_clone.batch_command(&cmd_line);
+            sink_clone.log(&format!("  CMD: {}", cmd_line));
+            log_lines.push(format!("  CMD: {}", cmd_line));
+
+            // Spawn ffmpeg (§10.2)
+            let proc_start = std::time::Instant::now();
+            let mut child = match ffbin::ffmpeg_command()
+                .args(&ffmpeg_args)
+                .stdin(std::process::Stdio::piped())
+                .stdout(std::process::Stdio::piped())
+                .stderr(std::process::Stdio::piped())
+                .spawn()
+            {
+                Ok(c) => c,
+                Err(e) => {
+                    let err_msg = format!("  ERROR: Failed to launch ffmpeg: {e}");
+                    sink_clone.log(&err_msg);
+                    log_lines.push(err_msg);
+                    {
+                        let mut q = state_clone.queue.lock().await;
+                        if idx < q.len() {
+                            q[idx].status = QueueItemStatus::Failed;
+                        }
+                    }
+                    sink_clone.queue_item_updated(idx, "Failed");
+                    fail_count += 1;
+                    continue;
+                }
+            };
+
+            sink_clone.log(&format!("  ffmpeg PID: {}", child.id().unwrap_or(0)));
+
+            // Stream stderr for progress (§10.2)
+            let stderr = child.stderr.take();
+            let sink_for_stderr = sink_clone.clone();
+            let file_duration = item.duration_secs;
+            let stderr_task = if let Some(stderr) = stderr {
+                Some(tokio::spawn(async move {
+                    use tokio::io::AsyncReadExt;
+                    let mut reader = tokio::io::BufReader::new(stderr);
+                    let mut buf = vec![0u8; 4096];
+                    let mut line_buf = String::new();
+                    let mut last_progress_emit = std::time::Instant::now()
+                        - std::time::Duration::from_millis(500);
+
+                    loop {
+                        match reader.read(&mut buf).await {
+                            Ok(0) => break, // EOF
+                            Ok(n) => {
+                                let chunk = String::from_utf8_lossy(&buf[..n]);
+                                for ch in chunk.chars() {
+                                    if ch == '\r' || ch == '\n' {
+                                        if !line_buf.is_empty() {
+                                            sink_for_stderr.ffmpeg_stderr(&line_buf);
+                                            // Parse ffmpeg progress: extract time=HH:MM:SS.ms
+                                            if file_duration > 0.0 {
+                                                if let Some(pos) = line_buf.find("time=") {
+                                                    let now = std::time::Instant::now();
+                                                    if now.duration_since(last_progress_emit).as_millis() >= 250 {
+                                                        let time_str = &line_buf[pos + 5..];
+                                                        let end = time_str.find(|c: char| c == ' ' || c == '\t')
+                                                            .unwrap_or(time_str.len());
+                                                        let ts = &time_str[..end];
+                                                        if let Some(secs) = parse_ffmpeg_time(ts) {
+                                                            let pct = (secs / file_duration * 100.0).min(100.0);
+                                                            sink_for_stderr.file_progress(pct, secs, file_duration);
+                                                            last_progress_emit = now;
+                                                        }
+                                                    }
+                                                }
+                                            }
+                                            line_buf.clear();
+                                        }
+                                    } else {
+                                        line_buf.push(ch);
+                                    }
+                                }
+                            }
+                            Err(_) => break,
+                        }
+                    }
+                    // Flush any remaining content
+                    if !line_buf.is_empty() {
+                        sink_for_stderr.ffmpeg_stderr(&line_buf);
+                    }
+                    // Emit final 100% progress
+                    if file_duration > 0.0 {
+                        sink_for_stderr.file_progress(100.0, file_duration, file_duration);
+                    }
+                }))
+            } else {
+                None
+            };
+
+            // Poll for cancellation while waiting for ffmpeg
+            loop {
+                match child.try_wait() {
+                    Ok(Some(_)) => break,
+                    Ok(None) => {}
+                    Err(_) => break,
+                }
+
+                let should_cancel = {
+                    let b = state_clone.batch.lock().await;
+                    b.cancel_current || b.cancel_all
+                };
+
+                if should_cancel {
+                    // Graceful stop: write 'q' to stdin (§10.4)
+                    if let Some(mut stdin) = child.stdin.take() {
+                        let _ = stdin.write_all(b"q").await;
+                        let _ = stdin.flush().await;
+                    }
+
+                    // Wait up to 5 seconds
+                    let graceful = tokio::time::timeout(
+                        std::time::Duration::from_secs(5),
+                        child.wait(),
+                    )
+                    .await;
+
+                    if graceful.is_err() {
+                        // Force kill
+                        let _ = child.kill().await;
+                    }
+                    break;
+                }
+
+                tokio::time::sleep(std::time::Duration::from_millis(200)).await;
+            }
+
+            // Wait for process to fully exit
+            let exit_status = child.wait().await;
+            let proc_duration = proc_start.elapsed();
+
+            // Clean up stderr reader task
+            if let Some(task) = stderr_task {
+                task.abort();
+            }
+
+            // Handle cancellation
+            let (cancel_current, cancel_all) = {
+                let b = state_clone.batch.lock().await;
+                (b.cancel_current, b.cancel_all)
+            };
+
+            if cancel_current && !cancel_all {
+                sink_clone.log("  Cancelled current file");
+                log_lines.push("  Cancelled".into());
+                if output_file.exists() {
+                    let _ = std::fs::remove_file(&output_file);
+                    sink_clone.log("  Partial output removed");
+                }
+                {
+                    let mut q = state_clone.queue.lock().await;
+                    if idx < q.len() {
+                        q[idx].status = QueueItemStatus::Cancelled;
+                    }
+                }
+                sink_clone.queue_item_updated(idx, "Cancelled");
+                continue;
+            }
+
+            if cancel_all {
+                sink_clone.log("  Cancelled (batch cancel)");
+                log_lines.push("  Cancelled (batch cancel)".into());
+                if output_file.exists() {
+                    let _ = std::fs::remove_file(&output_file);
+                }
+                {
+                    let mut q = state_clone.queue.lock().await;
+                    if idx < q.len() {
+                        q[idx].status = QueueItemStatus::Cancelled;
+                    }
+                }
+                sink_clone.queue_item_updated(idx, "Cancelled");
+                break;
+            }
+
+            // Check exit code
+            let exit_code = exit_status
+                .as_ref()
+                .map(|s| s.code().unwrap_or(-1))
+                .unwrap_or(-1);
+
+            // Encoder failure fallback (§10.6)
+            if exit_code != 0
+                && proc_duration.as_secs() < 30
+                && !is_already_target
+                && video_encoder != sw_fallback
+            {
+                let already_offered = {
+                    let b = state_clone.batch.lock().await;
+                    b.hw_fallback_offered
+                };
+                if !already_offered {
+                    {
+                        let mut b = state_clone.batch.lock().await;
+                        b.hw_fallback_offered = true;
+                    }
+                    // Signal fallback prompt via the queue_item_updated bridge.
+                    // TauriSink intercepts the "fallback-prompt:" prefix and emits
+                    // the dedicated "fallback-prompt" event for the GUI.
+                    sink_clone.log(&format!("  HW encoder failed for {}", item.file_name));
+                    sink_clone.queue_item_updated(idx, &format!("fallback-prompt:{}", item.file_name));
+
+                    let response = wait_for_response(&state_clone, |b| {
+                        b.fallback_response.take()
+                    })
+                    .await;
+
+                    if response == "yes" {
+                        sink_clone.log(&format!(
+                            "  Falling back to software encoder ({})...", sw_fallback
+                        ));
+                        log_lines.push(format!("  Fallback to {}", sw_fallback));
+
+                        if output_file.exists() {
+                            let _ = std::fs::remove_file(&output_file);
+                        }
+
+                        // Rebuild args with software encoder
+                        let mut sw_video_args: Vec<String>;
+                        if bitrate_mbps <= threshold {
+                            sw_video_args = vec!["-c:v".into(), sw_fallback.clone()];
+                            sw_video_args.extend(cqp_flags(&sw_fallback, &qi_str, &qp_str));
+                        } else {
+                            let target_bps = (threshold * 1_000_000.0) as u64;
+                            let peak_bps = (target_bps as f64 * 1.5) as u64;
+                            let target_str = target_bps.to_string();
+                            let peak_str = peak_bps.to_string();
+                            sw_video_args = vec!["-c:v".into(), sw_fallback.clone()];
+                            sw_video_args.extend(vbr_flags(&sw_fallback, &target_str, &peak_str));
+                        }
+
+                        // Re-use same audio args from probe data
+                        let sw_audio = build_audio_args_from_probe(
+                            &item.audio_streams,
+                            &audio_encoder,
+                            audio_cap,
+                            sink_clone.as_ref(),
+                        );
+                        let sw_video_ref: Vec<&str> = sw_video_args.iter().map(|s| s.as_str()).collect();
+                        let sw_ffmpeg_args = assemble_ffmpeg_args(
+                            &item.full_path,
+                            &sw_video_ref,
+                            &pix_fmt,
+                            &sw_audio,
+                            &output_str,
+                        );
+
+                        let sw_cmd = format!("ffmpeg {}", sw_ffmpeg_args.join(" "));
+                        sink_clone.batch_command(&sw_cmd);
+                        sink_clone.log(&format!("  CMD (fallback): {}", sw_cmd));
+                        log_lines.push(format!("  CMD (fallback): {}", sw_cmd));
+
+                        match ffbin::ffmpeg_command()
+                            .args(&sw_ffmpeg_args)
+                            .stdin(std::process::Stdio::piped())
+                            .stdout(std::process::Stdio::piped())
+                            .stderr(std::process::Stdio::piped())
+                            .spawn()
+                        {
+                            Ok(mut sw_child) => {
+                                // Wait with cancel support
+                                loop {
+                                    match sw_child.try_wait() {
+                                        Ok(Some(_)) => break,
+                                        Ok(None) => {}
+                                        Err(_) => break,
+                                    }
+                                    let should_cancel = {
+                                        let b = state_clone.batch.lock().await;
+                                        b.cancel_current || b.cancel_all
+                                    };
+                                    if should_cancel {
+                                        if let Some(mut stdin) = sw_child.stdin.take() {
+                                            let _ = stdin.write_all(b"q").await;
+                                        }
+                                        let graceful = tokio::time::timeout(
+                                            std::time::Duration::from_secs(5),
+                                            sw_child.wait(),
+                                        ).await;
+                                        if graceful.is_err() {
+                                            let _ = sw_child.kill().await;
+                                        }
+                                        break;
+                                    }
+                                    tokio::time::sleep(std::time::Duration::from_millis(200)).await;
+                                }
+
+                                let sw_exit = sw_child.wait().await;
+                                let sw_code = sw_exit.as_ref().map(|s| s.code().unwrap_or(-1)).unwrap_or(-1);
+
+                                if sw_code != 0 {
+                                    sink_clone.log("  ERROR: Software encoder also failed — stopping batch");
+                                    log_lines.push("  ERROR: Software encoder also failed".into());
+                                    if output_file.exists() {
+                                        let _ = std::fs::remove_file(&output_file);
+                                    }
+                                    {
+                                        let mut q = state_clone.queue.lock().await;
+                                        if idx < q.len() {
+                                            q[idx].status = QueueItemStatus::Failed;
+                                        }
+                                    }
+                                    sink_clone.queue_item_updated(idx, "Failed");
+                                    fail_count += 1;
+                                    break; // Stop batch
+                                }
+                                // Fallback succeeded — fall through to size check
+                            }
+                            Err(e) => {
+                                sink_clone.log(&format!("  ERROR: Could not launch fallback: {e}"));
+                                log_lines.push(format!("  ERROR: Fallback launch failed: {e}"));
+                                {
+                                    let mut q = state_clone.queue.lock().await;
+                                    if idx < q.len() {
+                                        q[idx].status = QueueItemStatus::Failed;
+                                    }
+                                }
+                                sink_clone.queue_item_updated(idx, "Failed");
+                                fail_count += 1;
+                                break;
+                            }
+                        }
+                    } else {
+                        // User said no to fallback — stop batch
+                        sink_clone.log("  Stopping batch due to encoder failure");
+                        log_lines.push("  Batch stopped (encoder failure)".into());
+                        if output_file.exists() {
+                            let _ = std::fs::remove_file(&output_file);
+                        }
+                        {
+                            let mut q = state_clone.queue.lock().await;
+                            if idx < q.len() {
+                                q[idx].status = QueueItemStatus::Failed;
+                            }
+                        }
+                        sink_clone.queue_item_updated(idx, "Failed");
+                        fail_count += 1;
+                        break;
+                    }
+                }
+            } else if exit_code != 0 {
+                let err_msg = format!("  ERROR: ffmpeg exited with code {}", exit_code);
+                sink_clone.log(&err_msg);
+                log_lines.push(err_msg);
+                if output_file.exists() {
+                    let _ = std::fs::remove_file(&output_file);
+                    sink_clone.log("  Failed output removed");
+                }
+                {
+                    let mut q = state_clone.queue.lock().await;
+                    if idx < q.len() {
+                        q[idx].status = QueueItemStatus::Failed;
+                    }
+                }
+                sink_clone.queue_item_updated(idx, "Failed");
+                fail_count += 1;
+                continue;
+            }
+
+            // Post-encode size check (§10.7)
+            if output_file.exists() {
+                let src_size = std::fs::metadata(&item.full_path)
+                    .map(|m| m.len())
+                    .unwrap_or(0);
+                let dst_size = std::fs::metadata(&output_file)
+                    .map(|m| m.len())
+                    .unwrap_or(0);
+
+                if dst_size > src_size && src_size > 0 {
+                    sink_clone.log(&format!(
+                        "  WARNING: Output ({:.1}MB) larger than source ({:.1}MB) — remuxing source instead",
+                        dst_size as f64 / 1_000_000.0,
+                        src_size as f64 / 1_000_000.0
+                    ));
+                    log_lines.push("  Output larger than source — remuxing".into());
+                    let _ = std::fs::remove_file(&output_file);
+
+                    // Remux: copy all streams
+                    let remux_status = ffbin::ffmpeg_command()
+                        .args([
+                            "-y",
+                            "-i", &item.full_path,
+                            "-map", "0",
+                            "-c", "copy",
+                            &output_str,
+                        ])
+                        .stdout(std::process::Stdio::null())
+                        .stderr(std::process::Stdio::null())
+                        .status()
+                        .await;
+
+                    match remux_status {
+                        Ok(s) if s.success() => {
+                            sink_clone.log(&format!(
+                                "  Remuxed source to {} → {}", ext.to_uppercase(), output_str
+                            ));
+                            log_lines.push(format!("  Remuxed to {}", ext.to_uppercase()));
+                        }
+                        _ => {
+                            sink_clone.log("  ERROR: Remux failed");
+                            log_lines.push("  ERROR: Remux failed".into());
+                            if output_file.exists() {
+                                let _ = std::fs::remove_file(&output_file);
+                            }
+                            {
+                                let mut q = state_clone.queue.lock().await;
+                                if idx < q.len() {
+                                    q[idx].status = QueueItemStatus::Failed;
+                                }
+                            }
+                            sink_clone.queue_item_updated(idx, "Failed");
+                            fail_count += 1;
+                            continue;
+                        }
+                    }
+                } else {
+                    sink_clone.log(&format!(
+                        "  Done → {} ({:.1}MB from {:.1}MB)",
+                        output_str,
+                        dst_size as f64 / 1_000_000.0,
+                        src_size as f64 / 1_000_000.0
+                    ));
+                    log_lines.push(format!(
+                        "  Done: {:.1}MB from {:.1}MB",
+                        dst_size as f64 / 1_000_000.0,
+                        src_size as f64 / 1_000_000.0
+                    ));
+                }
+
+                // Replace mode: delete source and rename temp to final
+                if is_replace_mode && temp_output_file.exists() {
+                    if let Err(e) = std::fs::remove_file(&item.full_path) {
+                        let warn = format!("  WARNING: Could not delete source for replacement: {e}");
+                        sink_clone.log(&warn);
+                        log_lines.push(warn);
+                    }
+                    if temp_output_file != output_file {
+                        if let Err(e) = std::fs::rename(&temp_output_file, &output_file) {
+                            let warn = format!("  WARNING: Could not rename temp to final path: {e}");
+                            sink_clone.log(&warn);
+                            log_lines.push(warn);
+                        } else {
+                            let final_str = output_file.to_string_lossy();
+                            sink_clone.log(&format!("  Replaced source → {}", final_str));
+                            log_lines.push(format!("  Replaced source → {}", final_str));
+                        }
+                    }
+                } else if delete_source && output_file.exists() {
+                    // Normal delete-source mode
+                    match std::fs::remove_file(&item.full_path) {
+                        Ok(_) => {
+                            sink_clone.log("  Source file deleted");
+                            log_lines.push("  Source deleted".into());
+                        }
+                        Err(e) => {
+                            let warn = format!("  WARNING: Could not delete source: {e}");
+                            sink_clone.log(&warn);
+                            log_lines.push(warn);
+                        }
+                    }
+                }
+
+                {
+                    let mut q = state_clone.queue.lock().await;
+                    if idx < q.len() {
+                        q[idx].status = QueueItemStatus::Done;
+                    }
+                }
+                sink_clone.queue_item_updated(idx, "Done");
+                done_count += 1;
+            } else {
+                sink_clone.log("  ERROR: Output file not found after encode");
+                log_lines.push("  ERROR: Output file not found".into());
+                {
+                    let mut q = state_clone.queue.lock().await;
+                    if idx < q.len() {
+                        q[idx].status = QueueItemStatus::Failed;
+                    }
+                }
+                sink_clone.queue_item_updated(idx, "Failed");
+                fail_count += 1;
+            }
+        }
+
+        // Batch completion (§10.9)
+        let batch_duration = batch_start.elapsed();
+        let dur_string = format!(
+            "{:02}:{:02}:{:02}",
+            batch_duration.as_secs() / 3600,
+            (batch_duration.as_secs() % 3600) / 60,
+            batch_duration.as_secs() % 60
+        );
+
+        let cancel_all = {
+            let b = state_clone.batch.lock().await;
+            b.cancel_all
+        };
+        let status_msg = if cancel_all { "cancelled" } else { "done" };
+
+        let summary = format!(
+            "Batch {}. Done: {}, Failed: {}, Skipped: {}. Duration: {}",
+            status_msg, done_count, fail_count, skip_count, dur_string
+        );
+        sink_clone.log("");
+        sink_clone.log(&summary);
+        log_lines.push(String::new());
+        log_lines.push(summary.clone());
+
+        // Save log (§7.5)
+        if save_log {
+            let log_filename = format!(
+                "encode_log_{}.txt",
+                chrono::Local::now().format("%Y%m%d_%H%M%S")
+            );
+            let log_path = Path::new(&output_folder).join(log_filename);
+            match std::fs::write(&log_path, log_lines.join("\n")) {
+                Ok(_) => {
+                    sink_clone.log(&format!("  Log saved to {}", log_path.display()));
+                }
+                Err(e) => {
+                    sink_clone.log(&format!("  WARNING: Could not save log: {e}"));
+                }
+            }
+        }
+
+        // Toast notification (§7.7)
+        if show_toast {
+            sink_clone.toast(&format!(
+                "Done: {}  Failed: {}  Skipped: {}  Duration: {}",
+                done_count, fail_count, skip_count, dur_string
+            ));
+        }
+
+        // Post-batch action (§7.6)
+        if post_action != "None" {
+            sink_clone.post_batch(&post_action, post_countdown);
+        }
+
+        // Mark batch as finished
+        {
+            let mut b = state_clone.batch.lock().await;
+            b.running = false;
+        }
+        sink_clone.batch_finished(done_count, fail_count, skip_count, &dur_string);
+    });
+
+    Ok(())
 }
 
 /// Build per-stream audio arguments from pre-probed audio stream data (§6.2).
@@ -1158,6 +2077,26 @@ fn build_audio_args_from_probe(
     }
 
     args
+}
+
+/// Wait for a response field to be set in BatchState.
+async fn wait_for_response<F>(state: &Arc<AppState>, extractor: F) -> String
+where
+    F: Fn(&mut crate::queue::BatchState) -> Option<String>,
+{
+    loop {
+        {
+            let mut b = state.batch.lock().await;
+            if let Some(response) = extractor(&mut b) {
+                return response;
+            }
+            // Also check for cancel_all to avoid deadlock
+            if b.cancel_all {
+                return "cancel".to_string();
+            }
+        }
+        tokio::time::sleep(std::time::Duration::from_millis(100)).await;
+    }
 }
 
 /// Execute a post-batch action (§7.6).

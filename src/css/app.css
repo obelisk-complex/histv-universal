@@ -531,6 +531,27 @@ input[readonly] {
   margin-top: 2px;
 }
 
+.radio-group {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  font-size: 12px;
+}
+.radio-label {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  cursor: pointer;
+  line-height: 1.4;
+}
+.radio-label input[type="radio"] {
+  accent-color: var(--primary);
+  width: 14px;
+  height: 14px;
+  flex-shrink: 0;
+  margin: 0;
+}
+
 .status-text {
   font-size: 11px;
   font-style: italic;

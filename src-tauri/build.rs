@@ -1,3 +1,4 @@
 fn main() {
-    tauri_build::build()
+    #[cfg(feature = "custom-protocol")]
+    tauri_build::build();
 }

@@ -29,8 +29,12 @@ jobs:
       - name: Install Tauri CLI
         run: cargo install tauri-cli --version "^2" --locked
 
-      - name: Build
+      - name: Build GUI
         run: cargo tauri build --target x86_64-pc-windows-msvc
+
+      - name: Build CLI
+        working-directory: src-tauri
+        run: cargo build --release --bin histv-cli --no-default-features --features cli --target x86_64-pc-windows-msvc
 
       - name: Collect artefacts
         shell: bash
@@ -39,6 +43,10 @@ jobs:
           PORTABLE="$GITHUB_WORKSPACE/src-tauri/target/x86_64-pc-windows-msvc/release/histv.exe"
           if [ -f "$PORTABLE" ]; then
             cp "$PORTABLE" "artefacts/histv-windows.exe"
+          fi
+          CLI_BIN="$GITHUB_WORKSPACE/src-tauri/target/x86_64-pc-windows-msvc/release/histv-cli.exe"
+          if [ -f "$CLI_BIN" ]; then
+            cp "$CLI_BIN" "artefacts/histv-cli-windows.exe"
           fi
           ls -lh artefacts/
 
