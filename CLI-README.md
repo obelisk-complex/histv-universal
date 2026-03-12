@@ -77,7 +77,7 @@ histv-cli --overwrite skip --fallback yes /path/to/videos/ 2>&1 | tee encode.log
 | Flag | Description | Default |
 |------|-------------|---------|
 | `-o, --output <DIR>` | Output directory | `./output` |
-| `--next-to-input` | Create `output/` subfolder next to each input file | |
+| `--output-mode <MODE>` | Output placement: `folder` (use --output dir), `beside` (output/ subfolder next to input), `replace` (encode in-place, replacing source) | `folder` |
 | `--container <FMT>` | Output container (`mkv`, `mp4`) | `mkv` |
 | `--overwrite <POLICY>` | When output exists: `ask`, `yes`, `skip` | `ask` |
 | `--delete-source` | Delete source files after successful encode | |
@@ -127,6 +127,7 @@ A JSON file containing the same settings as the CLI flags, plus a `files` array.
   "audioCodec": "ac3",
   "audioBitrateCap": 640,
   "output": "/srv/media/encoded/",
+  "outputMode": "folder",
   "container": "mkv",
   "overwrite": "ask",
   "deleteSource": false,
