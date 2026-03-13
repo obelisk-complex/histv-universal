@@ -98,9 +98,6 @@ impl MountCache {
             return;
         }
         let entries = parse_mount_table();
-        for e in &entries {
-            eprintln!("[debug] mount: {} type={} remote={}", e.mount_point.display(), e.fs_type, e.is_remote);
-        }
         self.entries = Some(entries);
     }
 
