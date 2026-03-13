@@ -137,6 +137,8 @@ html, body {
   width: 100%;
   border-collapse: collapse;
   table-layout: fixed;
+  border-spacing: 0;
+}
 }
 
 #queue-table thead {
@@ -182,6 +184,9 @@ html, body {
     var(--success) var(--encode-progress, 0%),
     var(--warning) var(--encode-progress, 0%)
   );
+}
+#queue-table tr.status-encoding td {
+  background: transparent;
 }
 #queue-table tr.status-done      { background: var(--success); }
 #queue-table tr.status-failed    { background: var(--error); }
