@@ -1,4 +1,4 @@
-name: Build Windows
+name: Build Windows CLI + GUI
 
 on:
   workflow_dispatch:

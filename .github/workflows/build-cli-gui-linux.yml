@@ -1,4 +1,4 @@
-name: Build Linux
+name: Build Linux CLI + GUI
 
 on:
   workflow_dispatch:

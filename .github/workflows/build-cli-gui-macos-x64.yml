@@ -1,4 +1,4 @@
-name: Build macOS x64
+name: Build macOS x64 CLI + GUI
 
 on:
   workflow_dispatch:

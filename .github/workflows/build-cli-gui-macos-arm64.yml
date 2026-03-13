@@ -1,4 +1,4 @@
-name: Build macOS ARM64
+name: Build macOS ARM64 CLI + GUI
 
 on:
   workflow_dispatch:
