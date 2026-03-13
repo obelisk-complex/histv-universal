@@ -177,7 +177,12 @@ html, body {
 /* Row status tints (§5.4) */
 #queue-table tr.status-pending   { background: var(--base-200); }
 #queue-table tr.status-probing   { background: var(--info); }
-#queue-table tr.status-encoding  { background: var(--warning); }
+#queue-table tr.status-encoding  {
+  background: linear-gradient(to right,
+    var(--success) var(--encode-progress, 0%),
+    var(--warning) var(--encode-progress, 0%)
+  );
+}
 #queue-table tr.status-done      { background: var(--success); }
 #queue-table tr.status-failed    { background: var(--error); }
 #queue-table tr.status-skipped   { background: var(--base-300); }

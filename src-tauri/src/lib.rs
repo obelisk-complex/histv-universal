@@ -16,8 +16,9 @@ mod tauri_batch_control;
 #[cfg(feature = "custom-protocol")]
 mod themes;
 
+use std::sync::atomic::AtomicBool;
 #[cfg(feature = "custom-protocol")]
-use std::sync::Arc;
+use std::sync::{atomic::Ordering, Arc};
 use tokio::sync::Mutex;
 
 pub use encoder::EncoderInfo;
@@ -38,8 +39,8 @@ pub struct AppState {
     pub detected_audio_encoders: Mutex<Vec<String>>,
     #[cfg(feature = "custom-protocol")]
     pub config: Mutex<AppConfig>,
-    pub encoder_detection_done: Mutex<bool>,
-    pub ffmpeg_missing: Mutex<bool>,
+    pub encoder_detection_done: AtomicBool,
+    pub ffmpeg_missing: AtomicBool,
     #[cfg(feature = "custom-protocol")]
     pub themes: Mutex<Vec<Theme>>,
 }
@@ -91,16 +92,14 @@ mod gui_commands {
     pub async fn get_encoder_detection_status(
         state: tauri::State<'_, Arc<AppState>>,
     ) -> Result<bool, String> {
-        let done = state.encoder_detection_done.lock().await;
-        Ok(*done)
+        Ok(state.encoder_detection_done.load(Ordering::Relaxed))
     }
 
     #[tauri::command]
     pub async fn get_ffmpeg_missing_status(
         state: tauri::State<'_, Arc<AppState>>,
     ) -> Result<bool, String> {
-        let missing = state.ffmpeg_missing.lock().await;
-        Ok(*missing)
+        Ok(state.ffmpeg_missing.load(Ordering::Relaxed))
     }
 
     #[tauri::command]
@@ -552,14 +551,8 @@ mod gui_commands {
             let mut ae = state.detected_audio_encoders.lock().await;
             *ae = audio;
         }
-        {
-            let mut done = state.encoder_detection_done.lock().await;
-            *done = true;
-        }
-        {
-            let mut missing = state.ffmpeg_missing.lock().await;
-            *missing = false;
-        }
+        state.encoder_detection_done.store(true, Ordering::Relaxed);
+        state.ffmpeg_missing.store(false, Ordering::Relaxed);
         let _ = app.emit("encoder-detection-done", ());
         Ok(())
     }
@@ -588,8 +581,8 @@ pub fn run() {
         detected_video_encoders: Mutex::new(Vec::new()),
         detected_audio_encoders: Mutex::new(Vec::new()),
         config: Mutex::new(AppConfig::default()),
-        encoder_detection_done: Mutex::new(false),
-        ffmpeg_missing: Mutex::new(false),
+        encoder_detection_done: AtomicBool::new(false),
+        ffmpeg_missing: AtomicBool::new(false),
         themes: Mutex::new(Vec::new()),
     });
 
@@ -666,10 +659,7 @@ pub fn run() {
 
                 // Check if ffmpeg is reachable first
                 if !ffmpeg::is_available().await {
-                    {
-                        let mut missing = state_for_detect.ffmpeg_missing.lock().await;
-                        *missing = true;
-                    }
+                    state_for_detect.ffmpeg_missing.store(true, Ordering::Relaxed);
                     let _ = handle_for_detect.emit("ffmpeg-missing", ());
                     detect_sink.log("[detect] ffmpeg not found — waiting for user to install or download it");
                     return;
@@ -685,10 +675,7 @@ pub fn run() {
                     let mut ae = state_for_detect.detected_audio_encoders.lock().await;
                     *ae = audio;
                 }
-                {
-                    let mut done = state_for_detect.encoder_detection_done.lock().await;
-                    *done = true;
-                }
+                state_for_detect.encoder_detection_done.store(true, Ordering::Relaxed);
                 let _ = handle_for_detect.emit("encoder-detection-done", ());
             });
 

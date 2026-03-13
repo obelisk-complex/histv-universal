@@ -17,6 +17,7 @@ use histv_lib::queue::{self, QueueItem, QueueItemStatus};
 
 fn main() {
     let mut args = cli::CliArgs::parse();
+    let is_tty = std::io::IsTerminal::is_terminal(&std::io::stderr());
 
     // Handle --export-job: write job file and exit
     if let Some(ref path) = args.export_job {
@@ -103,7 +104,6 @@ fn main() {
     let total_files = queue_items.len();
     for i in 0..total_files {
         if !matches!(args.log_level, cli::LogLevel::Quiet) {
-            let is_tty = std::io::IsTerminal::is_terminal(&std::io::stderr());
             if is_tty {
                 eprint!("\rProbing {}/{}...", i + 1, total_files);
             } else {
@@ -134,7 +134,6 @@ fn main() {
 
     // Clear the probing line in TTY mode
     if !matches!(args.log_level, cli::LogLevel::Quiet) {
-        let is_tty = std::io::IsTerminal::is_terminal(&std::io::stderr());
         if is_tty {
             eprint!("\r\x1b[2K"); // Clear line
         }
@@ -203,8 +202,7 @@ fn main() {
 
     // ── Disk-space estimate (Phase 2.5) ────────────────────────
 
-    let owned_items: Vec<QueueItem> = probed_items.iter().map(|i| (*i).clone()).collect();
-    let batch_estimate = histv_lib::disk_monitor::estimate_batch(&owned_items, &decisions);
+    let batch_estimate = histv_lib::disk_monitor::estimate_batch(&probed_items, &decisions);
 
     let output_path = match args.output_mode {
         cli::OutputMode::Beside | cli::OutputMode::Replace => {
@@ -240,8 +238,6 @@ fn main() {
         cli::CodecFamily::Hevc => "HEVC",
         cli::CodecFamily::H264 => "H.264",
     };
-
-    let is_tty = std::io::IsTerminal::is_terminal(&std::io::stderr());
 
     // ANSI colour helpers — no-ops when not a TTY
     let dim = if is_tty { "\x1b[2m" } else { "" };

@@ -795,7 +795,11 @@
 
         // Update row class
         const wantClass = `status-${statusLower}` + (selectedRows.has(i) ? ' selected' : '');
-        if (tr.className !== wantClass) tr.className = wantClass;
+        if (tr.className !== wantClass) {
+          tr.className = wantClass;
+          // Clear any leftover progress fill when status changes
+          tr.style.removeProperty('--encode-progress');
+        }
 
         // Cell 0: filename
         const c0 = tr.children[0];
@@ -2165,12 +2169,23 @@
           const filePortion = (1 / batchTotalFiles) * percent;
           batchProgressBar.style.width = (completedPct + filePortion).toFixed(1) + '%';
         }
+        // Advance green fill on the currently-encoding queue row
+        const encodingRow = queueBody.querySelector('tr.status-encoding');
+        if (encodingRow) {
+          encodingRow.style.setProperty('--encode-progress', percent.toFixed(1) + '%');
+        }
       });
 
-      // Queue item updated (status change) — debounced to coalesce
-      // with any direct-call refreshes already in flight
-      listen('queue-item-updated', () => {
-        scheduleQueueRefresh();
+      // Queue item updated (status change) — apply the payload directly
+      // to the local queueData rather than re-fetching from the backend,
+      // because the encoding loop works on a cloned queue and only syncs
+      // statuses back to shared state after the batch finishes.
+      listen('queue-item-updated', (event) => {
+        const [index, status] = event.payload;
+        if (index >= 0 && index < queueData.length) {
+          queueData[index].status = status;
+        }
+        renderQueue();
         updateBatchButtons();
       });
 

@@ -75,7 +75,7 @@ pub fn estimate_file(item: &QueueItem, decision: &EncodeDecision) -> FileEstimat
 
 /// Estimate total disk-space impact for a batch of files.
 pub fn estimate_batch(
-    items: &[QueueItem],
+    items: &[&QueueItem],
     decisions: &[EncodeDecision],
 ) -> BatchEstimate {
     let mut total_output_bytes: u64 = 0;

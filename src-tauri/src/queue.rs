@@ -103,7 +103,20 @@ fn collect_files(paths: &[String]) -> Vec<String> {
         if path.is_dir() {
             if let Ok(entries) = std::fs::read_dir(&path) {
                 for entry in entries.flatten() {
-                    work.push_back(entry.path());
+                    // Use entry.file_type() which avoids an extra stat() on
+                    // most platforms — critical on network mounts where each
+                    // stat is a round-trip.
+                    match entry.file_type() {
+                        Ok(ft) if ft.is_dir() => work.push_back(entry.path()),
+                        Ok(ft) if ft.is_file() => {
+                            let p = entry.path();
+                            let path_str = p.to_string_lossy().to_string();
+                            if is_supported_extension(&path_str) {
+                                result.push(path_str);
+                            }
+                        }
+                        _ => {}
+                    }
                 }
             }
         } else if path.is_file() {

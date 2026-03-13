@@ -2,6 +2,7 @@ use crate::events::{EventSink, BatchControl};
 use crate::queue::{QueueItem, QueueItemStatus};
 use crate::ffmpeg as ffbin;
 use serde::{Deserialize, Serialize};
+use std::collections::HashSet;
 use std::sync::Arc;
 use tokio::process::Command;
 
@@ -270,15 +271,14 @@ pub async fn detect_encoders(sink: &dyn EventSink) -> (Vec<EncoderInfo>, Vec<Str
     let mut video_encoders: Vec<EncoderInfo> = Vec::new();
     let mut audio_encoders: Vec<String> = Vec::new();
 
+    // Parse the full encoder list once into a HashSet for O(1) lookups
+    let available: HashSet<&str> = stdout.lines()
+        .flat_map(|line| line.split_whitespace())
+        .collect();
+
     // Check each video encoder in priority order
     for &enc_name in HEVC_PRIORITY.iter().chain(H264_PRIORITY.iter()) {
-        // Match encoder name as a word in the output
-        let found = stdout.lines().any(|line| {
-            line.split_whitespace()
-                .any(|token| token == enc_name)
-        });
-
-        if !found {
+        if !available.contains(enc_name) {
             sink.log(&format!("[detect] {enc_name} not listed in ffmpeg"));
             continue;
         }
@@ -317,10 +317,7 @@ pub async fn detect_encoders(sink: &dyn EventSink) -> (Vec<EncoderInfo>, Vec<Str
 
     // Check audio encoders
     for &aenc in AUDIO_ENCODERS {
-        let found = stdout.lines().any(|line| {
-            line.split_whitespace().any(|token| token == aenc)
-        });
-        if found {
+        if available.contains(aenc) {
             audio_encoders.push(aenc.to_string());
         }
     }
@@ -464,6 +461,7 @@ pub async fn run_encode_loop(
     let mut done_count: u32 = 0;
     let mut fail_count: u32 = 0;
     let mut skip_count: u32 = 0;
+    let save_log = settings.save_log;
     let mut log_lines: Vec<String> = Vec::new();
     let batch_start = std::time::Instant::now();
     let mut file_counter: u32 = 0;
@@ -482,8 +480,19 @@ pub async fn run_encode_loop(
         file_counter += 1;
         sink.batch_progress(file_counter, total);
 
-        let item = queue[idx].clone();
-        sink.batch_status(&format!("[{}/{}] {}", file_counter, total, item.file_name));
+        // Extract read-only data from the queue item. Cloning individual
+        // fields avoids a full QueueItem clone (which includes audio_streams
+        // Vec, all Strings, and fields unused in the loop body).
+        let item_full_path = queue[idx].full_path.clone();
+        let item_file_name = queue[idx].file_name.clone();
+        let item_base_name = queue[idx].base_name.clone();
+        let item_video_codec = queue[idx].video_codec.clone();
+        let item_video_width = queue[idx].video_width;
+        let item_video_height = queue[idx].video_height;
+        let item_video_bitrate_mbps = queue[idx].video_bitrate_mbps;
+        let item_duration_secs = queue[idx].duration_secs;
+
+        sink.batch_status(&format!("[{}/{}] {}", file_counter, total, item_file_name));
 
         queue[idx].status = QueueItemStatus::Encoding;
         sink.queue_item_updated(idx, "Encoding");
@@ -495,7 +504,7 @@ pub async fn run_encode_loop(
         let (output_file, temp_output_file) = match settings.output_mode.as_str() {
             "beside" => {
                 // Create an "output" subfolder next to the input file
-                let input_dir = std::path::Path::new(&item.full_path)
+                let input_dir = std::path::Path::new(&item_full_path)
                     .parent()
                     .unwrap_or_else(|| std::path::Path::new("."));
                 let out_dir = input_dir.join("output");
@@ -503,39 +512,39 @@ pub async fn run_encode_loop(
                     if let Err(e) = std::fs::create_dir_all(&out_dir) {
                         let err_msg = format!("  ERROR: Could not create output folder: {e}");
                         sink.log(&err_msg);
-                        log_lines.push(err_msg);
+                        if save_log { log_lines.push(err_msg); }
                         queue[idx].status = QueueItemStatus::Failed;
                         sink.queue_item_updated(idx, "Failed");
                         fail_count += 1;
                         continue;
                     }
                 }
-                let out = out_dir.join(format!("{}.{}", item.base_name, ext));
+                let out = out_dir.join(format!("{}.{}", item_base_name, ext));
                 (out.clone(), out)
             }
             "replace" => {
                 // Encode to a temp file in the same directory, then replace the source
-                let input_path = std::path::Path::new(&item.full_path);
+                let input_path = std::path::Path::new(&item_full_path);
                 let input_dir = input_path
                     .parent()
                     .unwrap_or_else(|| std::path::Path::new("."));
-                let final_path = input_dir.join(format!("{}.{}", item.base_name, ext));
-                let temp_path = input_dir.join(format!("{}.histv-tmp.{}", item.base_name, ext));
+                let final_path = input_dir.join(format!("{}.{}", item_base_name, ext));
+                let temp_path = input_dir.join(format!("{}.histv-tmp.{}", item_base_name, ext));
                 (final_path, temp_path)
             }
             _ => {
                 // "folder" — default: use the configured output folder
                 let out = std::path::Path::new(&settings.output_folder)
-                    .join(format!("{}.{}", item.base_name, ext));
+                    .join(format!("{}.{}", item_base_name, ext));
                 (out.clone(), out)
             }
         };
         let output_str = temp_output_file.to_string_lossy().to_string();
         let final_output_str = output_file.to_string_lossy().to_string();
 
-        let log_msg = format!("[{}/{}] {}", file_counter, total, item.file_name);
+        let log_msg = format!("[{}/{}] {}", file_counter, total, item_file_name);
         sink.log(&log_msg);
-        log_lines.push(log_msg);
+        if save_log { log_lines.push(log_msg); }
 
         // Overwrite check — in replace mode, we're replacing the source so
         // no overwrite prompt is needed. In other modes, check the final output.
@@ -545,7 +554,7 @@ pub async fn run_encode_loop(
                 match response.as_str() {
                     "no" | "skip" => {
                         sink.log("  Skipped (output exists)");
-                        log_lines.push("  Skipped (output exists)".into());
+                        if save_log { log_lines.push("  Skipped (output exists)".into()); }
                         queue[idx].status = QueueItemStatus::Skipped;
                         sink.queue_item_updated(idx, "Skipped");
                         skip_count += 1;
@@ -565,9 +574,9 @@ pub async fn run_encode_loop(
 
         // Determine encoding strategy
         let decision = decide_encode_strategy(
-            item.video_bitrate_mbps,
+            item_video_bitrate_mbps,
             settings.threshold,
-            &item.video_codec,
+            &item_video_codec,
             target_codec,
             &settings.rate_control_mode,
             settings.qp_i,
@@ -584,7 +593,7 @@ pub async fn run_encode_loop(
                 video_args = vec!["-c:v".into(), "copy".into()];
                 mode_desc = format!(
                     "  Already {} at {:.2}Mbps (at/below target) — copying video",
-                    settings.codec_family, item.video_bitrate_mbps
+                    settings.codec_family, item_video_bitrate_mbps
                 );
             }
             EncodeDecision::Vbr { target_bps, peak_bps } => {
@@ -595,8 +604,8 @@ pub async fn run_encode_loop(
                 let peak_mbps = *peak_bps as f64 / 1_000_000.0;
                 mode_desc = format!(
                     "  Video: {:.2}Mbps [{}] {}x{} — VBR target {}Mbps peak {:.2}Mbps",
-                    item.video_bitrate_mbps, item.video_codec,
-                    item.video_width, item.video_height,
+                    item_video_bitrate_mbps, item_video_codec,
+                    item_video_width, item_video_height,
                     settings.threshold, peak_mbps
                 );
             }
@@ -605,8 +614,8 @@ pub async fn run_encode_loop(
                 video_args.extend(cqp_flags(&settings.video_encoder, &qi_str, &qp_str));
                 mode_desc = format!(
                     "  Video: {:.2}Mbps [{}] {}x{} — CQP ({}/{})",
-                    item.video_bitrate_mbps, item.video_codec,
-                    item.video_width, item.video_height,
+                    item_video_bitrate_mbps, item_video_codec,
+                    item_video_width, item_video_height,
                     settings.qp_i, settings.qp_p
                 );
             }
@@ -615,31 +624,32 @@ pub async fn run_encode_loop(
                 video_args.extend(crf_flags(&settings.video_encoder, &crf_str, &qi_str, &qp_str));
                 mode_desc = format!(
                     "  Video: {:.2}Mbps [{}] {}x{} — CRF {}",
-                    item.video_bitrate_mbps, item.video_codec,
-                    item.video_width, item.video_height, crf
+                    item_video_bitrate_mbps, item_video_codec,
+                    item_video_width, item_video_height, crf
                 );
             }
         }
 
         sink.log(&mode_desc);
-        log_lines.push(mode_desc);
+        if save_log { log_lines.push(mode_desc); }
 
         // Build audio args
         let audio_args = build_audio_args_from_probe(
-            &item.audio_streams, &settings.audio_encoder, settings.audio_cap, sink,
+            &queue[idx].audio_streams, &settings.audio_encoder, settings.audio_cap, sink,
         );
 
         // Assemble ffmpeg command
         let video_arg_refs: Vec<&str> = video_args.iter().map(|s| s.as_str()).collect();
         let ffmpeg_args = assemble_ffmpeg_args(
-            &item.full_path, &video_arg_refs, &settings.pix_fmt,
+            &item_full_path, &video_arg_refs, &settings.pix_fmt,
             &audio_args, &output_str,
         );
 
         let cmd_line = format!("ffmpeg {}", ffmpeg_args.join(" "));
         sink.batch_command(&cmd_line);
-        sink.log(&format!("  CMD: {}", cmd_line));
-        log_lines.push(format!("  CMD: {}", cmd_line));
+        let cmd_log = format!("  CMD: {cmd_line}");
+        sink.log(&cmd_log);
+        if save_log { log_lines.push(cmd_log); }
 
         // Spawn ffmpeg
         let proc_start = std::time::Instant::now();
@@ -654,7 +664,7 @@ pub async fn run_encode_loop(
             Err(e) => {
                 let err_msg = format!("  ERROR: Failed to launch ffmpeg: {e}");
                 sink.log(&err_msg);
-                log_lines.push(err_msg);
+                if save_log { log_lines.push(err_msg); }
                 queue[idx].status = QueueItemStatus::Failed;
                 sink.queue_item_updated(idx, "Failed");
                 fail_count += 1;
@@ -669,7 +679,7 @@ pub async fn run_encode_loop(
         // seconds (as f64 bits) to an AtomicU64. The main polling loop
         // reads this and calls sink.file_progress() with it.
         let stderr = child.stderr.take();
-        let file_duration = item.duration_secs;
+        let file_duration = item_duration_secs;
         let progress_secs = Arc::new(std::sync::atomic::AtomicU64::new(0));
         let stderr_thread = stderr.map(|tokio_stderr| {
             let std_stderr = {
@@ -689,33 +699,40 @@ pub async fn run_encode_loop(
                 use std::io::Read;
                 let mut reader = std::io::BufReader::new(std_stderr);
                 let mut buf = [0u8; 4096];
-                let mut line_buf = String::new();
+                // Use a byte buffer instead of String to avoid UTF-8 allocation
+                // per read() call. ffmpeg's time= output is pure ASCII.
+                let mut line_buf = Vec::<u8>::with_capacity(256);
 
                 loop {
                     match reader.read(&mut buf) {
                         Ok(0) => break,
                         Ok(n) => {
-                            let chunk = String::from_utf8_lossy(&buf[..n]);
-                            for ch in chunk.chars() {
-                                if ch == '\r' || ch == '\n' {
+                            for &byte in &buf[..n] {
+                                if byte == b'\r' || byte == b'\n' {
                                     if !line_buf.is_empty() {
                                         if file_duration > 0.0 {
-                                            if let Some(pos) = line_buf.find("time=") {
-                                                let ts = &line_buf[pos + 5..];
-                                                let end = ts.find(|c: char| c == ' ' || c == '\t')
-                                                    .unwrap_or(ts.len());
-                                                if let Some(secs) = parse_ffmpeg_time(&ts[..end]) {
-                                                    progress.store(
-                                                        secs.to_bits(),
-                                                        std::sync::atomic::Ordering::Relaxed,
-                                                    );
+                                            // Search for b"time=" in the byte buffer
+                                            if let Some(pos) = line_buf.windows(5).position(|w| w == b"time=") {
+                                                let ts_start = pos + 5;
+                                                let ts_end = line_buf[ts_start..].iter()
+                                                    .position(|&b| b == b' ' || b == b'\t')
+                                                    .map(|p| ts_start + p)
+                                                    .unwrap_or(line_buf.len());
+                                                // time= values are always ASCII digits/colons/dots
+                                                if let Ok(ts_str) = std::str::from_utf8(&line_buf[ts_start..ts_end]) {
+                                                    if let Some(secs) = parse_ffmpeg_time(ts_str) {
+                                                        progress.store(
+                                                            secs.to_bits(),
+                                                            std::sync::atomic::Ordering::Relaxed,
+                                                        );
+                                                    }
                                                 }
                                             }
                                         }
                                         line_buf.clear();
                                     }
                                 } else {
-                                    line_buf.push(ch);
+                                    line_buf.push(byte);
                                 }
                             }
                         }
@@ -781,7 +798,7 @@ pub async fn run_encode_loop(
         // Handle cancellation
         if batch_control.should_cancel_all() {
             sink.log("  Cancelled (batch cancel)");
-            log_lines.push("  Cancelled (batch cancel)".into());
+            if save_log { log_lines.push("  Cancelled (batch cancel)".into()); }
             if output_file.exists() { let _ = std::fs::remove_file(&temp_output_file); }
             queue[idx].status = QueueItemStatus::Cancelled;
             sink.queue_item_updated(idx, "Cancelled");
@@ -791,7 +808,7 @@ pub async fn run_encode_loop(
 
         if batch_control.should_cancel_current() {
             sink.log("  Cancelled current file");
-            log_lines.push("  Cancelled".into());
+            if save_log { log_lines.push("  Cancelled".into()); }
             if output_file.exists() {
                 let _ = std::fs::remove_file(&temp_output_file);
                 sink.log("  Partial output removed");
@@ -814,12 +831,12 @@ pub async fn run_encode_loop(
         {
             if !batch_control.hw_fallback_offered() {
                 batch_control.set_hw_fallback_offered();
-                sink.log(&format!("  HW encoder failed for {}", item.file_name));
-                let response = batch_control.fallback_prompt(&item.file_name);
+                sink.log(&format!("  HW encoder failed for {}", item_file_name));
+                let response = batch_control.fallback_prompt(&item_file_name);
 
                 if response == "yes" {
                     sink.log(&format!("  Falling back to software encoder ({})...", sw_fallback));
-                    log_lines.push(format!("  Fallback to {}", sw_fallback));
+                    if save_log { log_lines.push(format!("  Fallback to {}", sw_fallback)); }
 
                     if output_file.exists() { let _ = std::fs::remove_file(&temp_output_file); }
 
@@ -836,18 +853,17 @@ pub async fn run_encode_loop(
                         }
                     }
 
-                    let sw_audio = build_audio_args_from_probe(
-                        &item.audio_streams, &settings.audio_encoder, settings.audio_cap, sink,
-                    );
+                    // Reuse audio_args from the primary encode — inputs haven't changed
                     let sw_ref: Vec<&str> = sw_video_args.iter().map(|s| s.as_str()).collect();
                     let sw_args = assemble_ffmpeg_args(
-                        &item.full_path, &sw_ref, &settings.pix_fmt, &sw_audio, &output_str,
+                        &item_full_path, &sw_ref, &settings.pix_fmt, &audio_args, &output_str,
                     );
 
                     let sw_cmd = format!("ffmpeg {}", sw_args.join(" "));
                     sink.batch_command(&sw_cmd);
-                    sink.log(&format!("  CMD (fallback): {}", sw_cmd));
-                    log_lines.push(format!("  CMD (fallback): {}", sw_cmd));
+                    let sw_cmd_log = format!("  CMD (fallback): {sw_cmd}");
+                    sink.log(&sw_cmd_log);
+                    if save_log { log_lines.push(sw_cmd_log); }
 
                     match ffbin::ffmpeg_command()
                         .args(&sw_args)
@@ -880,7 +896,7 @@ pub async fn run_encode_loop(
                                 .map(|s| s.code().unwrap_or(-1)).unwrap_or(-1);
                             if sw_code != 0 {
                                 sink.log("  ERROR: Software encoder also failed — stopping batch");
-                                log_lines.push("  ERROR: Software encoder also failed".into());
+                                if save_log { log_lines.push("  ERROR: Software encoder also failed".into()); }
                                 if output_file.exists() { let _ = std::fs::remove_file(&temp_output_file); }
                                 queue[idx].status = QueueItemStatus::Failed;
                                 sink.queue_item_updated(idx, "Failed");
@@ -890,7 +906,7 @@ pub async fn run_encode_loop(
                         }
                         Err(e) => {
                             sink.log(&format!("  ERROR: Could not launch fallback: {e}"));
-                            log_lines.push(format!("  ERROR: Fallback launch failed: {e}"));
+                            if save_log { log_lines.push(format!("  ERROR: Fallback launch failed: {e}")); }
                             queue[idx].status = QueueItemStatus::Failed;
                             sink.queue_item_updated(idx, "Failed");
                             fail_count += 1;
@@ -899,7 +915,7 @@ pub async fn run_encode_loop(
                     }
                 } else {
                     sink.log("  Stopping batch due to encoder failure");
-                    log_lines.push("  Batch stopped (encoder failure)".into());
+                    if save_log { log_lines.push("  Batch stopped (encoder failure)".into()); }
                     if output_file.exists() { let _ = std::fs::remove_file(&temp_output_file); }
                     queue[idx].status = QueueItemStatus::Failed;
                     sink.queue_item_updated(idx, "Failed");
@@ -910,7 +926,7 @@ pub async fn run_encode_loop(
         } else if exit_code != 0 {
             let err_msg = format!("  ERROR: ffmpeg exited with code {}", exit_code);
             sink.log(&err_msg);
-            log_lines.push(err_msg);
+            if save_log { log_lines.push(err_msg); }
             if output_file.exists() {
                 let _ = std::fs::remove_file(&temp_output_file);
                 sink.log("  Failed output removed");
@@ -924,7 +940,7 @@ pub async fn run_encode_loop(
         // Post-encode size check
         // In replace mode, ffmpeg wrote to temp_output_file; in other modes temp == final.
         if temp_output_file.exists() {
-            let src_size = std::fs::metadata(&item.full_path).map(|m| m.len()).unwrap_or(0);
+            let src_size = std::fs::metadata(&item_full_path).map(|m| m.len()).unwrap_or(0);
             let dst_size = std::fs::metadata(&temp_output_file).map(|m| m.len()).unwrap_or(0);
 
             if dst_size > src_size && src_size > 0 {
@@ -932,11 +948,11 @@ pub async fn run_encode_loop(
                     "  WARNING: Output ({:.1}MB) larger than source ({:.1}MB) — remuxing source instead",
                     dst_size as f64 / 1_000_000.0, src_size as f64 / 1_000_000.0,
                 ));
-                log_lines.push("  Output larger than source — remuxing".into());
+                if save_log { log_lines.push("  Output larger than source — remuxing".into()); }
                 let _ = std::fs::remove_file(&temp_output_file);
 
                 let remux_status = ffbin::ffmpeg_command()
-                    .args(["-y", "-i", &item.full_path, "-map", "0", "-c", "copy", &output_str])
+                    .args(["-y", "-i", &item_full_path, "-map", "0", "-c", "copy", &output_str])
                     .stdout(std::process::Stdio::null())
                     .stderr(std::process::Stdio::null())
                     .status()
@@ -945,11 +961,11 @@ pub async fn run_encode_loop(
                 match remux_status {
                     Ok(s) if s.success() => {
                         sink.log(&format!("  Remuxed source to {} → {}", ext.to_uppercase(), output_str));
-                        log_lines.push(format!("  Remuxed to {}", ext.to_uppercase()));
+                        if save_log { log_lines.push(format!("  Remuxed to {}", ext.to_uppercase())); }
                     }
                     _ => {
                         sink.log("  ERROR: Remux failed");
-                        log_lines.push("  ERROR: Remux failed".into());
+                        if save_log { log_lines.push("  ERROR: Remux failed".into()); }
                         if temp_output_file.exists() { let _ = std::fs::remove_file(&temp_output_file); }
                         queue[idx].status = QueueItemStatus::Failed;
                         sink.queue_item_updated(idx, "Failed");
@@ -962,19 +978,21 @@ pub async fn run_encode_loop(
                     "  Done → {} ({:.1}MB from {:.1}MB)",
                     final_output_str, dst_size as f64 / 1_000_000.0, src_size as f64 / 1_000_000.0,
                 ));
-                log_lines.push(format!(
-                    "  Done: {:.1}MB from {:.1}MB",
-                    dst_size as f64 / 1_000_000.0, src_size as f64 / 1_000_000.0,
-                ));
+                if save_log {
+                    log_lines.push(format!(
+                        "  Done: {:.1}MB from {:.1}MB",
+                        dst_size as f64 / 1_000_000.0, src_size as f64 / 1_000_000.0,
+                    ));
+                }
             }
 
             // Replace mode: delete source, rename temp to final path
             if is_replace_mode && temp_output_file.exists() {
                 // Delete the original source file
-                if let Err(e) = std::fs::remove_file(&item.full_path) {
+                if let Err(e) = std::fs::remove_file(&item_full_path) {
                     let warn = format!("  WARNING: Could not delete source for replacement: {e}");
                     sink.log(&warn);
-                    log_lines.push(warn);
+                    if save_log { log_lines.push(warn); }
                     // Don't fail — the encode succeeded, we just can't replace
                 }
                 // Rename temp to final
@@ -982,23 +1000,24 @@ pub async fn run_encode_loop(
                     if let Err(e) = std::fs::rename(&temp_output_file, &output_file) {
                         let warn = format!("  WARNING: Could not rename temp to final path: {e}");
                         sink.log(&warn);
-                        log_lines.push(warn);
+                        if save_log { log_lines.push(warn); }
                     } else {
-                        sink.log(&format!("  Replaced source → {}", final_output_str));
-                        log_lines.push(format!("  Replaced source → {}", final_output_str));
+                        let msg = format!("  Replaced source → {}", final_output_str);
+                        sink.log(&msg);
+                        if save_log { log_lines.push(msg); }
                     }
                 }
             } else if settings.delete_source && temp_output_file.exists() {
                 // Normal delete-source mode
-                match std::fs::remove_file(&item.full_path) {
+                match std::fs::remove_file(&item_full_path) {
                     Ok(_) => {
                         sink.log("  Source file deleted");
-                        log_lines.push("  Source deleted".into());
+                        if save_log { log_lines.push("  Source deleted".into()); }
                     }
                     Err(e) => {
                         let warn = format!("  WARNING: Could not delete source: {e}");
                         sink.log(&warn);
-                        log_lines.push(warn);
+                        if save_log { log_lines.push(warn); }
                     }
                 }
             }
@@ -1008,7 +1027,7 @@ pub async fn run_encode_loop(
             done_count += 1;
         } else {
             sink.log("  ERROR: Output file not found after encode");
-            log_lines.push("  ERROR: Output file not found".into());
+            if save_log { log_lines.push("  ERROR: Output file not found".into()); }
             queue[idx].status = QueueItemStatus::Failed;
             sink.queue_item_updated(idx, "Failed");
             fail_count += 1;
@@ -1031,8 +1050,10 @@ pub async fn run_encode_loop(
     );
     sink.log("");
     sink.log(&summary);
-    log_lines.push(String::new());
-    log_lines.push(summary);
+    if save_log {
+        log_lines.push(String::new());
+        log_lines.push(summary);
+    }
 
     // Save log
     if settings.save_log {
@@ -1129,8 +1150,9 @@ fn build_audio_args_from_probe(
 
     for stream in audio_streams {
         let should_copy =
-            (stream.codec == audio_encoder || stream.codec == "copy")
-            && stream.bitrate_kbps < audio_cap;
+            stream.codec == "unknown"
+            || ((stream.codec == audio_encoder || stream.codec == "copy")
+                && stream.bitrate_kbps < audio_cap);
 
         if should_copy {
             args.extend(vec![
