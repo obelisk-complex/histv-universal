@@ -191,6 +191,11 @@ fn parse_mount_table() -> Vec<MountEntry> {
         })
         .collect();
 
+    // Filter out autofs entries — these are automount triggers that shadow
+    // the real filesystem mount at the same path (e.g. autofs + cifs both
+    // appear for /mnt/1tb, and autofs would incorrectly match as local).
+    entries.retain(|e| e.fs_type != "autofs");
+
     // Sort by mount point length descending for longest-prefix matching
     entries.sort_by(|a, b| {
         b.mount_point
