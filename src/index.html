@@ -273,7 +273,14 @@
       <div id="bottom-panel-body">
         <!-- Left: log console -->
         <div id="log-panel">
-          <div id="log-panel-header">Log Console</div>
+          <div id="log-panel-header">
+            <span>Log Console</span>
+            <div class="log-filters">
+              <button class="log-filter-btn active" data-filter="all" title="Toggle all log categories">All</button>
+              <button class="log-filter-btn active" data-filter="cmd" title="Show/hide ffmpeg commands">CMD</button>
+              <button class="log-filter-btn active" data-filter="detect" title="Show/hide encoder detection messages">Detect</button>
+            </div>
+          </div>
           <div id="log-content"></div>
         </div>
         <!-- Vertical splitter between log and job details -->
@@ -498,6 +505,7 @@
       setupQueueButtons();
       setupSettingsListeners();
       setupBottomPanel();
+      setupLogFilters();
       setupContextMenu();
       setupDragAndDrop();
       setupClipboardPaste();
@@ -989,7 +997,7 @@
       const sourceCodec = (item.videoCodec || '').toLowerCase();
       const isSameCodec = sourceCodec === settings.targetCodecFamily;
 
-      if (mbps > settings.target) {
+      if (mbps > settings.target * 1.15 || (mbps > settings.target && !isSameCodec)) {
         return `${settings.target}Mbps (VBR)`;
       } else if (isSameCodec) {
         return 'Copy';
@@ -1597,6 +1605,27 @@
     let logScrollPending = false;
     const MAX_LOG_LINES = 5000;
 
+    // ── Log line classification ──
+    function classifyLog(msg) {
+      const trimmed = msg.trimStart();
+      if (trimmed.startsWith('CMD:') || trimmed.startsWith('CMD (fallback):'))
+        return { cls: 'log-line-cmd', filter: 'cmd' };
+      if (trimmed.startsWith('[detect]'))
+        return { cls: 'log-line-detect', filter: 'detect' };
+      if (trimmed.includes('ERROR'))
+        return { cls: 'log-line-error', filter: '' };
+      if (trimmed.includes('WARNING'))
+        return { cls: 'log-line-warn', filter: '' };
+      if (trimmed.startsWith('Done →') || trimmed.startsWith('Remuxed') || trimmed.startsWith('Batch done') || trimmed.startsWith('Batch cancelled'))
+        return { cls: 'log-line-result', filter: '' };
+      if (/^\[\d+\/\d+\]/.test(trimmed))
+        return { cls: 'log-line-file', filter: '' };
+      return { cls: '', filter: '' };
+    }
+
+    // Active log filters — categories that are currently hidden
+    let logHiddenFilters = new Set();
+
     function appendLog(msg) {
       // Deduplicate consecutive identical messages
       if (msg === lastLogMessage && lastLogElement) {
@@ -1615,8 +1644,14 @@
       lastLogMessage = msg;
       lastLogCount = 1;
 
+      const { cls, filter } = classifyLog(msg);
       const line = document.createElement('div');
       line.textContent = msg;
+      if (cls) line.classList.add(cls);
+      if (filter) {
+        line.dataset.logFilter = filter;
+        if (logHiddenFilters.has(filter)) line.classList.add('log-hidden');
+      }
       logContent.appendChild(line);
       lastLogElement = line;
 
@@ -1626,6 +1661,48 @@
       }
 
       scheduleLogScroll();
+    }
+
+    // ── Log filter button handling ──
+    function setupLogFilters() {
+      const filterBtns = document.querySelectorAll('.log-filter-btn');
+      filterBtns.forEach(btn => {
+        btn.addEventListener('click', () => {
+          const filter = btn.dataset.filter;
+
+          if (filter === 'all') {
+            const allActive = btn.classList.contains('active');
+            filterBtns.forEach(b => {
+              if (allActive) {
+                b.classList.remove('active');
+                if (b.dataset.filter !== 'all') logHiddenFilters.add(b.dataset.filter);
+              } else {
+                b.classList.add('active');
+                logHiddenFilters.delete(b.dataset.filter);
+              }
+            });
+          } else {
+            btn.classList.toggle('active');
+            if (btn.classList.contains('active')) {
+              logHiddenFilters.delete(filter);
+            } else {
+              logHiddenFilters.add(filter);
+            }
+            const allBtn = document.querySelector('.log-filter-btn[data-filter="all"]');
+            const categoryBtns = [...filterBtns].filter(b => b.dataset.filter !== 'all');
+            const allOn = categoryBtns.every(b => b.classList.contains('active'));
+            allBtn.classList.toggle('active', allOn);
+          }
+
+          const lines = logContent.children;
+          for (let i = 0; i < lines.length; i++) {
+            const f = lines[i].dataset.logFilter;
+            if (f) {
+              lines[i].classList.toggle('log-hidden', logHiddenFilters.has(f));
+            }
+          }
+        });
+      });
     }
 
     // Batch scroll updates via requestAnimationFrame (#4)

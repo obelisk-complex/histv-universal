@@ -191,6 +191,8 @@ pub fn decide_encode_strategy(
         } else {
             EncodeDecision::Cqp { qi: qp_i, qp: qp_p }
         }
+    } else if is_already_target && bitrate_mbps <= threshold * 1.15 {
+        EncodeDecision::Copy
     } else {
         let target_bps = (threshold * 1_000_000.0) as u64;
         let peak_bps = (target_bps as f64 * 1.5) as u64;
@@ -634,7 +636,7 @@ pub async fn run_encode_loop(
         if save_log { log_lines.push(mode_desc); }
 
         // Build audio args
-        let audio_args = build_audio_args_from_probe(
+        let (audio_map_args, audio_codec_args) = build_audio_args_from_probe(
             &queue[idx].audio_streams, &settings.audio_encoder, settings.audio_cap, sink,
         );
 
@@ -642,7 +644,7 @@ pub async fn run_encode_loop(
         let video_arg_refs: Vec<&str> = video_args.iter().map(|s| s.as_str()).collect();
         let ffmpeg_args = assemble_ffmpeg_args(
             &item_full_path, &video_arg_refs, &settings.pix_fmt,
-            &audio_args, &output_str,
+            &audio_map_args, &audio_codec_args, &output_str,
         );
 
         let cmd_line = format!("ffmpeg {}", ffmpeg_args.join(" "));
@@ -711,14 +713,12 @@ pub async fn run_encode_loop(
                                 if byte == b'\r' || byte == b'\n' {
                                     if !line_buf.is_empty() {
                                         if file_duration > 0.0 {
-                                            // Search for b"time=" in the byte buffer
                                             if let Some(pos) = line_buf.windows(5).position(|w| w == b"time=") {
                                                 let ts_start = pos + 5;
                                                 let ts_end = line_buf[ts_start..].iter()
                                                     .position(|&b| b == b' ' || b == b'\t')
                                                     .map(|p| ts_start + p)
                                                     .unwrap_or(line_buf.len());
-                                                // time= values are always ASCII digits/colons/dots
                                                 if let Ok(ts_str) = std::str::from_utf8(&line_buf[ts_start..ts_end]) {
                                                     if let Some(secs) = parse_ffmpeg_time(ts_str) {
                                                         progress.store(
@@ -853,10 +853,11 @@ pub async fn run_encode_loop(
                         }
                     }
 
-                    // Reuse audio_args from the primary encode — inputs haven't changed
+                    // Reuse audio args from the primary encode — inputs haven't changed
                     let sw_ref: Vec<&str> = sw_video_args.iter().map(|s| s.as_str()).collect();
                     let sw_args = assemble_ffmpeg_args(
-                        &item_full_path, &sw_ref, &settings.pix_fmt, &audio_args, &output_str,
+                        &item_full_path, &sw_ref, &settings.pix_fmt,
+                        &audio_map_args, &audio_codec_args, &output_str,
                     );
 
                     let sw_cmd = format!("ffmpeg {}", sw_args.join(" "));
@@ -1103,7 +1104,8 @@ fn assemble_ffmpeg_args(
     input_path: &str,
     video_args: &[&str],
     pix_fmt: &str,
-    audio_args: &[String],
+    audio_map_args: &[String],
+    audio_codec_args: &[String],
     output_path: &str,
 ) -> Vec<String> {
     let mut args: Vec<String> = vec![
@@ -1113,12 +1115,13 @@ fn assemble_ffmpeg_args(
         "-y".into(),
         "-i".into(), input_path.to_string(),
         "-map".into(), "0:v:0".into(),
-        "-map".into(), "0:a".into(),
-        "-map".into(), "0:s?".into(),
     ];
+    // Per-stream audio maps (skipping unknown codecs) instead of blanket -map 0:a
+    args.extend_from_slice(audio_map_args);
+    args.extend(vec!["-map".into(), "0:s?".into()]);
     args.extend(video_args.iter().map(|s| s.to_string()));
     args.extend(vec!["-pix_fmt".into(), pix_fmt.to_string()]);
-    args.extend_from_slice(audio_args);
+    args.extend_from_slice(audio_codec_args);
     args.extend(vec![
         "-c:s".into(), "copy".into(),
         "-disposition:s:0".into(), "default".into(),
@@ -1135,28 +1138,46 @@ fn build_audio_args_from_probe(
     audio_encoder: &str,
     audio_cap: u32,
     sink: &dyn EventSink,
-) -> Vec<String> {
+) -> (Vec<String>, Vec<String>) {
     if audio_encoder == "copy" {
         sink.log("  Audio: copying all streams");
-        return vec!["-c:a".into(), "copy".into()];
+        return (
+            vec!["-map".into(), "0:a".into()],
+            vec!["-c:a".into(), "copy".into()],
+        );
     }
 
     if audio_streams.is_empty() {
         sink.log("  WARNING: No audio streams found");
-        return Vec::new();
+        return (Vec::new(), Vec::new());
     }
 
-    let mut args = Vec::new();
+    let mut map_args = Vec::new();
+    let mut codec_args = Vec::new();
+    let mut output_idx: u32 = 0;
 
     for stream in audio_streams {
+        // Unknown codecs can't be decoded or muxed — skip them entirely
+        if stream.codec == "unknown" {
+            sink.log(&format!(
+                "  WARNING: Audio {} has an unrecognised codec and will be excluded from the output",
+                stream.index
+            ));
+            continue;
+        }
+
+        // Map this specific input audio stream
+        map_args.extend(vec![
+            "-map".into(), format!("0:a:{}", stream.index),
+        ]);
+
         let should_copy =
-            stream.codec == "unknown"
-            || ((stream.codec == audio_encoder || stream.codec == "copy")
-                && stream.bitrate_kbps < audio_cap);
+            (stream.codec == audio_encoder || stream.codec == "copy")
+            && stream.bitrate_kbps < audio_cap;
 
         if should_copy {
-            args.extend(vec![
-                format!("-c:a:{}", stream.index),
+            codec_args.extend(vec![
+                format!("-c:a:{}", output_idx),
                 "copy".into(),
             ]);
             sink.log(&format!(
@@ -1165,10 +1186,10 @@ fn build_audio_args_from_probe(
             ));
         } else {
             let target_br = stream.bitrate_kbps.min(audio_cap);
-            args.extend(vec![
-                format!("-c:a:{}", stream.index),
+            codec_args.extend(vec![
+                format!("-c:a:{}", output_idx),
                 audio_encoder.to_string(),
-                format!("-b:a:{}", stream.index),
+                format!("-b:a:{}", output_idx),
                 format!("{}k", target_br),
             ]);
             sink.log(&format!(
@@ -1177,9 +1198,11 @@ fn build_audio_args_from_probe(
                 audio_encoder, target_br
             ));
         }
+
+        output_idx += 1;
     }
 
-    args
+    (map_args, codec_args)
 }
 
 /// Execute a post-batch action (§7.6).

@@ -282,6 +282,9 @@ html, body {
 }
 
 #log-panel-header {
+  display: flex;
+  align-items: center;
+  gap: 8px;
   font-size: 11px;
   font-weight: 600;
   color: var(--secondary);
@@ -290,6 +293,7 @@ html, body {
   border-bottom: 1px solid var(--base-300);
   flex-shrink: 0;
 }
+#log-panel-header span { flex-shrink: 0; }
 
 #log-content {
   flex: 1;
@@ -302,7 +306,40 @@ html, body {
   white-space: pre-wrap;
   word-break: break-all;
   background: #0F0F0F;
+  user-select: text;
+  cursor: text;
 }
+
+/* Log line categories */
+.log-line-cmd { color: #666; font-size: 10px; }
+.log-line-warn { color: #fb923c; }
+.log-line-error { color: #f87171; font-weight: 600; }
+.log-line-file { color: #7dd3fc; font-weight: 600; }
+.log-line-detect { color: #a78bfa; }
+.log-line-result { color: #4ade80; }
+
+/* Log filter bar */
+.log-filters {
+  display: flex;
+  gap: 3px;
+  margin-left: auto;
+}
+.log-filter-btn {
+  padding: 1px 7px;
+  font-size: 10px;
+  font-family: inherit;
+  background: transparent;
+  border: 1px solid var(--neutral);
+  border-radius: 3px;
+  color: var(--secondary);
+  cursor: pointer;
+  transition: background 0.12s, color 0.12s, border-color 0.12s;
+}
+.log-filter-btn:hover { border-color: var(--primary); color: var(--base-content); }
+.log-filter-btn.active { background: var(--primary); color: #fff; border-color: var(--primary); }
+
+/* Hidden log lines (filtered out) */
+#log-content .log-hidden { display: none; }
 
 .log-repeat-count {
   color: var(--secondary);
