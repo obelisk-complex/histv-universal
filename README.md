@@ -1,5 +1,7 @@
 # Honey, I Shrunk The Vids [Mr. Universe Edition]
 
+[![Quillx](https://raw.githubusercontent.com/qainsights/Quillx/main/badges/quillx-3.svg)](https://github.com/qainsights/Quillx)
+
 A cross-platform batch video encoder with a GUI. Point it at your files, pick a target bitrate, hit Start. It figures out the rest.
 
 -----
