@@ -1,6 +1,12 @@
 # Honey, I Shrunk The Vids
 
+<<<<<<< HEAD
 A cross-platform batch video encoder. Set a target bitrate, add your files, hit Start. It figures out the rest.
+=======
+[![Quillx](https://raw.githubusercontent.com/qainsights/Quillx/main/badges/quillx-3.svg)](https://github.com/qainsights/Quillx)
+
+A cross-platform batch video encoder with a GUI. Point it at your files, pick a target bitrate, hit Start. It figures out the rest.
+>>>>>>> 6995951cc3478e85473d32102ec3d24a5f744ee6
 
 Ships as a desktop GUI app and a headless CLI binary (see [CLI-README.md](CLI-README.md)) built from the same encoding engine. Both are available as portable binaries from the [Releases page](https://github.com/obelisk-complex/histv-universal/releases).
 
