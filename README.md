@@ -8,10 +8,6 @@ Ships as a desktop GUI app and a headless CLI binary (see [CLI-README.md](CLI-RE
 
 ---
 
-This project was built with the assistance of [claude.ai](https://claude.ai). If you find an issue or an inefficiency I've missed, please open an issue or leave a comment.
-
----
-
 ### Screenshots
 <details>
 
