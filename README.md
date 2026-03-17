@@ -2,9 +2,9 @@
 
 [![Quillx](https://raw.githubusercontent.com/qainsights/Quillx/main/badges/quillx-3.svg)](https://github.com/qainsights/Quillx)
 
-A cross-platform batch video encoder with a GUI. Point it at your files, pick a target bitrate, hit Start. It figures out the rest.
+A cross-platform set-and-forget tool for re-encoding batches of videos to a standard target quality level, regardless of the source properties; no need to babysit the queue or stop to tweak arguments. Just pick a target bitrate (default 5mbps) and where you want the outputs to go, and hit start.
 
-Ships as a desktop GUI app and a headless CLI binary (see [CLI-README.md](CLI-README.md)) built from the same encoding engine. Both are available as portable binaries from the [Releases page](https://github.com/obelisk-complex/histv-universal/releases).
+Ships as a desktop GUI app and a headless CLI binary for server use (see [CLI-README.md](CLI-README.md)), both built on a shared encoding backend for future maintainability. Portable binaries can be found on the GitHub [Releases page](https://github.com/obelisk-complex/histv-universal/releases).
 
 ---
 
