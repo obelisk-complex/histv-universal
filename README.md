@@ -11,13 +11,17 @@ Ships as a desktop GUI app and a headless CLI binary for server use (see [CLI-RE
 ### Screenshots
 <details>
 
-![](https://media.piefed.ca/posts/Fk/Ba/FkBaiUnsD0GmZmY.png)
+![](/screenshots/gui-1.png)
 
-![](https://media.piefed.ca/posts/Qf/a2/Qfa2WQy6ieE5Nic.png)
+![](/screenshots/gui-2.png)
 
-![](https://media.piefed.ca/posts/FA/a6/FAa6w1zwMHqEeKj.png)
+![](/screenshots/gui-3.png)
 
-![](https://media.piefed.ca/posts/9Q/B7/9QB78eFzN3sozTZ.png)
+![](/screenshots/cli-1.png)
+
+![](/screenshots/cli-2.png)
+
+![](/screenshots/cli-3.png)
 
 </details>
 

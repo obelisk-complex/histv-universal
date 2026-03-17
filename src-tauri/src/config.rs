@@ -47,7 +47,7 @@ impl Default for AppConfig {
             post_countdown: 0,
             custom_command: String::new(),
             video_codec: "HEVC".to_string(),
-            target_bitrate: 5,
+            target_bitrate: 4,
             qp_i: 20,
             qp_p: 22,
             crf: 20,

@@ -41,7 +41,7 @@ pub struct CliArgs {
     pub encoder: Option<String>,
 
     /// Target bitrate in Mbps
-    #[arg(short = 'b', long = "bitrate", default_value = "5", value_name = "MBPS")]
+    #[arg(short = 'b', long = "bitrate", default_value = "4", value_name = "MBPS")]
     pub bitrate: f64,
 
     /// Rate-control for below-target transcodes

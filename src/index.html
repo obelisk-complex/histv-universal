@@ -81,7 +81,7 @@
               <span class="tooltip-icon">?</span>
               <span class="tooltip-text">Files above this bitrate are re-encoded in VBR mode to reach this target. Files at or below are either copied (same codec) or re-encoded using quality mode.</span>
             </label>
-            <input type="number" id="num-bitrate" min="1" max="50" value="5" />
+            <input type="number" id="num-bitrate" min="1" max="50" value="4" />
           </div>
 
           <div class="form-row" id="row-rc-mode">
@@ -565,7 +565,7 @@
       try {
         const cfg = await invoke('get_config');
         selCodec.value = cfg.videoCodec || 'HEVC';
-        numBitrate.value = cfg.targetBitrate || 5;
+        numBitrate.value = cfg.targetBitrate || 4;
         numQpI.value = cfg.qpI ?? 20;
         numQpP.value = cfg.qpP ?? 22;
         numCrf.value = cfg.crf ?? 20;
@@ -619,7 +619,7 @@
               postCountdown: parseInt(numCountdown.value, 10) || 0,
               customCommand: txtCustomCmd.value,
               videoCodec: selCodec.value,
-              targetBitrate: parseInt(numBitrate.value, 10) || 5,
+              targetBitrate: parseInt(numBitrate.value, 10) || 4,
               qpI: parseInt(numQpI.value, 10) || 20,
               qpP: parseInt(numQpP.value, 10) || 22,
               crf: parseInt(numCrf.value, 10) || 20,
@@ -980,7 +980,7 @@
     // ── Cached settings for target bitrate computation (#6) ──
     function getTargetBitrateSettings() {
       return {
-        target: parseFloat(numBitrate.value) || 5,
+        target: parseFloat(numBitrate.value) || 4,
         qpI: parseInt(numQpI.value, 10) || 20,
         qpP: parseInt(numQpP.value, 10) || 22,
         crf: parseInt(numCrf.value, 10) || 20,
@@ -999,7 +999,7 @@
 
       if (mbps > settings.target * 1.15 || (mbps > settings.target && !isSameCodec)) {
         return `${settings.target}Mbps (VBR)`;
-      } else if (isSameCodec) {
+      } else if (mbps > 0) {
         return 'Copy';
       } else {
         if (settings.rcMode === 'CRF') {
@@ -2002,7 +2002,7 @@
             outputFolder: txtOutputFolder.value,
             outputContainer: selContainer.value,
             outputMode: getOutputMode(),
-            targetBitrate: parseFloat(numBitrate.value) || 5,
+            targetBitrate: parseFloat(numBitrate.value) || 4,
             qpI: parseInt(numQpI.value, 10) || 20,
             qpP: parseInt(numQpP.value, 10) || 22,
             crf: parseInt(numCrf.value, 10) || 20,

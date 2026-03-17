@@ -180,7 +180,11 @@ pub fn decide_encode_strategy(
     let is_already_target = video_codec == target_codec;
 
     if bitrate_mbps <= threshold || bitrate_mbps <= 0.0 {
-        if is_already_target && bitrate_mbps > 0.0 {
+        if bitrate_mbps > 0.0 {
+            // At or below target with a known bitrate — copy regardless
+            // of codec. The output container (MKV/MP4) handles both h264
+            // and HEVC, so cross-codec remux is safe and avoids wasteful
+            // quality transcodes that almost always produce larger files.
             EncodeDecision::Copy
         } else if rate_control_mode == "CRF" || rate_control_mode == "crf" {
             EncodeDecision::Crf {
