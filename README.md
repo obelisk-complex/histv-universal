@@ -21,9 +21,40 @@ Ships as a desktop GUI app and a headless CLI binary for server use (see [CLI-RE
 
 </details>
 
+## Features
+
+<details>
+<summary><strong>Full feature list</strong></summary>
+
+- **Queue management** - drag-and-drop, clipboard paste (Ctrl+V), file/folder picker. Click, Shift+click, Ctrl+click, Ctrl+A, Delete. Right-click context menu for re-queue, remove, clear, open, and reveal actions. Drag to reorder.
+- **Smart bitrate decisions** - the Target Bitrate column updates live as you change settings, showing exactly what the app plans to do before you start. Files within 15% above the target in the same codec are stream-copied rather than re-encoded.
+- **Four-tier bitrate probing** - stream headers, MKV tags, format metadata, then full packet counting. Single ffprobe call per file; audio streams cached at probe time.
+- **Hardware encoder detection** - test-encodes a short clip with each available GPU encoder at startup. Only verified encoders appear in the dropdown.
+- **Hardware fallback** - if a GPU encode fails mid-file, offers to retry with the software encoder and continue the batch.
+- **QP / CRF rate control** - software encoders offer QP or CRF. Hardware encoders use QP only.
+- **Per-stream audio handling** - each audio stream evaluated individually. Streams already below the cap in the target codec are copied. Unknown/proprietary streams (e.g. Apple Spatial Audio) are excluded with a warning.
+- **HDR awareness** - auto-detects HDR via colour metadata, switches to 10-bit. Untick to tonemap to SDR.
+- **Subtitle passthrough** - all subtitle streams mapped and copied.
+- **Output modes** - output folder, beside source, or replace source. MKV or MP4 container.
+- **Post-encode size check** - if the output is larger than the source, the encoder discards it and remuxes the source into the target container instead.
+- **Batch controls** - start, pause/resume, cancel current, cancel all. Per-file and overall progress bars. Queue rows show progress fill during encoding.
+- **Dry run** - probes every file and populates the plan without encoding.
+- **Remote mount detection** - automatically detects files on network mounts (NFS, CIFS/SMB, sshfs) and stages them to local storage before encoding. Supported on Linux, macOS, and Windows.
+- **Disk-space monitoring** - pauses encoding when the output partition exceeds a configured usage threshold, resumes when space recovers.
+- **Post-batch actions** - shutdown, sleep, log out, or custom command with cancellable countdown.
+- **Log console** - collapsible split panel with colour-coded, selectable log output and toggleable category filters. Optional log file.
+- **System notifications** - OS-level notification on batch completion.
+- **Auto-clear** - optionally remove completed items when the batch finishes.
+- **Themeable** - ships with dark and light themes. Drop custom JSON files into the themes folder. See [THEMES.md](THEMES.md).
+- **Built-in ffmpeg downloader** - offers to download ffmpeg automatically if not found.
+- **Persistent settings** - saved to JSON config, restored on next launch.
+- **Headless CLI** - same encoding engine available as a standalone command-line binary with job files, signal handling, and non-interactive defaults. See [CLI-README.md](CLI-README.md).
+
+</details>
+
 ## Download
 
-Grab the latest build from the **[Releases page](https://github.com/obelisk-complex/histv-universal/releases)**.
+Grab the latest build from the GitHub **[Releases page](https://github.com/obelisk-complex/histv-universal/releases)**.
 
 | Platform | GUI | CLI |
 |----------|-----|-----|
@@ -32,7 +63,7 @@ Grab the latest build from the **[Releases page](https://github.com/obelisk-comp
 | **macOS (Apple Silicon)** | `.dmg` (arm64) | `histv-cli-macos-arm64` |
 | **macOS (Intel)** | `.dmg` (x64) | `histv-cli-macos-x64` |
 
-The GUI is portable - no installation needed. On Linux, mark the AppImage executable (`chmod +x`). On macOS, open the DMG and drag to Applications.
+The all binaries are portable - no installation needed. On Linux, mark the AppImage executable (`chmod +x`). On macOS, open the DMG and drag to Applications.
 
 **ffmpeg is required.** The GUI offers to download it automatically on first launch. The CLI expects it on your PATH (`apt install ffmpeg`, `brew install ffmpeg`, `choco install ffmpeg`, etc.).
 
@@ -82,37 +113,6 @@ People who have a collection of video files at various bitrates and codecs and w
 **vs. Tdarr** - Tdarr is a media server tool: always-running, plugin-based, multi-node. HISTV is a desktop app you open, use, and close. No database, no Docker, no web dashboard. HISTV's encoding logic is built-in rather than plugin-driven.
 
 **vs. a plain ffmpeg command** - HISTV wraps the decision-making and queue management so you don't have to script it yourself: probing, encoder selection, fallback, overwrite/delete prompts, pause/resume, and post-batch actions.
-
-</details>
-
-## Features
-
-<details>
-<summary><strong>Full feature list</strong></summary>
-
-- **Queue management** - drag-and-drop, clipboard paste (Ctrl+V), file/folder picker. Click, Shift+click, Ctrl+click, Ctrl+A, Delete. Right-click context menu for re-queue, remove, clear, open, and reveal actions. Drag to reorder.
-- **Smart bitrate decisions** - the Target Bitrate column updates live as you change settings, showing exactly what the app plans to do before you start. Files within 15% above the target in the same codec are stream-copied rather than re-encoded.
-- **Four-tier bitrate probing** - stream headers, MKV tags, format metadata, then full packet counting. Single ffprobe call per file; audio streams cached at probe time.
-- **Hardware encoder detection** - test-encodes a short clip with each available GPU encoder at startup. Only verified encoders appear in the dropdown.
-- **Hardware fallback** - if a GPU encode fails mid-file, offers to retry with the software encoder and continue the batch.
-- **QP / CRF rate control** - software encoders offer QP or CRF. Hardware encoders use QP only.
-- **Per-stream audio handling** - each audio stream evaluated individually. Streams already below the cap in the target codec are copied. Unknown/proprietary streams (e.g. Apple Spatial Audio) are excluded with a warning.
-- **HDR awareness** - auto-detects HDR via colour metadata, switches to 10-bit. Untick to tonemap to SDR.
-- **Subtitle passthrough** - all subtitle streams mapped and copied.
-- **Output modes** - output folder, beside source, or replace source. MKV or MP4 container.
-- **Post-encode size check** - if the output is larger than the source, the encoder discards it and remuxes the source into the target container instead.
-- **Batch controls** - start, pause/resume, cancel current, cancel all. Per-file and overall progress bars. Queue rows show progress fill during encoding.
-- **Dry run** - probes every file and populates the plan without encoding.
-- **Remote mount detection** - automatically detects files on network mounts (NFS, CIFS/SMB, sshfs) and stages them to local storage before encoding. Supported on Linux, macOS, and Windows.
-- **Disk-space monitoring** - pauses encoding when the output partition exceeds a configured usage threshold, resumes when space recovers.
-- **Post-batch actions** - shutdown, sleep, log out, or custom command with cancellable countdown.
-- **Log console** - collapsible split panel with colour-coded, selectable log output and toggleable category filters. Optional log file.
-- **System notifications** - OS-level notification on batch completion.
-- **Auto-clear** - optionally remove completed items when the batch finishes.
-- **Themeable** - ships with dark and light themes. Drop custom JSON files into the themes folder. See [THEMES.md](THEMES.md).
-- **Built-in ffmpeg downloader** - offers to download ffmpeg automatically if not found.
-- **Persistent settings** - saved to JSON config, restored on next launch.
-- **Headless CLI** - same encoding engine available as a standalone command-line binary with job files, signal handling, and non-interactive defaults. See [CLI-README.md](CLI-README.md).
 
 </details>
 
