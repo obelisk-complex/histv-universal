@@ -87,7 +87,7 @@ These colour the background of queue rows based on their encoding status. They s
 
 ```json
 {
-  "name": "Solarized Dark",
+  "name": "Solarised Dark",
   "colors": {
     "primary": "#268BD2",
     "secondary": "#586E75",
@@ -127,11 +127,11 @@ These colour the background of queue rows based on their encoding status. They s
 }
 ```
 
-### Dracula
+### Vempire
 
 ```json
 {
-  "name": "Dracula",
+  "name": "Vempire",
   "colors": {
     "primary": "#BD93F9",
     "secondary": "#6272A4",

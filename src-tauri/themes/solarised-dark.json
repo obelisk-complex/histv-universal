@@ -1,0 +1,17 @@
+{
+  "name": "Solarised Dark",
+  "colors": {
+    "primary": "#268BD2",
+    "secondary": "#586E75",
+    "accent": "#2AA198",
+    "neutral": "#073642",
+    "base-100": "#002B36",
+    "base-200": "#073642",
+    "base-300": "#0A4050",
+    "base-content": "#93A1A1",
+    "info": "#0D3D56",
+    "success": "#0D3D2A",
+    "warning": "#3D3A0D",
+    "error": "#4A1A1A"
+  }
+}
