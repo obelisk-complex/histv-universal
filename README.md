@@ -2,7 +2,7 @@
 
 [![Quillx](https://raw.githubusercontent.com/qainsights/Quillx/main/badges/quillx-3.svg)](https://github.com/qainsights/Quillx)
 
-A cross-platform set-and-forget tool for re-encoding batches of videos to a standard target quality level, regardless of the source properties; no need to babysit the queue or stop to tweak arguments. Just pick a target bitrate (default 5mbps) and where you want the outputs to go, and hit start.
+A cross-platform set-and-forget tool for re-encoding batches of videos to a standard target quality level, regardless of the source properties; no need to babysit the queue or stop to tweak arguments. Just pick a target bitrate (default 4mbps) and where you want the outputs to go, and hit start.
 
 Ships as a desktop GUI app and a headless CLI binary for server use (see [CLI-README.md](CLI-README.md)), both built on a shared encoding backend for future maintainability. Portable binaries can be found on the GitHub [Releases page](https://github.com/obelisk-complex/histv-universal/releases).
 
