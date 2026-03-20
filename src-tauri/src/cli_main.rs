@@ -172,6 +172,7 @@ fn main() {
                 args.qp_i,
                 args.qp_p,
                 args.crf,
+                args.peak_multiplier,
             )
         })
         .collect();
@@ -467,6 +468,10 @@ fn main() {
         delete_source,
         save_log: args.save_log,
         post_command: args.post_command.clone(),
+        peak_multiplier: args.peak_multiplier,
+        threads: args.threads,
+        low_priority: args.low_priority,
+        precision_mode: args.precision_mode,
     };
 
     // ── Remote staging + encoding loop ─────────────────────────
@@ -598,6 +603,9 @@ fn merge_job_into_args(args: &mut cli::CliArgs, job: &cli::JobFile) {
     if let Some(bitrate) = job.bitrate {
         args.bitrate = bitrate;
     }
+    if let Some(pm) = job.peak_multiplier {
+        args.peak_multiplier = pm;
+    }
     if let Some(ref rc) = job.rate_control {
         if let Ok(r) = rc.parse::<cli::RateControl>() {
             args.rc = r;
@@ -670,6 +678,15 @@ fn merge_job_into_args(args: &mut cli::CliArgs, job: &cli::JobFile) {
     }
     if let Some(sl) = job.save_log {
         args.save_log = sl;
+    }
+    if let Some(t) = job.threads {
+        args.threads = t;
+    }
+    if let Some(lp) = job.low_priority {
+        args.low_priority = lp;
+    }
+    if let Some(pm) = job.precision_mode {
+        args.precision_mode = pm;
     }
 }
 

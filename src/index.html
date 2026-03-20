@@ -3,7 +3,7 @@
 <head>
   <meta charset="UTF-8" />
   <meta name="viewport" content="width=device-width, initial-scale=1.0" />
-  <title>Honey, I Shrunk The Vids v2.1.2</title>
+  <title>Honey, I Shrunk The Vids v2.2.0</title>
   <link rel="stylesheet" href="css/app.css" />
 </head>
 <body>
@@ -66,7 +66,7 @@
           <div class="form-row form-row-wrap">
             <label for="sel-codec" class="has-tooltip">Codec
               <span class="tooltip-icon">?</span>
-              <span class="tooltip-text">HEVC (H.265) offers better compression than H.264 at the cost of slower encoding. H.264 has wider device compatibility.</span>
+              <span class="tooltip-text">HEVC gives you smaller files for the same quality; safe on devices from 2014 and later. H.264 is safest for pre-2014 devices.</span>
             </label>
             <select id="sel-codec">
               <option value="HEVC">HEVC</option>
@@ -79,15 +79,28 @@
           <div class="form-row">
             <label for="num-bitrate" class="has-tooltip">Target bitrate (Mbps)
               <span class="tooltip-icon">?</span>
-              <span class="tooltip-text">Files above this bitrate are re-encoded in VBR mode to reach this target. Files at or below are either copied (same codec) or re-encoded using quality mode.</span>
+              <span class="tooltip-text">Videos bigger than this get shrunk. Videos already this size or smaller are left alone. Lower values = smaller files, but more visible quality loss. This number has the biggest impact on both file size and video quality.</span>
             </label>
             <input type="number" id="num-bitrate" min="1" max="50" value="4" />
+          </div>
+
+          <div class="form-row">
+            <label class="has-tooltip">VBR peak ceiling
+              <span class="tooltip-icon">?</span>
+              <span class="tooltip-text">Lets the encoder use extra data for fast-moving or detailed scenes so they don't look blocky. Higher = better action scenes, but very old devices pre-2013 might stutter. 1.5x is safest; 3x looks best.</span>
+            </label>
+            <div class="rc-toggle" id="peak-toggle">
+              <button type="button" class="active" data-peak="1.5">1.5x</button>
+              <button type="button" data-peak="2">2x</button>
+              <button type="button" data-peak="2.5">2.5x</button>
+              <button type="button" data-peak="3">3x</button>
+            </div>
           </div>
 
           <div class="form-row" id="row-rc-mode">
             <label class="has-tooltip">Quality mode
               <span class="tooltip-icon">?</span>
-              <span class="tooltip-text" id="rc-tooltip">QP sets a fixed quantiser per frame — output size is less predictable but quality is frame-consistent. CRF lets the encoder vary quantisation to hit a perceptual quality target — generally preferred for software encoders (libx264/libx265).</span>
+              <span class="tooltip-text" id="rc-tooltip">QP gives you predictable file sizes but some scenes may look blocky. CRF gives you much less blocking but file sizes vary more.</span>
             </label>
             <div class="rc-toggle" id="rc-toggle">
               <button type="button" class="active" data-mode="QP">QP</button>
@@ -98,33 +111,49 @@
           <div class="form-row" id="row-qp">
             <label class="has-tooltip" id="lbl-qp">QP I / P
               <span class="tooltip-icon">?</span>
-              <span class="tooltip-text">Quantisation parameter for I-frames and P-frames. Lower = higher quality and larger files. Typical range: 18–28.</span>
+              <span class="tooltip-text">Lower numbers look better but produce bigger files. Around 20 is a good balance; go down to 18 for best quality, up to 28 if some visible quality loss is acceptable for a smaller file.</span>
             </label>
-            <input type="number" id="num-qp-i" min="0" max="51" value="20" style="width:55px;" />
-            <input type="number" id="num-qp-p" min="0" max="51" value="22" style="width:55px;" />
+            <input type="number" id="num-qp-i" min="0" max="51" value="22" style="width:55px;" />
+            <input type="number" id="num-qp-p" min="0" max="51" value="24" style="width:55px;" />
           </div>
 
           <div class="form-row" id="row-crf" style="display:none;">
             <label class="has-tooltip" id="lbl-crf">CRF value
               <span class="tooltip-icon">?</span>
-              <span class="tooltip-text">Constant Rate Factor — the encoder targets a perceptual quality level. Lower = higher quality and larger files. Typical range: 18–28. Only available with libx264/libx265.</span>
+              <span class="tooltip-text">Lower numbers look better but produce bigger files. 20 is a good balance between size and quality, 18 for basically perfect and a bigger file. Software encoders only.</span>
             </label>
             <input type="number" id="num-crf" min="0" max="51" value="20" style="width:55px;" />
           </div>
 
-          <div class="form-row">
-            <label for="txt-pixfmt" class="has-tooltip">Pixel format
-              <span class="tooltip-icon">?</span>
-              <span class="tooltip-text">Colour depth and subsampling. yuv420p is 8-bit SDR (most compatible). p010le is 10-bit for HDR content.</span>
-            </label>
-            <input type="text" id="txt-pixfmt" value="yuv420p" readonly style="width:90px;flex:none;" />
+          <div class="checkbox-row has-tooltip">
+            <input type="checkbox" id="chk-hdr" />
+            <label for="chk-hdr">Preserve HDR</label>
+            <span class="tooltip-icon">?</span>
+            <span class="tooltip-text">When unticked, HDR files are converted to 8-bit SDR, with industry-standard colour mapping. Leave ticked to leave HDR files as HDR.</span>
           </div>
 
           <div class="checkbox-row has-tooltip">
-            <input type="checkbox" id="chk-hdr" />
-            <label for="chk-hdr">10-bit HDR - uncheck to encode HDR source as SDR</label>
+            <input type="checkbox" id="chk-precision" />
+            <label for="chk-precision">Precision mode</label>
             <span class="tooltip-icon">?</span>
-            <span class="tooltip-text">When ticked, HDR metadata and 10-bit colour are preserved. Untick to tone-map HDR sources down to SDR.</span>
+            <span class="tooltip-text">Takes longer but gives you the smallest file that still looks great. Tests a few clips first to make sure it won't backfire and make the file bigger.</span>
+          </div>
+
+          <div class="section-header">Performance</div>
+
+          <div class="form-row">
+            <label for="num-threads" class="has-tooltip">CPU threads
+              <span class="tooltip-icon">?</span>
+              <span class="tooltip-text">0 means full speed. Set lower if you want to use your PC for other things while encoding - it'll just take longer to finish.</span>
+            </label>
+            <input type="number" id="num-threads" min="0" max="64" value="0" style="width:55px;" />
+          </div>
+
+          <div class="checkbox-row has-tooltip">
+            <input type="checkbox" id="chk-low-priority" />
+            <label for="chk-low-priority">Low priority (reduce impact on other tasks)</label>
+            <span class="tooltip-icon">?</span>
+            <span class="tooltip-text">Your other apps won't feel sluggish while encoding runs in the background. Encoding still uses full power when nothing else needs it.</span>
           </div>
 
           <div class="section-header">Audio</div>
@@ -132,7 +161,7 @@
           <div class="form-row">
             <label for="sel-audio-codec" class="has-tooltip">Audio codec
               <span class="tooltip-icon">?</span>
-              <span class="tooltip-text">AC3 (Dolby Digital) is widely supported. EAC3 is its successor with better quality at the same bitrate. AAC is efficient and universal. Copy passes through without re-encoding.</span>
+              <span class="tooltip-text">AC3 plays everywhere. EAC3 sounds the same but takes less space. AAC is the smallest. Copy leaves the audio exactly as it was.</span>
             </label>
             <select id="sel-audio-codec">
               <option value="AC3">AC3</option>
@@ -145,7 +174,7 @@
           <div class="form-row">
             <label for="num-audio-cap" class="has-tooltip">Audio cap (kbps)
               <span class="tooltip-icon">?</span>
-              <span class="tooltip-text">Maximum audio bitrate. Audio streams already at or below this value are copied unchanged. Higher values preserve more audio detail.</span>
+              <span class="tooltip-text">Audio already smaller than this is left alone. Raise it if you notice audio sounding thin or muffled after encoding.</span>
             </label>
             <input type="number" id="num-audio-cap" min="128" max="1536" step="32" value="640" />
           </div>
@@ -164,7 +193,7 @@
           <div class="form-row">
             <label for="txt-output-folder" class="has-tooltip">Output folder
               <span class="tooltip-icon">?</span>
-              <span class="tooltip-text">The directory where encoded files are saved. Can be an absolute path or a relative name (e.g. "output") which is created inside the working directory.</span>
+              <span class="tooltip-text">Where encoded files are saved. You can type a full path or just a folder name like "output" (created in the app's working directory).</span>
             </label>
             <input type="text" id="txt-output-folder" value="output" />
             <button class="btn" id="btn-browse-output">Browse</button>
@@ -173,7 +202,7 @@
           <div class="form-row has-tooltip">
             <label class="has-tooltip">Output mode
               <span class="tooltip-icon">?</span>
-              <span class="tooltip-text">Where encoded files are saved. "Use output folder" saves to the directory above. "Place next to source" creates an "output" subfolder alongside each input file. "Replace source" encodes to a temp file then replaces the original.</span>
+              <span class="tooltip-text">"Use output folder" saves to the folder above. "Place next to source" creates an "output" folder beside each input file. "Replace source" swaps the original with the encoded version.</span>
             </label>
             <div class="radio-group" id="radio-output-mode">
               <label class="radio-label"><input type="radio" name="output-mode" value="folder" checked /> Use output folder</label>
@@ -185,7 +214,7 @@
           <div class="form-row">
             <label for="sel-container" class="has-tooltip">Container
               <span class="tooltip-icon">?</span>
-              <span class="tooltip-text">MKV supports virtually all codecs and subtitle formats. MP4 has broader playback support on consumer devices but fewer subtitle/codec options.</span>
+              <span class="tooltip-text">MKV can hold anything and is great for archiving. MP4 is better if you need to play files on TVs, phones, or game consoles.</span>
             </label>
             <select id="sel-container">
               <option value="mkv">MKV</option>
@@ -197,14 +226,14 @@
             <input type="checkbox" id="chk-overwrite" />
             <label for="chk-overwrite">Overwrite existing output files</label>
             <span class="tooltip-icon">?</span>
-            <span class="tooltip-text">Skip the confirmation prompt when an output file already exists and overwrite it automatically.</span>
+            <span class="tooltip-text">Automatically overwrite output files that already exist instead of asking each time.</span>
           </div>
 
           <div class="checkbox-row has-tooltip">
             <input type="checkbox" id="chk-delete-source" />
             <label for="chk-delete-source">Delete source files after successful encode</label>
             <span class="tooltip-icon">?</span>
-            <span class="tooltip-text">Permanently deletes the original source file after a successful encode. A confirmation prompt is shown when starting the batch.</span>
+            <span class="tooltip-text">Deletes the original file after a successful encode. You'll be asked to confirm before the batch starts.</span>
           </div>
 
           <div class="section-header">Logging &amp; Notifications</div>
@@ -213,21 +242,21 @@
             <input type="checkbox" id="chk-save-log" />
             <label for="chk-save-log">Save log to output folder</label>
             <span class="tooltip-icon">?</span>
-            <span class="tooltip-text">Writes a timestamped text log of the entire batch to the output directory when the batch finishes.</span>
+            <span class="tooltip-text">Saves a text log of the batch to the output folder when it finishes.</span>
           </div>
 
           <div class="checkbox-row has-tooltip">
             <input type="checkbox" id="chk-toast" />
             <label for="chk-toast">Show system notification on batch completion</label>
             <span class="tooltip-icon">?</span>
-            <span class="tooltip-text">Displays an OS-level notification when the batch finishes so you know it's done even if the app is in the background.</span>
+            <span class="tooltip-text">Shows a system notification when the batch finishes, so you know it's done even if the app is in the background.</span>
           </div>
 
           <div class="checkbox-row has-tooltip">
             <input type="checkbox" id="chk-auto-clear" />
             <label for="chk-auto-clear">Auto-clear completed items after batch</label>
             <span class="tooltip-icon">?</span>
-            <span class="tooltip-text">Automatically removes successfully completed items from the queue when the batch finishes. Failed, skipped, and cancelled items are kept.</span>
+            <span class="tooltip-text">Clears finished items from the queue when the batch ends. Failed, skipped, and cancelled items are kept.</span>
           </div>
 
           <div class="section-header">Post-Batch Action</div>
@@ -235,7 +264,7 @@
           <div class="form-row">
             <label for="sel-post-action" class="has-tooltip">Action
               <span class="tooltip-icon">?</span>
-              <span class="tooltip-text">An optional action to perform after the batch completes. Useful for long overnight encodes — shutdown the PC, put it to sleep, etc.</span>
+              <span class="tooltip-text">Something to do after the batch finishes - handy for overnight encodes. Shutdown, sleep, etc.</span>
             </label>
             <select id="sel-post-action">
               <option value="None">None</option>
@@ -254,7 +283,7 @@
           <div class="form-row">
             <label for="num-countdown" class="has-tooltip">Countdown (seconds)
               <span class="tooltip-icon">?</span>
-              <span class="tooltip-text">A countdown shown before the post-batch action executes, giving you a chance to cancel. Set to 0 for immediate execution.</span>
+              <span class="tooltip-text">Seconds to wait before running the post-batch action, giving you a chance to cancel. 0 means run immediately.</span>
             </label>
             <input type="number" id="num-countdown" min="0" max="3600" value="0" />
           </div>
@@ -399,12 +428,12 @@
 
   <script>
     // ═══════════════════════════════════════════════════════════════
-    //  HISTV Tauri Frontend — app.js (inline)
+    //  HISTV Tauri Frontend - app.js (inline)
     // ═══════════════════════════════════════════════════════════════
     const { invoke } = window.__TAURI__.core;
     const { listen, emit } = window.__TAURI__.event;
 
-    // Dialog helper — wraps the Tauri v2 dialog plugin.
+    // Dialog helper - wraps the Tauri v2 dialog plugin.
     // With withGlobalTauri: true, plugins may expose their API on a global,
     // or we can invoke the plugin command directly.
     async function dialogOpen(opts) {
@@ -429,6 +458,9 @@
     let targetBitrateDebounce = null;  // coalesces rapid refreshTargetBitrates calls
     let batchCurrentFile = 0;          // current file index in batch (1-based)
     let batchTotalFiles = 0;           // total files in batch
+    let currentEncodingIndex = -1;     // queue index of the currently-encoding row
+    let fileEncodeStart = 0;           // wall-clock timestamp when current file started
+    const defaultTitle = document.title;
 
     // ── DOM refs ───────────────────────────────────────────────────
     const $ = (s) => document.querySelector(s);
@@ -440,6 +472,7 @@
     const selEncoder      = $('#sel-encoder');
     const encoderStatus   = $('#encoder-status');
     const numBitrate      = $('#num-bitrate');
+    const peakToggle      = $('#peak-toggle');
     const numQpI          = $('#num-qp-i');
     const numQpP          = $('#num-qp-p');
     const numCrf          = $('#num-crf');
@@ -447,8 +480,10 @@
     const rowCrf          = $('#row-crf');
     const rowRcMode       = $('#row-rc-mode');
     const rcToggle        = $('#rc-toggle');
-    const txtPixFmt       = $('#txt-pixfmt');
     const chkHdr          = $('#chk-hdr');
+    const chkPrecision    = $('#chk-precision');
+    const numThreads      = $('#num-threads');
+    const chkLowPriority  = $('#chk-low-priority');
     const selAudioCodec   = $('#sel-audio-codec');
     const numAudioCap     = $('#num-audio-cap');
     const selTheme        = $('#sel-theme');
@@ -527,6 +562,7 @@
           const total = ve.length + ae.length;
           encoderStatus.textContent = `${total} encoders available (${ve.length} video, ${ae.length} audio)`;
           encoderDetectionDone = true;
+          if (chkPrecision.checked) applyPrecisionMode();
           updateBatchButtons();
         } catch (e) {
           console.warn('Encoder fetch error:', e);
@@ -566,11 +602,14 @@
         const cfg = await invoke('get_config');
         selCodec.value = cfg.videoCodec || 'HEVC';
         numBitrate.value = cfg.targetBitrate || 4;
+        setPeakMultiplier(cfg.peakMultiplier || 1.5);
         numQpI.value = cfg.qpI ?? 20;
         numQpP.value = cfg.qpP ?? 22;
         numCrf.value = cfg.crf ?? 20;
         chkHdr.checked = cfg.hdr || false;
-        updatePixFmt();
+        chkPrecision.checked = cfg.precisionMode || false;
+        numThreads.value = cfg.threads ?? 0;
+        chkLowPriority.checked = cfg.lowPriority || false;
         selAudioCodec.value = cfg.audioCodec || 'AC3';
         numAudioCap.value = cfg.audioBitrateCap || 640;
         txtOutputFolder.value = cfg.outputFolder || 'output';
@@ -620,11 +659,15 @@
               customCommand: txtCustomCmd.value,
               videoCodec: selCodec.value,
               targetBitrate: parseInt(numBitrate.value, 10) || 4,
+              peakMultiplier: getCurrentPeakMultiplier(),
               qpI: parseInt(numQpI.value, 10) || 20,
               qpP: parseInt(numQpP.value, 10) || 22,
               crf: parseInt(numCrf.value, 10) || 20,
               rateControlMode: getCurrentRcMode(),
               hdr: chkHdr.checked,
+              precisionMode: chkPrecision.checked,
+              threads: parseInt(numThreads.value, 10) || 0,
+              lowPriority: chkLowPriority.checked,
               audioCodec: selAudioCodec.value,
               audioBitrateCap: parseInt(numAudioCap.value, 10) || 640,
               logDrawerOpen: bottomPanelBody.classList.contains('open'),
@@ -758,7 +801,7 @@
         }
       });
 
-      // ── Window resize — clamp left panel so right panel stays within min/max ──
+      // ── Window resize - clamp left panel so right panel stays within min/max ──
       window.addEventListener('resize', () => {
         if (settingsPanelCollapsed) return;
         if (!leftPanel.style.width) return;
@@ -795,7 +838,7 @@
       // Read settings once for target bitrate labels (#6)
       const settings = getTargetBitrateSettings();
 
-      // Differential update — patch only what changed
+      // Differential update - patch only what changed
       for (let i = 0; i < queueData.length; i++) {
         const item = queueData[i];
         const tr = existingRows[i];
@@ -930,7 +973,7 @@
 	  updateBatchButtons();
     }
 
-    // ── Delegated row click handler — toggles selection without full rebuild ──
+    // ── Delegated row click handler - toggles selection without full rebuild ──
     let reorderJustCompleted = false;
 
     function handleQueueRowClick(e) {
@@ -947,7 +990,7 @@
       const previousSelection = new Set(selectedRows);
 
       if (e.shiftKey && selectedRows.size > 0) {
-        // Safe max without spread — avoids stack overflow at 50k+ items (#9)
+        // Safe max without spread - avoids stack overflow at 50k+ items (#9)
         let last = -1;
         for (const r of selectedRows) { if (r > last) last = r; }
         const lo = Math.min(last, i);
@@ -981,6 +1024,7 @@
     function getTargetBitrateSettings() {
       return {
         target: parseFloat(numBitrate.value) || 4,
+        peakMultiplier: getCurrentPeakMultiplier(),
         qpI: parseInt(numQpI.value, 10) || 20,
         qpP: parseInt(numQpP.value, 10) || 22,
         crf: parseInt(numCrf.value, 10) || 20,
@@ -992,13 +1036,27 @@
     // ── Target bitrate label (§5.7) ──
     function computeTargetBitrateLabel(item, settings) {
       const mbps = item.videoBitrateMbps;
-      if (!mbps || mbps <= 0) return '?';
-
       const sourceCodec = (item.videoCodec || '').toLowerCase();
+      // Codecs that cannot be stream-copied into MKV/MP4
+      const isNonCopyable = ['gif', 'apng', 'mjpeg'].includes(sourceCodec);
+
+      if (!mbps || mbps <= 0) {
+        if (settings.rcMode === 'CRF') {
+          return `CRF ${settings.crf}`;
+        }
+        return `CQP (${settings.qpI}/${settings.qpP})`;
+      }
+
       const isSameCodec = sourceCodec === settings.targetCodecFamily;
 
       if (mbps > settings.target * 1.15 || (mbps > settings.target && !isSameCodec)) {
-        return `${settings.target}Mbps (VBR)`;
+        const peak = (settings.target * settings.peakMultiplier).toFixed(1).replace(/\.0$/, '');
+        return `${settings.target}/${peak}Mbps (VBR)`;
+      } else if (isNonCopyable) {
+        if (settings.rcMode === 'CRF') {
+          return `CRF ${settings.crf}`;
+        }
+        return `CQP (${settings.qpI}/${settings.qpP})`;
       } else if (mbps > 0) {
         return 'Copy';
       } else {
@@ -1019,13 +1077,13 @@
       }
     }
 
-    // ── Debounced variant — coalesces rapid settings changes into one DOM walk ──
+    // ── Debounced variant - coalesces rapid settings changes into one DOM walk ──
     function scheduleRefreshTargetBitrates() {
       if (targetBitrateDebounce) clearTimeout(targetBitrateDebounce);
       targetBitrateDebounce = setTimeout(refreshTargetBitrates, 50);
     }
 
-    // ── Debounced queue refresh — coalesces rapid fetch+render cycles ──
+    // ── Debounced queue refresh - coalesces rapid fetch+render cycles ──
     // Multiple sources (probeFileAt completions, Tauri events) can all
     // request a queue refresh within milliseconds of each other. This
     // collapses them into a single IPC call + render.
@@ -1046,7 +1104,7 @@
         // Re-fetch full queue to stay in sync
         queueData = await invoke('get_queue');
         renderQueue();
-        // Probe newly-added items by index range — no path lookups (#2)
+        // Probe newly-added items by index range - no path lookups (#2)
         for (let i = startIndex; i < startIndex + count; i++) {
           if (i < queueData.length && (queueData[i].status || '').toLowerCase() === 'pending') {
             probeFileAt(i);
@@ -1059,7 +1117,7 @@
 
     // ── Probe a single file (async, non-blocking) ──
     // Schedules a debounced queue refresh on completion rather than
-    // fetching + rendering immediately — prevents N fetches for N files.
+    // fetching + rendering immediately - prevents N fetches for N files.
     async function probeFileAt(index) {
       try {
         await invoke('probe_file', { index });
@@ -1075,14 +1133,8 @@
       const anyHdr = queueData.some(item => item.isHdr);
       if (anyHdr && !chkHdr.checked) {
         chkHdr.checked = true;
-        updatePixFmt();
         scheduleConfigSave();
       }
-    }
-
-    // ── HDR checkbox → pixel format (§6.1) ──
-    function updatePixFmt() {
-      txtPixFmt.value = chkHdr.checked ? 'p010le' : 'yuv420p';
     }
 
     // ── Queue buttons ──
@@ -1092,8 +1144,8 @@
           const selected = await dialogOpen({
             multiple: true,
             filters: [{
-              name: 'Video Files',
-              extensions: ['mkv','mp4','avi','ts','m2ts','wmv','mov','webm']
+              name: 'Video / GIF Files',
+              extensions: ['mkv','mp4','avi','ts','m2ts','wmv','mov','webm','m4v','gif']
             }]
           });
           if (selected) {
@@ -1201,7 +1253,7 @@
         const active = document.activeElement;
         if (active && (active.tagName === 'INPUT' || active.tagName === 'TEXTAREA' || active.tagName === 'SELECT')) return;
 
-        // Delete / Backspace — remove selected
+        // Delete / Backspace - remove selected
         if ((e.key === 'Delete' || e.key === 'Backspace') && !batchRunning && selectedRows.size > 0) {
           e.preventDefault();
           try {
@@ -1215,12 +1267,12 @@
           return;
         }
 
-        // Ctrl+A — select all
+        // Ctrl+A - select all
         if ((e.ctrlKey || e.metaKey) && e.key === 'a') {
           e.preventDefault();
           selectedRows.clear();
           for (let i = 0; i < queueData.length; i++) selectedRows.add(i);
-          // All rows need selected class — skip the has() check
+          // All rows need selected class - skip the has() check
           const rows = queueBody.children;
           for (let r = 0; r < rows.length; r++) {
             rows[r].classList.add('selected');
@@ -1228,7 +1280,7 @@
           return;
         }
 
-        // Ctrl+R — re-queue selected
+        // Ctrl+R - re-queue selected
         if ((e.ctrlKey || e.metaKey) && e.key === 'r' && !batchRunning && selectedRows.size > 0) {
           e.preventDefault();
           try {
@@ -1243,7 +1295,7 @@
       });
     }
 
-    // ── Drag reorder (§5.9) — mouse-event based ──
+    // ── Drag reorder (§5.9) - mouse-event based ──
     // Tauri's native drag-drop handler intercepts HTML5 drag events, so
     // row reordering uses mousedown/mousemove/mouseup instead.
     let reorderActive = false;
@@ -1296,14 +1348,14 @@
 
           const midY = rect.top + rect.height / 2;
           if (e.clientY < midY) {
-            // Cursor is in the top half — insertion line goes above this row
+            // Cursor is in the top half - insertion line goes above this row
             // That means "insert before row i"
             // Skip if this would be a no-op (inserting before the source or after the row above it)
             if (i === reorderSourceIndex || i === reorderSourceIndex + 1) break;
             closestRow = i;
             position = 'above';
           } else {
-            // Cursor is in the bottom half — insertion line goes below this row
+            // Cursor is in the bottom half - insertion line goes below this row
             // That means "insert after row i"
             // Skip if no-op (inserting after the source or before the row below it)
             if (i === reorderSourceIndex || i === reorderSourceIndex - 1) break;
@@ -1341,7 +1393,7 @@
         const fromIndex = reorderSourceIndex;
         const indicator = reorderLastIndicator;
 
-        // Clean up visual state — only the affected rows (#7)
+        // Clean up visual state - only the affected rows (#7)
         const rows = queueBody.children;
         if (rows[fromIndex]) {
           rows[fromIndex].classList.remove('drag-source');
@@ -1363,7 +1415,7 @@
         // "below row N" = insert at index N+1
         let toIndex = indicator.position === 'above' ? indicator.index : indicator.index + 1;
 
-        // Adjust for the removal of the source — when the source is before
+        // Adjust for the removal of the source - when the source is before
         // the target, removing it shifts everything above the target down by one.
         if (fromIndex < toIndex) toIndex--;
 
@@ -1406,6 +1458,14 @@
         scheduleConfigSave();
       });
 
+      for (const btn of peakToggle.querySelectorAll('button')) {
+        btn.addEventListener('click', () => {
+          setPeakMultiplier(btn.dataset.peak);
+          scheduleRefreshTargetBitrates();
+          scheduleConfigSave();
+        });
+      }
+
       numQpI.addEventListener('change', () => {
         scheduleRefreshTargetBitrates();
         scheduleConfigSave();
@@ -1422,9 +1482,10 @@
       });
 
       chkHdr.addEventListener('change', () => {
-        updatePixFmt();
         scheduleConfigSave();
       });
+
+      chkPrecision.addEventListener('change', applyPrecisionMode);
 
       // RC mode toggle (QP / CRF)
       for (const btn of rcToggle.querySelectorAll('button')) {
@@ -1447,7 +1508,7 @@
       const simpleSaveControls = [
         selAudioCodec, numAudioCap, txtOutputFolder, selContainer,
         chkOverwrite, chkDeleteSource, chkSaveLog, chkToast, chkAutoClear,
-        selPostAction, txtCustomCmd, numCountdown
+        chkPrecision, numThreads, chkLowPriority, selPostAction, txtCustomCmd, numCountdown
       ];
       for (const el of simpleSaveControls) {
         el.addEventListener('change', scheduleConfigSave);
@@ -1505,15 +1566,80 @@
       return name === 'libx265' || name === 'libx264';
     }
 
+    // ── Peak multiplier toggle helpers ──
+    function getCurrentPeakMultiplier() {
+      const activeBtn = peakToggle.querySelector('button.active');
+      return activeBtn ? parseFloat(activeBtn.dataset.peak) : 1.5;
+    }
+
+    function setPeakMultiplier(value) {
+      const str = String(value);
+      for (const btn of peakToggle.querySelectorAll('button')) {
+        btn.classList.toggle('active', btn.dataset.peak === str);
+      }
+    }
+
     function updateRcModeVisibility() {
       const encoder = selEncoder.value || '';
       if (isSoftwareEncoder(encoder)) {
         rowRcMode.style.display = 'flex';
       } else {
-        // HW encoders only support QP — force QP and hide the toggle
-        rowRcMode.style.display = 'none';
-        setRateControlMode('QP');
+        // HW encoders only support QP - force QP and hide the toggle
+        // (unless precision mode is overriding the encoder choice)
+        if (!chkPrecision.checked) {
+          rowRcMode.style.display = 'none';
+          setRateControlMode('QP');
+        }
       }
+    }
+
+    /// When precision mode is toggled, force software encoder + CRF, or
+    /// restore the previous selection when untoggled.
+    let prePrecisionEncoder = '';
+    let prePrecisionRcMode = '';
+    function applyPrecisionMode() {
+      if (chkPrecision.checked) {
+        // Save current selections before overriding
+        prePrecisionEncoder = selEncoder.value;
+        prePrecisionRcMode = getCurrentRcMode();
+        // Force software encoder for the current codec family
+        const family = selCodec.value === 'H.264' ? 'h264' : 'hevc';
+        const swEncoder = family === 'h264' ? 'libx264' : 'libx265';
+        if (selEncoder.value !== swEncoder) {
+          selEncoder.value = swEncoder;
+        }
+        // Force CRF mode
+        rowRcMode.style.display = 'flex';
+        setRateControlMode('CRF');
+        // Disable encoder and RC mode controls while precision is active
+        selEncoder.disabled = true;
+        selEncoder.style.opacity = '0.4';
+        for (const btn of rcToggle.querySelectorAll('button')) {
+          btn.disabled = true;
+          btn.style.opacity = '0.4';
+        }
+      } else {
+        // Restore previous selections
+        selEncoder.disabled = false;
+        selEncoder.style.opacity = '1';
+        for (const btn of rcToggle.querySelectorAll('button')) {
+          btn.disabled = false;
+          btn.style.opacity = '1';
+        }
+        // Restore encoder if the previous one is still in the dropdown
+        if (prePrecisionEncoder) {
+          const opts = [...selEncoder.options].map(o => o.value);
+          if (opts.includes(prePrecisionEncoder)) {
+            selEncoder.value = prePrecisionEncoder;
+          }
+        }
+        if (prePrecisionRcMode) {
+          setRateControlMode(prePrecisionRcMode);
+        }
+        updateRcModeVisibility();
+      }
+      scheduleRefreshTargetBitrates();
+      scheduleConfigSave();
     }
 
     // ═══════════════════════════════════════════════════════════════
@@ -1559,7 +1685,7 @@
         scheduleConfigSave();
       });
 
-      // Draggable resize — drag the handle bar to resize the panel height
+      // Draggable resize - drag the handle bar to resize the panel height
       handle.addEventListener('mousedown', (e) => {
         if (e.target === bottomPanelToggle || bottomPanelToggle.contains(e.target)) return;
         if (!bottomPanelBody.classList.contains('open')) return;
@@ -1569,7 +1695,7 @@
         e.preventDefault();
       });
 
-      // Bottom splitter — resize job details panel width
+      // Bottom splitter - resize job details panel width
       bSplitter.addEventListener('mousedown', (e) => {
         draggingBSplitter = true;
         bSplitterStartX = e.clientX;
@@ -1623,7 +1749,7 @@
       return { cls: '', filter: '' };
     }
 
-    // Active log filters — categories that are currently hidden
+    // Active log filters - categories that are currently hidden
     let logHiddenFilters = new Set();
 
     function appendLog(msg) {
@@ -1956,7 +2082,7 @@
       btnCancelAll.disabled = !batchRunning;
       btnPause.disabled = !batchRunning;
 
-      // Start button tooltip — explain why it's disabled
+      // Start button tooltip - explain why it's disabled
       if (btnStart.disabled) {
         if (!encoderDetectionDone) {
           startTooltip.textContent = 'Waiting for encoder detection…';
@@ -1985,7 +2111,7 @@
       if (counts.failed > 0)    parts.push(`${counts.failed} failed`);
       if (counts.skipped > 0)   parts.push(`${counts.skipped} skipped`);
       if (counts.cancelled > 0) parts.push(`${counts.cancelled} cancelled`);
-      queueSummary.textContent = `(${total} — ${parts.join(', ')})`;
+      queueSummary.textContent = `(${total} - ${parts.join(', ')})`;
     }
 
     // ── Start batch (§10.1) ──
@@ -2003,6 +2129,7 @@
             outputContainer: selContainer.value,
             outputMode: getOutputMode(),
             targetBitrate: parseFloat(numBitrate.value) || 4,
+            peakMultiplier: getCurrentPeakMultiplier(),
             qpI: parseInt(numQpI.value, 10) || 20,
             qpP: parseInt(numQpP.value, 10) || 22,
             crf: parseInt(numCrf.value, 10) || 20,
@@ -2011,7 +2138,10 @@
             codecFamily: selCodec.value,
             audioEncoder: selAudioCodec.value.toLowerCase(),
             audioBitrateCap: parseInt(numAudioCap.value, 10) || 640,
-            pixFmt: txtPixFmt.value,
+            pixFmt: chkHdr.checked ? 'p010le' : 'yuv420p',
+            precisionMode: chkPrecision.checked,
+            threads: parseInt(numThreads.value, 10) || 0,
+            lowPriority: chkLowPriority.checked,
             overwrite: chkOverwrite.checked,
             deleteSource: chkDeleteSource.checked,
             saveLog: chkSaveLog.checked,
@@ -2143,7 +2273,7 @@
     async function executePostAction(action) {
       try {
         if (action === 'Custom Command') {
-          // Custom command is handled differently — just log it for now
+          // Custom command is handled differently - just log it for now
           appendLog(`[post-batch] Executing custom command: ${txtCustomCmd.value}`);
           // The backend could handle this, but for custom we'd invoke a separate command
         } else {
@@ -2161,6 +2291,18 @@
       const s = Math.floor(secs % 60);
       if (h > 0) return `${h}:${String(m).padStart(2,'0')}:${String(s).padStart(2,'0')}`;
       return `${m}:${String(s).padStart(2,'0')}`;
+    }
+
+    function formatEta(secs) {
+      if (!isFinite(secs) || secs < 0) return '';
+      const s = Math.round(secs);
+      if (s < 60) return `${s}s`;
+      const m = Math.floor(s / 60);
+      const rs = s % 60;
+      if (m < 60) return `${m}m ${String(rs).padStart(2,'0')}s`;
+      const h = Math.floor(m / 60);
+      const rm = m % 60;
+      return `${h}h ${String(rm).padStart(2,'0')}m`;
     }
 
     // ═══════════════════════════════════════════════════════════════
@@ -2189,10 +2331,11 @@
         } catch (e) {
           encoderStatus.textContent = 'Encoder detection failed';
         }
+        if (chkPrecision.checked) applyPrecisionMode();
         updateBatchButtons();
       });
 
-      // ffmpeg not found — prompt to download
+      // ffmpeg not found - prompt to download
       listen('ffmpeg-missing', () => {
         encoderStatus.textContent = 'ffmpeg not found';
         const modal = document.querySelector('#modal-ffmpeg-missing');
@@ -2235,38 +2378,91 @@
 
       // Per-file progress (duration-based)
       listen('file-progress', (event) => {
-        const { percent, timeSecs, totalSecs } = event.payload;
+        const { percent, timeSecs, totalSecs, pass } = event.payload;
         progressBar.style.width = percent.toFixed(1) + '%';
         const elapsed = formatDuration(timeSecs);
         const total = formatDuration(totalSecs);
-        jobProgressText.textContent = `${elapsed} / ${total} (${percent.toFixed(0)}%)`;
+        const passLabel = pass ? ` - Pass ${pass.current}/${pass.total}` : '';
+
+        // ETA: wall-clock elapsed vs media time progress
+        let etaLabel = '';
+        if (fileEncodeStart > 0 && timeSecs > 1) {
+          const wallElapsed = (performance.now() - fileEncodeStart) / 1000;
+          const speed = timeSecs / wallElapsed;
+          if (speed > 0) {
+            const remaining = (totalSecs - timeSecs) / speed;
+            const formatted = formatEta(remaining);
+            if (formatted) etaLabel = ` - ETA ${formatted}`;
+          }
+        }
+
+        jobProgressText.textContent = `${elapsed} / ${total} (${percent.toFixed(0)}%)${passLabel}${etaLabel}`;
+
+        // Title bar: show percentage, file count, and ETA
+        if (batchTotalFiles > 0) {
+          const overallPct = Math.round(((batchCurrentFile - 1) / batchTotalFiles) * 100 + (1 / batchTotalFiles) * percent);
+          const etaShort = etaLabel ? etaLabel.replace(' - ', ' ') : '';
+          document.title = `[${overallPct}%] ${batchCurrentFile}/${batchTotalFiles}${etaShort} - ${defaultTitle}`;
+        }
         // Interpolate into overall batch bar
         if (batchTotalFiles > 0) {
           const completedPct = ((batchCurrentFile - 1) / batchTotalFiles) * 100;
           const filePortion = (1 / batchTotalFiles) * percent;
           batchProgressBar.style.width = (completedPct + filePortion).toFixed(1) + '%';
         }
-        // Advance green fill on the currently-encoding queue row
-        const encodingRow = queueBody.querySelector('tr.status-encoding');
-        if (encodingRow) {
-          encodingRow.style.setProperty('--encode-progress', percent.toFixed(1) + '%');
+        // Advance green fill on the currently-encoding queue row (by cached index)
+        if (currentEncodingIndex >= 0) {
+          const encodingRow = queueBody.children[currentEncodingIndex];
+          if (encodingRow) {
+            encodingRow.style.setProperty('--encode-progress', percent.toFixed(1) + '%');
+          }
         }
       });
 
-      // Queue item updated (status change) — apply the payload directly
-      // to the local queueData rather than re-fetching from the backend,
-      // because the encoding loop works on a cloned queue and only syncs
-      // statuses back to shared state after the batch finishes.
+      // Queue item updated (status change) - patch only the affected row
+      // instead of walking the entire queue table. Also tracks the currently-
+      // encoding row index so the file-progress listener can skip querySelector.
       listen('queue-item-updated', (event) => {
         const [index, status] = event.payload;
         if (index >= 0 && index < queueData.length) {
           queueData[index].status = status;
         }
-        renderQueue();
+        const statusLower = (status || 'pending').toLowerCase();
+        // Track the currently-encoding row for file-progress
+        if (statusLower === 'encoding') {
+          currentEncodingIndex = index;
+        } else if (currentEncodingIndex === index) {
+          currentEncodingIndex = -1;
+        }
+        // Patch the single row if it exists; fall back to full render if row count mismatches
+        const tr = queueBody.children[index];
+        if (tr && queueBody.children.length === queueData.length) {
+          const wantClass = `status-${statusLower}` + (selectedRows.has(index) ? ' selected' : '');
+          if (tr.className !== wantClass) {
+            tr.className = wantClass;
+            tr.style.removeProperty('--encode-progress');
+          }
+          const c4 = tr.children[4];
+          const badge = c4 && c4.firstChild;
+          if (badge) {
+            const icon = STATUS_ICONS[statusLower] || '';
+            badge.innerHTML = '';
+            if (icon) {
+              const iconSpan = document.createElement('span');
+              iconSpan.className = 'status-icon';
+              iconSpan.innerHTML = icon;
+              badge.appendChild(iconSpan);
+            }
+            badge.appendChild(document.createTextNode(status || 'Pending'));
+            tr.dataset.status = statusLower;
+          }
+        } else {
+          renderQueue();
+        }
         updateBatchButtons();
       });
 
-      // Queue item probed — debounced (probeFileAt also schedules a
+      // Queue item probed - debounced (probeFileAt also schedules a
       // refresh, so this just ensures we don't miss backend-initiated probes)
       listen('queue-item-probed', () => {
         scheduleQueueRefresh();
@@ -2285,6 +2481,7 @@
         const { current, total } = event.payload;
         batchCurrentFile = current;
         batchTotalFiles = total;
+        fileEncodeStart = performance.now();
         jobStatus.textContent = `Encoding file ${current} of ${total}`;
         // Reset per-file progress bar when a new file starts
         progressBar.style.width = '0%';
@@ -2310,6 +2507,9 @@
       // Batch finished
       listen('batch-finished', async (event) => {
         batchRunning = false;
+        currentEncodingIndex = -1;
+        fileEncodeStart = 0;
+        document.title = defaultTitle;
         btnPause.textContent = 'Pause';
         jobStatus.textContent = 'No job running';
         statusCmd.textContent = '-';

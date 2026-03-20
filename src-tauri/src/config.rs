@@ -30,6 +30,10 @@ pub struct AppConfig {
     pub audio_bitrate_cap: u32,
     pub auto_clear_completed: bool,
     pub log_drawer_open: bool,
+    pub peak_multiplier: f64,
+    pub threads: u32,
+    pub low_priority: bool,
+    pub precision_mode: bool,
 }
 
 impl Default for AppConfig {
@@ -57,6 +61,10 @@ impl Default for AppConfig {
             audio_bitrate_cap: 640,
             auto_clear_completed: false,
             log_drawer_open: false,
+            peak_multiplier: 1.5,
+            threads: 0,
+            low_priority: false,
+            precision_mode: false,
         }
     }
 }

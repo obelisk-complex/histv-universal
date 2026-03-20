@@ -124,10 +124,10 @@ mod gui_commands {
     #[tauri::command]
     pub async fn remove_queue_items(
         state: tauri::State<'_, Arc<AppState>>,
-        indices: Vec<usize>,
+        mut indices: Vec<usize>,
     ) -> Result<(), String> {
         let mut q = state.queue.lock().await;
-        queue::remove_items(&mut q, &indices);
+        queue::remove_items(&mut q, &mut indices);
         Ok(())
     }
 
@@ -355,6 +355,14 @@ mod gui_commands {
             save_log: settings["saveLog"]
                 .as_bool().unwrap_or(false),
             post_command: None, // GUI uses post-batch action events instead
+            peak_multiplier: settings["peakMultiplier"]
+                .as_f64().unwrap_or(1.5),
+            threads: settings["threads"]
+                .as_u64().unwrap_or(0) as u32,
+            low_priority: settings["lowPriority"]
+                .as_bool().unwrap_or(false),
+            precision_mode: settings["precisionMode"]
+                .as_bool().unwrap_or(false),
         };
 
         let show_toast = settings["showToast"].as_bool().unwrap_or(false);
@@ -383,19 +391,28 @@ mod gui_commands {
             b.cancel_current = false;
             b.cancel_all = false;
             b.paused = false;
-            b.overwrite_always = false;
+            b.overwrite_always = settings["overwrite"]
+                .as_bool().unwrap_or(false);
             b.hw_fallback_offered = false;
             b.overwrite_response = None;
             b.fallback_response = None;
         }
 
-        // Clone the pending queue items out for the encoding loop
-        let mut queue_items: Vec<queue::QueueItem> = {
+        // Clone queue items for the encoding loop (#14).
+        // The encoder indexes by original queue position, so we clone the
+        // full queue but record which indices are pending. After the loop,
+        // only those indices are synced back (#15).
+        let (mut queue_items, pending_indices): (Vec<queue::QueueItem>, Vec<usize>) = {
             let q = state_arc.queue.lock().await;
-            q.clone()
+            let pending: Vec<usize> = q.iter()
+                .enumerate()
+                .filter(|(_, item)| item.status == queue::QueueItemStatus::Pending)
+                .map(|(i, _)| i)
+                .collect();
+            (q.clone(), pending)
         };
 
-        if !queue_items.iter().any(|item| item.status == queue::QueueItemStatus::Pending) {
+        if pending_indices.is_empty() {
             let mut b = state_arc.batch.lock().await;
             b.running = false;
             return Err("No pending files in the queue.".into());
@@ -421,12 +438,14 @@ mod gui_commands {
                     &batch_settings,
                 ).await;
 
-            // Sync queue statuses back to the shared state
+            // Sync only the items that were pending at batch start (#15).
+            // Non-pending items were never touched by the encoder and don't
+            // need their status copied back.
             {
                 let mut q = state_for_task.queue.lock().await;
-                for (i, item) in queue_items.iter().enumerate() {
-                    if i < q.len() {
-                        q[i].status = item.status.clone();
+                for &i in &pending_indices {
+                    if i < q.len() && i < queue_items.len() {
+                        q[i].status = queue_items[i].status.clone();
                     }
                 }
             }
@@ -661,7 +680,7 @@ pub fn run() {
                 if !ffmpeg::is_available().await {
                     state_for_detect.ffmpeg_missing.store(true, Ordering::Relaxed);
                     let _ = handle_for_detect.emit("ffmpeg-missing", ());
-                    detect_sink.log("[detect] ffmpeg not found — waiting for user to install or download it");
+                    detect_sink.log("[detect] ffmpeg not found - waiting for user to install or download it");
                     return;
                 }
 

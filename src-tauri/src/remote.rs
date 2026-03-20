@@ -4,10 +4,8 @@
 //! sshfs, etc.) so the CLI can stage it locally before encoding. Detection is
 //! platform-specific and cached for the lifetime of a batch.
 
-use std::path::{Path, PathBuf};
-
-#[cfg(target_os = "windows")]
 use std::collections::HashMap;
+use std::path::{Path, PathBuf};
 
 /// Information about a filesystem mount point.
 #[derive(Debug, Clone)]
@@ -21,6 +19,8 @@ pub struct MountInfo {
 ///
 /// Lazily parses the system mount table on first query, then uses the
 /// cached entries for all subsequent lookups within the same batch.
+/// Directory-level canonicalisation results are also cached (#19) so
+/// that files in the same directory don't each trigger a stat call.
 pub struct MountCache {
     /// Parsed mount entries, sorted by mount point length (longest first)
     /// for correct longest-prefix matching.
@@ -30,6 +30,11 @@ pub struct MountCache {
     /// Windows-only: cached drive letter -> is_remote results.
     #[cfg(target_os = "windows")]
     drive_cache: HashMap<char, bool>,
+
+    /// Directory-level canonicalise cache (#19).
+    /// Maps a directory path to its canonicalised form to avoid repeated
+    /// stat calls for files in the same directory (expensive on network mounts).
+    dir_canon_cache: HashMap<PathBuf, PathBuf>,
 }
 
 #[cfg(unix)]
@@ -62,6 +67,7 @@ impl MountCache {
             entries: None,
             #[cfg(target_os = "windows")]
             drive_cache: HashMap::new(),
+            dir_canon_cache: HashMap::new(),
         }
     }
 
@@ -74,9 +80,14 @@ impl MountCache {
 
     /// Return mount information for the given path, or None if the
     /// mount point could not be determined.
+    ///
+    /// Uses a directory-level canonicalise cache (#19) so that files
+    /// sharing the same parent directory only trigger one stat call.
     pub fn mount_info(&mut self, path: &Path) -> Option<MountInfo> {
-        // Canonicalise the path to resolve symlinks before matching
-        let canonical = std::fs::canonicalize(path).unwrap_or_else(|_| path.to_path_buf());
+        // Resolve via directory cache: canonicalise the parent directory
+        // once, then append the file name. This avoids per-file stat
+        // calls which are expensive on network mounts.
+        let canonical = self.canonicalize_cached(path);
 
         #[cfg(target_os = "windows")]
         {
@@ -87,6 +98,34 @@ impl MountCache {
         {
             self.ensure_parsed();
             self.longest_prefix_match(&canonical)
+        }
+    }
+
+    /// Canonicalise a path using the directory-level cache (#19).
+    /// For a file path, canonicalises the parent directory once and
+    /// appends the file name. For a directory, canonicalises directly.
+    fn canonicalize_cached(&mut self, path: &Path) -> PathBuf {
+        let (dir, file_name) = if path.is_file() {
+            let parent = path.parent().unwrap_or(path);
+            let name = path.file_name();
+            (parent.to_path_buf(), name.map(|n| n.to_os_string()))
+        } else {
+            (path.to_path_buf(), None)
+        };
+
+        let canonical_dir = if let Some(cached) = self.dir_canon_cache.get(&dir) {
+            cached.clone()
+        } else {
+            let resolved = std::fs::canonicalize(&dir)
+                .unwrap_or_else(|_| dir.clone());
+            self.dir_canon_cache.insert(dir, resolved.clone());
+            resolved
+        };
+
+        if let Some(name) = file_name {
+            canonical_dir.join(name)
+        } else {
+            canonical_dir
         }
     }
 
@@ -188,7 +227,7 @@ fn parse_mount_table() -> Vec<MountEntry> {
         })
         .collect();
 
-    // Filter out autofs entries — these are automount triggers that shadow
+    // Filter out autofs entries - these are automount triggers that shadow
     // the real filesystem mount at the same path (e.g. autofs + cifs both
     // appear for /mnt/1tb, and autofs would incorrectly match as local).
     entries.retain(|e| e.fs_type != "autofs");

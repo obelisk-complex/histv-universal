@@ -1,4 +1,4 @@
-//! CLI implementation of `EventSink` — writes to stderr with optional
+//! CLI implementation of `EventSink` - writes to stderr with optional
 //! indicatif progress bars when a TTY is attached.
 //!
 //! All output goes to stderr so stdout remains clean for piped usage.
@@ -19,6 +19,9 @@ pub struct CliSink {
     log_level: LogLevel,
     is_tty: bool,
     progress_bar: Mutex<Option<ProgressBar>>,
+    /// Cached pass label string (#17). Updated only when the pass value
+    /// changes, instead of being formatted on every progress tick.
+    cached_pass_label: Mutex<(Option<(u8, u8)>, String)>,
 }
 
 impl CliSink {
@@ -28,6 +31,7 @@ impl CliSink {
             log_level,
             is_tty,
             progress_bar: Mutex::new(None),
+            cached_pass_label: Mutex::new((None, String::new())),
         }
     }
 
@@ -61,6 +65,19 @@ impl CliSink {
             bar.finish_and_clear();
         }
     }
+
+    /// Get the cached pass label, updating it only if the pass value changed (#17).
+    fn pass_label(&self, pass: Option<(u8, u8)>) -> String {
+        let mut cached = self.cached_pass_label.lock().unwrap();
+        if cached.0 != pass {
+            cached.1 = match pass {
+                Some((cur, tot)) => format!(" (pass {}/{})", cur, tot),
+                None => String::new(),
+            };
+            cached.0 = pass;
+        }
+        cached.1.clone()
+    }
 }
 
 impl EventSink for CliSink {
@@ -86,10 +103,12 @@ impl EventSink for CliSink {
         self.eprintln(message);
     }
 
-    fn file_progress(&self, percent: f64, time_secs: f64, total_secs: f64) {
+    fn file_progress(&self, percent: f64, time_secs: f64, total_secs: f64, pass: Option<(u8, u8)>) {
         if self.is_quiet() {
             return;
         }
+
+        let pass_label = self.pass_label(pass);
 
         if self.is_tty {
             // Rich mode: update indicatif progress bar
@@ -111,14 +130,14 @@ impl EventSink for CliSink {
 
                 let elapsed = format_duration(time_secs);
                 let total = format_duration(total_secs);
-                bar.set_message(format!("{} / {}", elapsed, total));
+                bar.set_message(format!("{} / {}{}", elapsed, total, pass_label));
             }
         } else {
             // Simple mode: print percentage milestones to avoid flooding
             // Only print at 10% increments
             let pct = percent.round() as u32;
             if pct % 10 == 0 {
-                let _ = writeln!(std::io::stderr(), "  {}%", pct);
+                let _ = writeln!(std::io::stderr(), "  {}%{}", pct, pass_label);
             }
         }
     }

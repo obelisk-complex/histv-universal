@@ -2,9 +2,9 @@
 
 [![Quillx](https://raw.githubusercontent.com/qainsights/Quillx/main/badges/quillx-3.svg)](https://github.com/qainsights/Quillx)
 
-A cross-platform set-and-forget tool for re-encoding batches of videos to a standard target quality level, regardless of the source properties; no need to babysit the queue or stop to tweak arguments. Just pick a target bitrate (default 4mbps) and where you want the outputs to go, and hit start.
+A cross-platform batch video encoder that shrinks your video files to a target quality level. No need to babysit the queue or tweak settings per file - just pick a target bitrate, add your files, and hit start.
 
-Ships as a desktop GUI app and a headless CLI binary for server use (see [CLI-README.md](CLI-README.md)), both built on a shared encoding backend for future maintainability. Portable binaries can be found on the GitHub [Releases page](https://github.com/obelisk-complex/histv-universal/releases).
+Available as a desktop app and a headless CLI for servers (see [CLI-README.md](CLI-README.md)). Both use the same encoding engine. Portable binaries are on the GitHub [Releases page](https://github.com/obelisk-complex/histv-universal/releases).
 
 ---
 
@@ -30,29 +30,32 @@ Ships as a desktop GUI app and a headless CLI binary for server use (see [CLI-RE
 <details>
 <summary><strong>Full feature list</strong></summary>
 
-- **Queue management** - drag-and-drop, clipboard paste (Ctrl+V), file/folder picker. Click, Shift+click, Ctrl+click, Ctrl+A, Delete. Right-click context menu for re-queue, remove, clear, open, and reveal actions. Drag to reorder.
-- **Smart bitrate decisions** - the Target Bitrate column updates live as you change settings, showing exactly what the app plans to do before you start. Files within 15% above the target in the same codec are stream-copied rather than re-encoded.
-- **Four-tier bitrate probing** - stream headers, MKV tags, format metadata, then full packet counting. Single ffprobe call per file; audio streams cached at probe time.
-- **Hardware encoder detection** - test-encodes a short clip with each available GPU encoder at startup. Only verified encoders appear in the dropdown.
-- **Hardware fallback** - if a GPU encode fails mid-file, offers to retry with the software encoder and continue the batch.
-- **QP / CRF rate control** - software encoders offer QP or CRF. Hardware encoders use QP only.
-- **Per-stream audio handling** - each audio stream evaluated individually. Streams already below the cap in the target codec are copied. Unknown/proprietary streams (e.g. Apple Spatial Audio) are excluded with a warning.
-- **HDR awareness** - auto-detects HDR via colour metadata, switches to 10-bit. Untick to tonemap to SDR.
-- **Subtitle passthrough** - all subtitle streams mapped and copied.
-- **Output modes** - output folder, beside source, or replace source. MKV or MP4 container.
-- **Post-encode size check** - if the output is larger than the source, the encoder discards it and remuxes the source into the target container instead.
-- **Batch controls** - start, pause/resume, cancel current, cancel all. Per-file and overall progress bars. Queue rows show progress fill during encoding.
-- **Dry run** - probes every file and populates the plan without encoding.
-- **Remote mount detection** - automatically detects files on network mounts (NFS, CIFS/SMB, sshfs) and stages them to local storage before encoding. Supported on Linux, macOS, and Windows.
-- **Disk-space monitoring** - pauses encoding when the output partition exceeds a configured usage threshold, resumes when space recovers.
-- **Post-batch actions** - shutdown, sleep, log out, or custom command with cancellable countdown.
-- **Log console** - collapsible split panel with colour-coded, selectable log output and toggleable category filters. Optional log file.
-- **System notifications** - OS-level notification on batch completion.
-- **Auto-clear** - optionally remove completed items when the batch finishes.
-- **Themeable** - ships with dark and light themes. Drop custom JSON files into the themes folder. See [THEMES.md](THEMES.md).
-- **Built-in ffmpeg downloader** - offers to download ffmpeg automatically if not found.
-- **Persistent settings** - saved to JSON config, restored on next launch.
-- **Headless CLI** - same encoding engine available as a standalone command-line binary with job files, signal handling, and non-interactive defaults. See [CLI-README.md](CLI-README.md).
+- **Queue management** - drag-and-drop, clipboard paste (Ctrl+V), file/folder picker. Click, Shift+click, Ctrl+click, Ctrl+A, Delete. Right-click context menu. Drag to reorder.
+- **GIF/APNG support** - animated GIFs and APNGs are converted to proper video files automatically.
+- **Smart decisions** - the app figures out what to do with each file before you start. Files that are already small enough get copied untouched. Files that are too big get shrunk. The queue shows the plan in real time as you change settings.
+- **GPU encoding** - tests your GPU at startup and picks the fastest working encoder. Falls back to software automatically if the GPU encoder fails mid-file.
+- **QP / CRF quality modes** - two ways to control quality when files are below your target bitrate. QP gives predictable sizes; CRF gives better-looking results with less predictable sizes.
+- **Precision mode** - one checkbox for the best possible quality. Uses software encoding with smart analysis that adapts to your system's RAM. Tests a few short clips first to make sure it won't make the file bigger. Slower, but produces the smallest file that still looks great.
+- **VBR peak ceiling** - controls how much the bitrate can spike on action-heavy scenes (1.5x to 3x). Higher values look better on complex content.
+- **Audio handling** - each audio track is handled separately. Tracks already small enough are left alone. Unrecognised audio formats (like Apple Spatial Audio) are skipped with a warning instead of crashing.
+- **HDR support** - HDR videos are detected automatically and encoded in 10-bit. Untick the HDR checkbox to convert HDR to SDR with industry-standard tonemapping so colours look right on a normal screen.
+- **Subtitles** - all subtitle tracks are kept.
+- **Output options** - save to a folder, next to the source file, or replace the source. MKV or MP4 output.
+- **Size safety net** - if the encoded file ends up bigger than the original, the app throws it away and copies the original into the new container instead.
+- **Performance controls** - limit CPU threads and/or run encoding at low priority so your PC stays usable.
+- **ETA** - shows estimated time remaining in the progress bar and the window title, so you can see it from the taskbar.
+- **Batch controls** - start, pause, cancel current file, cancel everything. Progress bars per file and overall.
+- **Dry run** - shows what the app would do without actually encoding anything.
+- **Network drive support** - detects files on network shares and copies them locally before encoding, so slow networks don't bottleneck the encoder.
+- **Disk space monitoring** - pauses encoding if your drive gets too full, resumes when space frees up.
+- **Post-batch actions** - shut down, sleep, log out, or run a custom command when the batch finishes.
+- **Log console** - colour-coded log with filters, optional file export.
+- **Notifications** - system notification when the batch finishes.
+- **Auto-clear** - optionally clears finished items from the queue.
+- **Themes** - dark and light themes included. Drop custom JSON theme files into the themes folder. See [THEMES.md](THEMES.md).
+- **ffmpeg downloader** - offers to download ffmpeg for you if it's not installed.
+- **Remembers settings** - everything is saved to config.json in the same folder as the .exe, and restored on next launch.
+- **CLI version** - same engine as a command-line tool for servers and scripts. See [CLI-README.md](CLI-README.md).
 
 </details>
 
@@ -67,9 +70,9 @@ Grab the latest build from the GitHub **[Releases page](https://github.com/obeli
 | **macOS (Apple Silicon)** | `.dmg` (arm64) | `histv-cli-macos-arm64` |
 | **macOS (Intel)** | `.dmg` (x64) | `histv-cli-macos-x64` |
 
-The all binaries are portable - no installation needed. On Linux, mark the AppImage executable (`chmod +x`). On macOS, open the DMG and drag to Applications.
+All binaries are portable - no installation needed. On Linux, mark the AppImage executable (`chmod +x`). On macOS, open the DMG and drag to Applications.
 
-**ffmpeg is required.** The GUI offers to download it automatically on first launch. The CLI expects it on your PATH (`apt install ffmpeg`, `brew install ffmpeg`, `choco install ffmpeg`, etc.).
+**ffmpeg is required.** The GUI offers to download it on first launch. The CLI expects it on your PATH (`apt install ffmpeg`, `brew install ffmpeg`, `choco install ffmpeg`, etc.).
 
 | OS | Architecture | GPU encoders |
 |----|-------------|-------------|
@@ -95,28 +98,41 @@ cargo build --manifest-path src-tauri/Cargo.toml --release --bin histv-cli --no-
 
 ## How it works
 
-A single target bitrate drives the entire encoding strategy:
+You set a target bitrate and the app decides what to do with each file:
 
-| Condition | Action |
-|-----------|--------|
-| Same codec, at or below target | **Copy** - stream-copy, no re-encode |
-| Different codec, at or below target | **CQP/CRF transcode** - quality-based |
-| Above target | **VBR transcode** - bitrate-limited, peak = 1.5x target |
+| Situation | What happens |
+|-----------|-------------|
+| Already small enough, same codec | **Copied as-is** - no re-encoding |
+| Already small enough, different codec | **Re-encoded for quality** using QP or CRF |
+| Too big | **Shrunk** to hit the target bitrate |
+| GIF or APNG | **Always re-encoded** into a proper video |
 
-After encoding, if the output is larger than the source, the encoder discards it and remuxes the source into the target container instead.
+If an encode makes the file bigger than it was, the app throws away the encode and copies the original into the new container instead.
+
+### Precision mode
+
+One checkbox for the best quality the app can produce. It picks the smartest encoding strategy based on how much RAM your system has:
+
+| Your RAM | What it does |
+|----------|-------------|
+| 16GB or more | Looks 250 frames ahead to plan bitrate (single pass) |
+| 8-16GB | Looks 120 frames ahead to plan bitrate (single pass) |
+| Under 8GB | Scans the whole file first, then encodes (two passes) |
+
+Before starting the full encode, it tests a few short clips to make sure the result won't end up bigger than the original. If it would, the app switches to a safer mode automatically.
 
 ### Who HISTV is for
 
-People who have a collection of video files at various bitrates and codecs and want to compress the ones that need compressing - without babysitting each file, without setting up a server, and without writing scripts. Set the target, add the files, walk away.
+People with a pile of video files at different sizes and formats who want to shrink the big ones without fiddling with every file individually. Set the target, add the files, walk away.
 
 ### How HISTV compares to other tools
 <details>
 
-**vs. HandBrake** - HandBrake expects per-file control. HISTV decides per-file whether to re-encode, stream-copy, or quality-transcode based on each file's existing bitrate and codec. If a file is already below your target in the same codec, it gets copied untouched. HISTV also probes your GPU at startup and auto-falls back to software encoding if hardware fails mid-file. If you want to tweak every setting on every file, HandBrake is the better tool.
+**vs. HandBrake** - HandBrake is built for tweaking every file individually. HISTV is built for doing a whole folder at once without thinking about it. It figures out per-file whether to shrink, copy, or re-encode. If you want fine control over every setting on every file, HandBrake is the better tool.
 
-**vs. Tdarr** - Tdarr is a media server tool: always-running, plugin-based, multi-node. HISTV is a desktop app you open, use, and close. No database, no Docker, no web dashboard. HISTV's encoding logic is built-in rather than plugin-driven.
+**vs. Tdarr** - Tdarr runs as a server with plugins, Docker, and a web dashboard. HISTV is an app you open, use, and close.
 
-**vs. a plain ffmpeg command** - HISTV wraps the decision-making and queue management so you don't have to script it yourself: probing, encoder selection, fallback, overwrite/delete prompts, pause/resume, and post-batch actions.
+**vs. writing your own ffmpeg script** - HISTV handles the parts that are annoying to script: figuring out what each file needs, picking the right encoder, falling back when hardware fails, prompting for overwrites, pausing/resuming, and cleaning up after itself.
 
 </details>
 

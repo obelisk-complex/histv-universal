@@ -44,6 +44,10 @@ pub struct CliArgs {
     #[arg(short = 'b', long = "bitrate", default_value = "4", value_name = "MBPS")]
     pub bitrate: f64,
 
+    /// VBR peak ceiling as a multiplier of target bitrate (e.g. 1.5 = 150%)
+    #[arg(long = "peak-multiplier", default_value = "1.5", value_name = "MULT")]
+    pub peak_multiplier: f64,
+
     /// Rate-control for below-target transcodes
     #[arg(long = "rc", default_value = "qp", value_name = "MODE")]
     pub rc: RateControl,
@@ -67,6 +71,22 @@ pub struct CliArgs {
     /// Force SDR output even for HDR sources
     #[arg(long = "no-hdr", conflicts_with = "hdr")]
     pub no_hdr: bool,
+
+    /// Limit the number of CPU threads ffmpeg may use (0 = auto)
+    #[arg(long = "threads", default_value = "0", value_name = "N")]
+    pub threads: u32,
+
+    /// Run ffmpeg at below-normal process priority so other tasks are
+    /// not starved of CPU time
+    #[arg(long = "low-priority")]
+    pub low_priority: bool,
+
+    /// Precision mode: probe CRF viability before encoding, use extended
+    /// lookahead scaled to system RAM, and cap with maxrate. Falls back
+    /// to CQP if CRF would produce a larger file than source. Software
+    /// CRF only.
+    #[arg(long = "precision")]
+    pub precision_mode: bool,
 
     // ── Audio ──────────────────────────────────────────────────
 
@@ -304,6 +324,7 @@ pub struct JobFile {
     pub files: Vec<String>,
     pub codec: Option<String>,
     pub bitrate: Option<f64>,
+    pub peak_multiplier: Option<f64>,
     pub rate_control: Option<String>,
     pub qp_i: Option<u32>,
     pub qp_p: Option<u32>,
@@ -323,6 +344,9 @@ pub struct JobFile {
     pub disk_resume: Option<String>,
     pub post_command: Option<String>,
     pub save_log: Option<bool>,
+    pub threads: Option<u32>,
+    pub low_priority: Option<bool>,
+    pub precision_mode: Option<bool>,
 }
 
 /// Load a job file from disk.
@@ -339,6 +363,7 @@ pub fn export_job_file(args: &CliArgs, path: &std::path::Path) -> Result<(), Str
         files: args.inputs.iter().map(|p| p.to_string_lossy().to_string()).collect(),
         codec: Some(args.codec.to_string()),
         bitrate: Some(args.bitrate),
+        peak_multiplier: Some(args.peak_multiplier),
         rate_control: Some(args.rc.to_string()),
         qp_i: Some(args.qp_i),
         qp_p: Some(args.qp_p),
@@ -358,6 +383,9 @@ pub fn export_job_file(args: &CliArgs, path: &std::path::Path) -> Result<(), Str
         disk_resume: args.disk_resume.map(|v| v.to_string()),
         post_command: args.post_command.clone(),
         save_log: Some(args.save_log),
+        threads: Some(args.threads),
+        low_priority: Some(args.low_priority),
+        precision_mode: Some(args.precision_mode),
     };
 
     let json = serde_json::to_string_pretty(&job)
@@ -393,4 +421,3 @@ impl_fromstr_for_enum!(OverwritePolicy, "ask" => OverwritePolicy::Ask, "yes" => 
 impl_fromstr_for_enum!(FallbackPolicy, "ask" => FallbackPolicy::Ask, "yes" => FallbackPolicy::Yes, "no" => FallbackPolicy::No);
 impl_fromstr_for_enum!(RemotePolicy, "auto" => RemotePolicy::Auto, "always" => RemotePolicy::Always, "never" => RemotePolicy::Never);
 impl_fromstr_for_enum!(LogLevel, "quiet" => LogLevel::Quiet, "normal" => LogLevel::Normal, "verbose" => LogLevel::Verbose);
-

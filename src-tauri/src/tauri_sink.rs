@@ -1,11 +1,51 @@
-//! GUI implementation of `EventSink` — thin wrapper over `tauri::AppHandle`.
+//! GUI implementation of `EventSink` - thin wrapper over `tauri::AppHandle`.
 //!
 //! Each trait method is a one-liner forwarding to the corresponding
 //! `app.emit(...)` call that previously lived inline in the core modules.
+//! Event payloads use #[derive(Serialize)] structs instead of the json!
+//! macro to avoid per-tick Map/Value heap allocations (#16).
 
+use serde::Serialize;
 use tauri::{AppHandle, Emitter};
 
 use crate::events::EventSink;
+
+// ── Typed event payloads (#16) ─────────────────────────────────
+
+#[derive(Serialize, Clone)]
+#[serde(rename_all = "camelCase")]
+struct FileProgressPayload {
+    percent: f64,
+    time_secs: f64,
+    total_secs: f64,
+    pass: Option<PassInfo>,
+}
+
+#[derive(Serialize, Clone)]
+struct PassInfo {
+    current: u8,
+    total: u8,
+}
+
+#[derive(Serialize, Clone)]
+struct BatchProgressPayload {
+    current: u32,
+    total: usize,
+}
+
+#[derive(Serialize, Clone)]
+struct BatchFinishedPayload {
+    done: u32,
+    failed: u32,
+    skipped: u32,
+    duration: String,
+}
+
+#[derive(Serialize, Clone)]
+struct PostBatchPayload {
+    action: String,
+    countdown: u32,
+}
 
 /// Wraps a Tauri `AppHandle` to satisfy the `EventSink` trait.
 pub struct TauriSink {
@@ -23,24 +63,22 @@ impl EventSink for TauriSink {
         let _ = self.app.emit("log", message);
     }
 
-    fn file_progress(&self, percent: f64, time_secs: f64, total_secs: f64) {
+    fn file_progress(&self, percent: f64, time_secs: f64, total_secs: f64, pass: Option<(u8, u8)>) {
         let _ = self.app.emit(
             "file-progress",
-            serde_json::json!({
-                "percent": percent,
-                "timeSecs": time_secs,
-                "totalSecs": total_secs,
-            }),
+            FileProgressPayload {
+                percent,
+                time_secs,
+                total_secs,
+                pass: pass.map(|(cur, tot)| PassInfo { current: cur, total: tot }),
+            },
         );
     }
 
     fn batch_progress(&self, current: u32, total: usize) {
         let _ = self.app.emit(
             "batch-progress",
-            serde_json::json!({
-                "current": current,
-                "total": total,
-            }),
+            BatchProgressPayload { current, total },
         );
     }
 
@@ -63,12 +101,12 @@ impl EventSink for TauriSink {
     fn batch_finished(&self, done: u32, failed: u32, skipped: u32, duration: &str) {
         let _ = self.app.emit(
             "batch-finished",
-            serde_json::json!({
-                "done": done,
-                "failed": failed,
-                "skipped": skipped,
-                "duration": duration,
-            }),
+            BatchFinishedPayload {
+                done,
+                failed,
+                skipped,
+                duration: duration.to_string(),
+            },
         );
     }
 
@@ -91,10 +129,10 @@ impl EventSink for TauriSink {
     fn post_batch(&self, action: &str, countdown: u32) {
         let _ = self.app.emit(
             "post-batch",
-            serde_json::json!({
-                "action": action,
-                "countdown": countdown,
-            }),
+            PostBatchPayload {
+                action: action.to_string(),
+                countdown,
+            },
         );
     }
 }

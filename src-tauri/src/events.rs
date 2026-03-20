@@ -12,7 +12,7 @@
 /// — they are bidirectional and belong on the `BatchControl` trait (Phase 3).
 pub trait EventSink: Send + Sync {
     fn log(&self, message: &str);
-    fn file_progress(&self, percent: f64, time_secs: f64, total_secs: f64);
+    fn file_progress(&self, percent: f64, time_secs: f64, total_secs: f64, pass: Option<(u8, u8)>);
     fn batch_progress(&self, current: u32, total: usize);
     fn batch_status(&self, message: &str);
     fn queue_item_updated(&self, index: usize, status: &str);

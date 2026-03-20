@@ -290,16 +290,17 @@ impl DiskMonitor {
         })
     }
 
-    /// Check disk usage and wait if over the limit. Returns `true` if
-    /// encoding should continue, `false` if cancelled during wait.
-    pub fn check_and_wait(
+    /// Check disk usage and wait if over the limit (#18 - now async).
+    /// Returns `true` if encoding should continue, `false` if cancelled
+    /// during wait.
+    pub async fn check_and_wait(
         &self,
         sink: &dyn crate::events::EventSink,
         batch_control: &dyn crate::events::BatchControl,
     ) -> bool {
         // Check output partition
         if self.is_over_limit(&self.output_path, sink) {
-            if !self.wait_for_space(&self.output_path, sink, batch_control) {
+            if !self.wait_for_space(&self.output_path, sink, batch_control).await {
                 return false;
             }
         }
@@ -307,7 +308,7 @@ impl DiskMonitor {
         // Check staging partition if different
         if let Some(ref staging) = self.staging_path {
             if self.is_over_limit(staging, sink) {
-                if !self.wait_for_space(staging, sink, batch_control) {
+                if !self.wait_for_space(staging, sink, batch_control).await {
                     return false;
                 }
             }
@@ -340,7 +341,10 @@ impl DiskMonitor {
         }
     }
 
-    fn wait_for_space(
+    /// Wait for disk space to recover (#18).
+    /// Uses `tokio::time::sleep` instead of `std::thread::sleep` to avoid
+    /// blocking the async runtime's executor thread.
+    async fn wait_for_space(
         &self,
         path: &Path,
         sink: &dyn crate::events::EventSink,
@@ -351,7 +355,7 @@ impl DiskMonitor {
                 return false;
             }
 
-            std::thread::sleep(std::time::Duration::from_secs(30));
+            tokio::time::sleep(std::time::Duration::from_secs(30)).await;
 
             if batch_control.should_cancel_all() {
                 return false;

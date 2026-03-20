@@ -5,7 +5,7 @@ use std::path::Path;
 
 /// Supported video file extensions (§5.2).
 const SUPPORTED_EXTENSIONS: &[&str] = &[
-    "mkv", "mp4", "avi", "ts", "m2ts", "wmv", "mov", "webm", "m4v",
+    "mkv", "mp4", "avi", "ts", "m2ts", "wmv", "mov", "webm", "m4v", "gif",
 ];
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -74,7 +74,7 @@ pub struct BatchState {
     pub fallback_response: Option<String>,
 }
 
-/// Result from add_paths_to_queue — includes the starting index so the
+/// Result from add_paths_to_queue - includes the starting index so the
 /// frontend can probe by index range without O(N*M) path lookups (#2).
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
@@ -83,11 +83,14 @@ pub struct AddResult {
     pub count: usize,
 }
 
+/// Check if a file path has a supported video extension (#11).
+/// Uses `eq_ignore_ascii_case` against each entry in the constant array
+/// instead of allocating a lowercase String per path.
 fn is_supported_extension(path: &str) -> bool {
     let p = Path::new(path);
     if let Some(ext) = p.extension() {
-        let ext_lower = ext.to_string_lossy().to_lowercase();
-        SUPPORTED_EXTENSIONS.contains(&ext_lower.as_str())
+        let ext_os = ext.to_string_lossy();
+        SUPPORTED_EXTENSIONS.iter().any(|&supported| ext_os.eq_ignore_ascii_case(supported))
     } else {
         false
     }
@@ -104,7 +107,7 @@ fn collect_files(paths: &[String]) -> Vec<String> {
             if let Ok(entries) = std::fs::read_dir(&path) {
                 for entry in entries.flatten() {
                     // Use entry.file_type() which avoids an extra stat() on
-                    // most platforms — critical on network mounts where each
+                    // most platforms - critical on network mounts where each
                     // stat is a round-trip.
                     match entry.file_type() {
                         Ok(ft) if ft.is_dir() => work.push_back(entry.path()),
@@ -180,12 +183,16 @@ pub fn add_paths_to_queue(queue: &mut Vec<QueueItem>, paths: &[String]) -> AddRe
     }
 }
 
-/// Remove queue items by indices (sorted descending internally).
-pub fn remove_items(queue: &mut Vec<QueueItem>, indices: &[usize]) {
-    let mut sorted: Vec<usize> = indices.to_vec();
-    sorted.sort_unstable();
-    sorted.dedup();
-    for idx in sorted.into_iter().rev() {
+/// Remove queue items by indices (#12 - sort in place via mutable slice).
+pub fn remove_items(queue: &mut Vec<QueueItem>, indices: &mut [usize]) {
+    indices.sort_unstable();
+    let mut prev = None;
+    for &idx in indices.iter().rev() {
+        // Skip duplicates
+        if prev == Some(idx) {
+            continue;
+        }
+        prev = Some(idx);
         if idx < queue.len() {
             queue.remove(idx);
         }
