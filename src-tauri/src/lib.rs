@@ -429,6 +429,7 @@ mod gui_commands {
         // Spawn the encoding loop in the background
         let state_for_task = state_arc.clone();
         let sink_for_task = sink.clone();
+        let app_for_task = app.clone();
         tokio::spawn(async move {
             let (done, failed, skipped, _was_cancelled) =
                 encoder::run_encode_loop(
@@ -441,6 +442,11 @@ mod gui_commands {
             // Sync only the items that were pending at batch start (#15).
             // Non-pending items were never touched by the encoder and don't
             // need their status copied back.
+            //
+            // Note: the encoder's batch_finished event fires before this sync
+            // (it's called inside run_encode_loop). The frontend re-fetches the
+            // queue on batch-finished, so we emit queue-sync-complete afterwards
+            // to trigger a second fetch with the final statuses.
             {
                 let mut q = state_for_task.queue.lock().await;
                 for &i in &pending_indices {
@@ -449,6 +455,7 @@ mod gui_commands {
                     }
                 }
             }
+            let _ = app_for_task.emit("queue-sync-complete", ());
 
             // GUI-specific post-batch actions
             if show_toast {

@@ -464,7 +464,7 @@ fn main() {
         codec_family: codec_display.to_string(),
         audio_encoder: args.audio.to_string(),
         audio_cap: args.audio_cap,
-        pix_fmt: if args.hdr { "yuv420p10le".to_string() } else { "yuv420p".to_string() },
+        pix_fmt: if args.no_hdr { "yuv420p".to_string() } else { "p010le".to_string() },
         delete_source,
         save_log: args.save_log,
         post_command: args.post_command.clone(),
@@ -479,13 +479,24 @@ fn main() {
     // For each file, decide whether to stage it locally before encoding.
     // We do this by modifying the input paths in the queue items before
     // passing them to the encoding loop.
+    //
+    // For replace mode on remote mounts, we also need to remember the
+    // original remote paths so we can move the encoded output back after
+    // the encode loop finishes. Without this, the encoder would write
+    // its output into the local staging directory (since the input path
+    // was rewritten) and the remote original would never be touched.
     let mut staging_contexts: Vec<Option<histv_lib::staging::StagingContext>> = Vec::new();
+    let mut original_remote_paths: Vec<Option<String>> = Vec::new();
+    let output_derives_from_input = matches!(
+        args.output_mode, cli::OutputMode::Replace | cli::OutputMode::Beside
+    );
 
     let should_stage = !matches!(args.remote, cli::RemotePolicy::Never);
     if should_stage {
         for (i, item) in queue_items.iter_mut().enumerate() {
             if item.status != QueueItemStatus::Pending {
                 staging_contexts.push(None);
+                original_remote_paths.push(None);
                 continue;
             }
 
@@ -505,6 +516,9 @@ fn main() {
                     ));
                 }
 
+                // Save the original remote path before rewriting
+                let remote_path = item.full_path.clone();
+
                 if let Some(ctx) = histv_lib::staging::StagingContext::stage_file(
                     std::path::Path::new(&item.full_path),
                     &staging_dir,
@@ -514,12 +528,15 @@ fn main() {
                     // Rewrite the queue item's path to the local staged copy
                     item.full_path = ctx.local_path().to_string_lossy().to_string();
                     staging_contexts.push(Some(ctx));
+                    original_remote_paths.push(if output_derives_from_input { Some(remote_path) } else { None });
                 } else {
                     // Staging failed, encode in-place
                     staging_contexts.push(None);
+                    original_remote_paths.push(None);
                 }
             } else {
                 staging_contexts.push(None);
+                original_remote_paths.push(None);
             }
         }
     }
@@ -530,6 +547,142 @@ fn main() {
     let (done, failed, _skipped, was_cancelled) = rt.block_on(
         encoder::run_encode_loop(&sink, batch_control.as_ref(), &mut queue_items, &batch_settings)
     );
+
+    // ── Post-encode: move staged outputs back to remote mount ──
+    //
+    // In replace or beside mode with remote staging, the encoder wrote its
+    // output into the local staging directory (since the input path was
+    // rewritten). Now we need to move that local output to the correct
+    // location on the remote mount.
+    //
+    // Replace mode: the encoder deleted the staged input and renamed the
+    //   temp to {staging_dir}/{base_name}.{ext}. We move it to the original
+    //   remote location, replacing the remote original.
+    //
+    // Beside mode: the encoder created {staging_dir}/output/{base_name}.{ext}.
+    //   We move it to {original_remote_dir}/output/{base_name}.{ext}.
+    if output_derives_from_input {
+        let ext = batch_settings.output_container.as_str();
+        let is_replace = matches!(args.output_mode, cli::OutputMode::Replace);
+
+        for (i, remote_path_opt) in original_remote_paths.iter().enumerate() {
+            if let Some(ref remote_path) = remote_path_opt {
+                if i >= queue_items.len() { continue; }
+                if queue_items[i].status != QueueItemStatus::Done { continue; }
+
+                let remote = std::path::Path::new(remote_path);
+                let base_name = remote.file_stem()
+                    .unwrap_or_default()
+                    .to_string_lossy();
+                let remote_dir = remote.parent().unwrap_or(std::path::Path::new("."));
+
+                // Locate the local output and determine the remote destination
+                let (local_output, final_remote) = if is_replace {
+                    // Replace: output is {staging_dir}/{base_name}.{ext}
+                    let local = staging_dir.join(format!("{}.{}", base_name, ext));
+                    let remote_dest = remote_dir.join(format!("{}.{}", base_name, ext));
+                    (local, remote_dest)
+                } else {
+                    // Beside: output is {staging_dir}/output/{base_name}.{ext}
+                    let local = staging_dir.join("output").join(format!("{}.{}", base_name, ext));
+                    let remote_dest_dir = remote_dir.join("output");
+                    let remote_dest = remote_dest_dir.join(format!("{}.{}", base_name, ext));
+                    // Ensure the output subfolder exists on the remote mount
+                    let _ = std::fs::create_dir_all(&remote_dest_dir);
+                    (local, remote_dest)
+                };
+
+                if !local_output.exists() {
+                    sink.log(&format!(
+                        "  WARNING: Expected staged output not found: {}",
+                        local_output.display()
+                    ));
+                    continue;
+                }
+
+                sink.log(&format!(
+                    "  Moving staged output to remote: {} → {}",
+                    local_output.display(), final_remote.display()
+                ));
+
+                if is_replace {
+                    // Safe replace: copy to a temp name on the remote mount first,
+                    // then delete the original, then rename. This way the original
+                    // survives until the copy is fully confirmed.
+                    let temp_remote = remote_dir.join(format!("{}.histv-tmp.{}", base_name, ext));
+
+                    match std::fs::copy(&local_output, &temp_remote) {
+                        Ok(_) => {
+                            // Copy succeeded - now safe to delete the original
+                            if remote.exists() {
+                                if let Err(e) = std::fs::remove_file(remote) {
+                                    sink.log(&format!(
+                                        "  WARNING: Could not delete remote original: {e}"
+                                    ));
+                                    // Original still exists, temp also exists - clean up temp
+                                    let _ = std::fs::remove_file(&temp_remote);
+                                    sink.log(&format!(
+                                        "  Encoded file preserved at: {}",
+                                        local_output.display()
+                                    ));
+                                    continue;
+                                }
+                            }
+                            // Rename temp to final
+                            if let Err(e) = std::fs::rename(&temp_remote, &final_remote) {
+                                sink.log(&format!(
+                                    "  WARNING: Could not rename temp to final on remote: {e}"
+                                ));
+                                // Temp file is on the remote mount with the data intact
+                                sink.log(&format!(
+                                    "  Encoded file on remote at: {}",
+                                    temp_remote.display()
+                                ));
+                            } else {
+                                sink.log(&format!(
+                                    "  Replaced remote source → {}",
+                                    final_remote.display()
+                                ));
+                            }
+                            // Clean up local copy
+                            let _ = std::fs::remove_file(&local_output);
+                        }
+                        Err(e) => {
+                            // Copy failed - original is untouched, nothing lost
+                            sink.log(&format!(
+                                "  ERROR: Could not copy output to remote mount: {e}"
+                            ));
+                            let _ = std::fs::remove_file(&temp_remote);
+                            sink.log(&format!(
+                                "  Encoded file preserved at: {}",
+                                local_output.display()
+                            ));
+                        }
+                    }
+                } else {
+                    // Beside mode: no original to protect, just copy across
+                    match std::fs::copy(&local_output, &final_remote) {
+                        Ok(_) => {
+                            let _ = std::fs::remove_file(&local_output);
+                            sink.log(&format!(
+                                "  Copied output to remote → {}",
+                                final_remote.display()
+                            ));
+                        }
+                        Err(e) => {
+                            sink.log(&format!(
+                                "  ERROR: Could not copy output to remote mount: {e}"
+                            ));
+                            sink.log(&format!(
+                                "  Encoded file preserved at: {}",
+                                local_output.display()
+                            ));
+                        }
+                    }
+                }
+            }
+        }
+    }
 
     // Clean up any remaining staging contexts
     for ctx in staging_contexts.iter_mut().flatten() {
