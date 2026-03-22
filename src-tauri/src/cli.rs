@@ -128,6 +128,20 @@ pub struct CliArgs {
     #[arg(long = "dry-run")]
     pub dry_run: bool,
 
+    /// Fix stale MKV stream statistics tags (BPS, NUMBER_OF_BYTES,
+    /// DURATION) on already-encoded files. Probes each file, computes
+    /// the correct values from the actual file size, and patches the
+    /// tags in-place. No re-encoding. Exits after repair.
+    #[arg(long = "repair-tags")]
+    pub repair_tags: bool,
+
+    /// Deep tag repair: scans every packet in the file to compute
+    /// exact byte counts and frame counts, then patches all statistics
+    /// tags. Speed depends on disk read speed. Useful for files with
+    /// severely corrupted metadata.
+    #[arg(long = "deep-repair")]
+    pub deep_repair: bool,
+
     /// HW encoder failure policy
     #[arg(long = "fallback", default_value = "ask", value_name = "POLICY")]
     pub fallback: FallbackPolicy,

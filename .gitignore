@@ -39,3 +39,4 @@ _ffmpeg_download*
 *.log
 encode_log_*.txt
 patchnotes.md
+historical-patchnotes.md

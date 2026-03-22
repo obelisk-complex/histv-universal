@@ -161,11 +161,12 @@ html, body {
 }
 
 /* Column widths */
-#queue-table th:nth-child(1), #queue-table td:nth-child(1) { width: 35%; }
-#queue-table th:nth-child(2), #queue-table td:nth-child(2) { width: 13%; }
-#queue-table th:nth-child(3), #queue-table td:nth-child(3) { width: 15%; }
-#queue-table th:nth-child(4), #queue-table td:nth-child(4) { width: 17%; }
-#queue-table th:nth-child(5), #queue-table td:nth-child(5) { width: 20%; }
+#queue-table th:nth-child(1), #queue-table td:nth-child(1) { width: 30px; text-align: center; padding: 0 4px; }
+#queue-table th:nth-child(2), #queue-table td:nth-child(2) { width: 34%; }
+#queue-table th:nth-child(3), #queue-table td:nth-child(3) { width: 12%; }
+#queue-table th:nth-child(4), #queue-table td:nth-child(4) { width: 14%; }
+#queue-table th:nth-child(5), #queue-table td:nth-child(5) { width: 16%; }
+#queue-table th:nth-child(6), #queue-table td:nth-child(6) { width: 18%; }
 
 #queue-table td {
   padding: 4px 8px;
@@ -175,6 +176,8 @@ html, body {
   text-overflow: ellipsis;
   border-bottom: 1px solid rgba(255,255,255,0.04);
 }
+.col-check { overflow: visible !important; }
+.col-check input[type="checkbox"] { cursor: pointer; margin: 0; }
 
 /* Row status tints (§5.4) */
 #queue-table tr.status-pending   { background: var(--base-200); }

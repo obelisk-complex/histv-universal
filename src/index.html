@@ -3,7 +3,7 @@
 <head>
   <meta charset="UTF-8" />
   <meta name="viewport" content="width=device-width, initial-scale=1.0" />
-  <title>Honey, I Shrunk The Vids v2.2.1</title>
+  <title>Honey, I Shrunk The Vids v2.3.0</title>
   <link rel="stylesheet" href="css/app.css" />
 </head>
 <body>
@@ -18,6 +18,7 @@
           <table id="queue-table">
             <thead>
               <tr>
+                <th class="col-check"><input type="checkbox" id="select-all" title="Select / deselect all"></th>
                 <th>Filename</th>
                 <th>Resolution</th>
                 <th>Source Bitrate</th>
@@ -35,6 +36,7 @@
         </div>
         <div id="batch-buttons">
           <button class="btn" id="btn-dry-run" disabled>Probe</button>
+          <button class="btn" id="btn-deep-repair" disabled title="Scans audio/subtitle packets and counts video frames to compute exact metadata. Speed depends on disk read speed. Use for files with corrupted or stale MKV statistics tags.">Deep Repair</button>
           <span id="btn-start-wrapper">
             <button class="btn btn-primary" id="btn-start" disabled>Start</button>
             <span class="start-tooltip" id="start-tooltip"></span>
@@ -356,6 +358,9 @@
       <div class="ctx-separator"></div>
       <div class="ctx-item" id="ctx-open-source">Open source file</div>
       <div class="ctx-item" id="ctx-reveal-source">Reveal in file manager</div>
+      <div class="ctx-separator"></div>
+      <div class="ctx-item" id="ctx-repair-tags">Repair MKV tags</div>
+      <div class="ctx-item" id="ctx-deep-repair" title="Scans audio and subtitle streams to compute exact byte counts, then derives the video bitrate by subtraction. Also counts video frames. Speed depends on disk read speed. Use for files with severely corrupted metadata.">Deep repair MKV tags</div>
     </div>
 
     <!-- ═══ Modal: Overwrite prompt (§7.3) ═══ -->
@@ -509,6 +514,7 @@
     const btnCancelCur    = $('#btn-cancel-current');
     const btnCancelAll    = $('#btn-cancel-all');
     const btnDryRun       = $('#btn-dry-run');
+    const btnDeepRepair   = $('#btn-deep-repair');
     const btnPause        = $('#btn-pause');
     const bottomPanelBody = $('#bottom-panel-body');
     const bottomPanelToggle = $('#bottom-panel-toggle');
@@ -709,6 +715,21 @@
       for (const [key, value] of Object.entries(theme.colors)) {
         root.style.setProperty(`--${key}`, value);
       }
+      // Set color-scheme so native form controls (checkboxes, selects,
+      // scrollbars) match the theme automatically.
+      const base100 = theme.colors['base-100'] || '#1E1E1E';
+      root.style.colorScheme = isLightColor(base100) ? 'light' : 'dark';
+    }
+
+    // Quick luminance check: returns true if the hex colour is closer
+    // to white than black.
+    function isLightColor(hex) {
+      const c = hex.replace('#', '');
+      const r = parseInt(c.substring(0, 2), 16);
+      const g = parseInt(c.substring(2, 4), 16);
+      const b = parseInt(c.substring(4, 6), 16);
+      // Perceived brightness (ITU-R BT.601)
+      return (r * 299 + g * 587 + b * 114) / 1000 > 128;
     }
 
     selTheme.addEventListener('change', () => {
@@ -852,33 +873,39 @@
           tr.style.removeProperty('--encode-progress');
         }
 
-        // Cell 0: filename
-        const c0 = tr.children[0];
-        if (c0.textContent !== item.fileName) {
-          c0.textContent = item.fileName;
-          c0.title = item.fullPath || item.fileName;
+        // Cell 0: checkbox
+        const cb = tr.children[0] && tr.children[0].firstChild;
+        if (cb && cb.checked !== selectedRows.has(i)) {
+          cb.checked = selectedRows.has(i);
         }
 
-        // Cell 1: resolution
+        // Cell 1: filename
+        const c1 = tr.children[1];
+        if (c1.textContent !== item.fileName) {
+          c1.textContent = item.fileName;
+          c1.title = item.fullPath || item.fileName;
+        }
+
+        // Cell 2: resolution
         const resText = (item.videoWidth && item.videoHeight)
           ? `${item.videoWidth}x${item.videoHeight}` : '';
-        const c1 = tr.children[1];
-        if (c1.textContent !== resText) c1.textContent = resText;
+        const c2 = tr.children[2];
+        if (c2.textContent !== resText) c2.textContent = resText;
 
-        // Cell 2: source bitrate
+        // Cell 3: source bitrate
         const srcText = item.videoBitrateMbps > 0
           ? `${item.videoBitrateMbps.toFixed(2)} Mbps` : '';
-        const c2 = tr.children[2];
-        if (c2.textContent !== srcText) c2.textContent = srcText;
-
-        // Cell 3: target bitrate
-        const tgtText = computeTargetBitrateLabel(item, settings);
         const c3 = tr.children[3];
-        if (c3.textContent !== tgtText) c3.textContent = tgtText;
+        if (c3.textContent !== srcText) c3.textContent = srcText;
 
-        // Cell 4: status badge
+        // Cell 4: target bitrate
+        const tgtText = computeTargetBitrateLabel(item, settings);
         const c4 = tr.children[4];
-        const badge = c4.firstChild;
+        if (c4.textContent !== tgtText) c4.textContent = tgtText;
+
+        // Cell 5: status badge
+        const c5 = tr.children[5];
+        const badge = c5.firstChild;
         if (badge) {
           const currentStatus = tr.dataset.status || '';
           if (currentStatus !== statusLower) {
@@ -910,6 +937,15 @@
         if (selectedRows.has(i)) tr.classList.add('selected');
         tr.dataset.index = i;
         tr.dataset.status = statusLower;
+
+        // Checkbox
+        const tdCheck = document.createElement('td');
+        tdCheck.className = 'col-check';
+        const cb = document.createElement('input');
+        cb.type = 'checkbox';
+        cb.checked = selectedRows.has(i);
+        tdCheck.appendChild(cb);
+        tr.appendChild(tdCheck);
 
         // Filename
         const tdName = document.createElement('td');
@@ -987,6 +1023,8 @@
       const i = parseInt(tr.dataset.index, 10);
       if (isNaN(i)) return;
 
+      const isCheckbox = e.target.tagName === 'INPUT' && e.target.type === 'checkbox';
+
       const previousSelection = new Set(selectedRows);
 
       if (e.shiftKey && selectedRows.size > 0) {
@@ -996,7 +1034,8 @@
         const lo = Math.min(last, i);
         const hi = Math.max(last, i);
         for (let r = lo; r <= hi; r++) selectedRows.add(r);
-      } else if (e.ctrlKey || e.metaKey) {
+      } else if (isCheckbox || e.ctrlKey || e.metaKey) {
+        // Checkbox click or ctrl+click: toggle individual selection
         if (selectedRows.has(i)) selectedRows.delete(i);
         else selectedRows.add(i);
       } else {
@@ -1010,15 +1049,62 @@
       for (const r of previousSelection) {
         if (!selectedRows.has(r) && r < rows.length) {
           rows[r].classList.remove('selected');
+          const cb = rows[r].children[0] && rows[r].children[0].firstChild;
+          if (cb) cb.checked = false;
         }
       }
       // Rows that are selected now but weren't before
       for (const r of selectedRows) {
         if (!previousSelection.has(r) && r < rows.length) {
           rows[r].classList.add('selected');
+          const cb = rows[r].children[0] && rows[r].children[0].firstChild;
+          if (cb) cb.checked = true;
         }
       }
+
+      // Sync select-all checkbox
+      syncSelectAll();
     }
+
+    const selectAllCheckbox = $('#select-all');
+
+    function syncSelectAll() {
+      if (queueData.length === 0) {
+        selectAllCheckbox.checked = false;
+        selectAllCheckbox.indeterminate = false;
+      } else if (selectedRows.size === queueData.length) {
+        selectAllCheckbox.checked = true;
+        selectAllCheckbox.indeterminate = false;
+      } else if (selectedRows.size > 0) {
+        selectAllCheckbox.checked = false;
+        selectAllCheckbox.indeterminate = true;
+      } else {
+        selectAllCheckbox.checked = false;
+        selectAllCheckbox.indeterminate = false;
+      }
+    }
+
+    selectAllCheckbox.addEventListener('change', () => {
+      const rows = queueBody.children;
+      if (selectAllCheckbox.checked) {
+        for (let i = 0; i < queueData.length; i++) {
+          selectedRows.add(i);
+          if (rows[i]) {
+            rows[i].classList.add('selected');
+            const cb = rows[i].children[0] && rows[i].children[0].firstChild;
+            if (cb) cb.checked = true;
+          }
+        }
+      } else {
+        selectedRows.clear();
+        for (let i = 0; i < rows.length; i++) {
+          rows[i].classList.remove('selected');
+          const cb = rows[i].children[0] && rows[i].children[0].firstChild;
+          if (cb) cb.checked = false;
+        }
+      }
+      selectAllCheckbox.indeterminate = false;
+    });
 
     // ── Cached settings for target bitrate computation (#6) ──
     function getTargetBitrateSettings() {
@@ -1929,6 +2015,8 @@
         $('#ctx-clear-all').classList.toggle('disabled', batchRunning);
         $('#ctx-open-source').classList.toggle('disabled', !hasSelection);
         $('#ctx-reveal-source').classList.toggle('disabled', !hasSelection);
+        $('#ctx-repair-tags').classList.toggle('disabled', batchRunning || !hasSelection);
+        $('#ctx-deep-repair').classList.toggle('disabled', batchRunning || !hasSelection);
 
         contextMenu.style.left = e.clientX + 'px';
         contextMenu.style.top = e.clientY + 'px';
@@ -2040,6 +2128,36 @@
           }
         }
       });
+
+      // Repair MKV tags on selected files
+      $('#ctx-repair-tags').addEventListener('click', async () => {
+        if (batchRunning || selectedRows.size === 0) return;
+        const indices = [...selectedRows];
+        try {
+          const count = await invoke('repair_tags', { indices });
+          if (count > 0) {
+            queueData = await invoke('get_queue');
+            renderQueue();
+          }
+        } catch (e) {
+          console.error('Repair tags error:', e);
+        }
+      });
+
+      // Deep repair MKV tags on selected files (packet scan)
+      $('#ctx-deep-repair').addEventListener('click', async () => {
+        if (batchRunning || selectedRows.size === 0) return;
+        const indices = [...selectedRows];
+        try {
+          const count = await invoke('deep_repair_tags', { indices });
+          if (count > 0) {
+            queueData = await invoke('get_queue');
+            renderQueue();
+          }
+        } catch (e) {
+          console.error('Deep repair tags error:', e);
+        }
+      });
     }
 
     // ═══════════════════════════════════════════════════════════════
@@ -2050,6 +2168,24 @@
       btnCancelCur.addEventListener('click', () => invoke('cancel_current'));
       btnCancelAll.addEventListener('click', () => invoke('cancel_all'));
       btnDryRun.addEventListener('click', dryRun);
+      btnDeepRepair.addEventListener('click', async () => {
+        // Use selected rows if any, otherwise all queue items
+        const indices = selectedRows.size > 0
+          ? [...selectedRows]
+          : Array.from({ length: queueData.length }, (_, i) => i);
+        if (indices.length === 0) return;
+        btnDeepRepair.disabled = true;
+        try {
+          const count = await invoke('deep_repair_tags', { indices });
+          if (count > 0) {
+            queueData = await invoke('get_queue');
+            renderQueue();
+          }
+        } catch (e) {
+          console.error('Deep repair error:', e);
+        }
+        updateBatchButtons();
+      });
       btnPause.addEventListener('click', togglePause);
 
       // Browse output folder
@@ -2078,6 +2214,7 @@
 
       btnStart.disabled = !encoderDetectionDone || batchRunning || !hasPending;
       btnDryRun.disabled = !encoderDetectionDone || batchRunning || !hasPending;
+      btnDeepRepair.disabled = batchRunning || queueData.length === 0;
       btnCancelCur.disabled = !batchRunning;
       btnCancelAll.disabled = !batchRunning;
       btnPause.disabled = !batchRunning;
@@ -2442,8 +2579,8 @@
             tr.className = wantClass;
             tr.style.removeProperty('--encode-progress');
           }
-          const c4 = tr.children[4];
-          const badge = c4 && c4.firstChild;
+          const c5 = tr.children[5];
+          const badge = c5 && c5.firstChild;
           if (badge) {
             const icon = STATUS_ICONS[statusLower] || '';
             badge.innerHTML = '';

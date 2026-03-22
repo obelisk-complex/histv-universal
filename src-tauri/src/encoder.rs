@@ -653,6 +653,38 @@ pub async fn run_encode_loop(
             }
         }
 
+        // Pre-decision MKV tag repair: fix stale statistics tags on input
+        // files so the encoding decision uses the actual bitrate. This is
+        // lightweight (no I/O beyond a stat + in-place tag write) and runs
+        // automatically before every encode.
+        let mut item_video_bitrate_mbps = item_video_bitrate_mbps;
+        if item_full_path.ends_with(".mkv") && item_duration_secs > 0.0 {
+            let input_size = std::fs::metadata(&item_full_path).map(|m| m.len()).unwrap_or(0);
+            if input_size > 0 {
+                let audio_total_bps: u64 = queue[idx].audio_streams.iter()
+                    .map(|s| s.bitrate_kbps as u64 * 1000)
+                    .sum();
+                match crate::mkv_tags::lightweight_repair(
+                    std::path::Path::new(&item_full_path),
+                    input_size, item_duration_secs, audio_total_bps, None,
+                ) {
+                    Ok((n, bps)) if n > 0 => {
+                        let corrected_mbps = bps as f64 / 1_000_000.0;
+                        if (corrected_mbps - item_video_bitrate_mbps).abs() > 0.1 {
+                            sink.log(&format!(
+                                "  Tag repair: {:.2}Mbps → {:.2}Mbps",
+                                item_video_bitrate_mbps, corrected_mbps
+                            ));
+                            item_video_bitrate_mbps = corrected_mbps;
+                            queue[idx].video_bitrate_mbps = corrected_mbps;
+                            queue[idx].video_bitrate_bps = bps as f64;
+                        }
+                    }
+                    _ => {}
+                }
+            }
+        }
+
         // Determine encoding strategy
         let decision = decide_encode_strategy(
             item_video_bitrate_mbps,
@@ -849,6 +881,7 @@ pub async fn run_encode_loop(
 
         let proc_start = std::time::Instant::now();
         let exit_code: i32;
+        let mut final_frame_count: Option<u64>;
 
         if use_two_pass {
             // ── Two-pass VBR (software encoders only) (#5) ──
@@ -943,7 +976,7 @@ pub async fn run_encode_loop(
                     cleanup_passlog_files(&passlog_prefix);
                     continue;
                 }
-                Ok(r) => { exit_code = r.exit_code; }
+                Ok(r) => { exit_code = r.exit_code; final_frame_count = Some(r.frame_count); }
                 Err(e) => {
                     sink.log(&format!("  ERROR: {e}"));
                     write_log(&mut log_writer, &format!("  ERROR: {e}"));
@@ -980,7 +1013,7 @@ pub async fn run_encode_loop(
                     sink.queue_item_updated(idx, "Cancelled");
                     continue;
                 }
-                Ok(r) => { exit_code = r.exit_code; }
+                Ok(r) => { exit_code = r.exit_code; final_frame_count = Some(r.frame_count); }
                 Err(e) => {
                     sink.log(&format!("  ERROR: {e}"));
                     write_log(&mut log_writer, &format!("  ERROR: {e}"));
@@ -1079,7 +1112,7 @@ pub async fn run_encode_loop(
                             fail_count += 1;
                             break;
                         }
-                        _ => {} // fallback encode OK
+                        Ok(r) => { final_frame_count = Some(r.frame_count); } // fallback encode OK
                     }
                 } else {
                     sink.log("  Stopping batch due to encoder failure");
@@ -1150,6 +1183,34 @@ pub async fn run_encode_loop(
                     "  Done: {:.1}MB from {:.1}MB",
                     dst_size as f64 / 1_000_000.0, src_size as f64 / 1_000_000.0,
                 ));
+            }
+
+            // Patch stale MKV stream statistics tags with the actual values.
+            // Only needed for MKV encodes (not copies, not MP4). Source muxers
+            // write BPS/NUMBER_OF_BYTES/DURATION tags that ffmpeg copies
+            // verbatim; after re-encoding these are wrong and mislead
+            // subsequent probes.
+            if ext == "mkv" && !matches!(decision, EncodeDecision::Copy) {
+                let audio_total_bps: u64 = queue[idx].audio_streams.iter()
+                    .map(|s| s.bitrate_kbps as u64 * 1000)
+                    .sum();
+
+                let frames = final_frame_count.filter(|&f| f > 0);
+
+                match crate::mkv_tags::lightweight_repair(
+                    &temp_output_file, dst_size, item_duration_secs, audio_total_bps, frames,
+                ) {
+                    Ok((n, bps)) if n > 0 => {
+                        let mbps = bps as f64 / 1_000_000.0;
+                        sink.log(&format!("  Updated {} MKV tag{} (video: {:.2}Mbps)", n, if n == 1 { "" } else { "s" }, mbps));
+                    }
+                    Ok(_) => {
+                        sink.log("  No MKV statistics tags to update");
+                    }
+                    Err(e) => {
+                        sink.log(&format!("  WARNING: Could not update MKV tags: {e}"));
+                    }
+                }
             }
 
             // Replace mode: delete source, rename temp to final path
@@ -1265,6 +1326,7 @@ struct FfmpegRunResult {
     exit_code: i32,
     was_cancelled_current: bool,
     was_cancelled_all: bool,
+    frame_count: u64,
 }
 
 /// Build two-pass argument lists directly from components (#5).
@@ -1356,6 +1418,7 @@ async fn run_ffmpeg_with_progress(
     // Stream stderr for progress using a blocking thread
     let stderr = child.stderr.take();
     let progress_secs = Arc::new(std::sync::atomic::AtomicU64::new(0));
+    let frame_counter = Arc::new(std::sync::atomic::AtomicU64::new(0));
     let stderr_thread = stderr.map(|tokio_stderr| {
         let std_stderr = {
             #[cfg(windows)]
@@ -1370,6 +1433,7 @@ async fn run_ffmpeg_with_progress(
             }
         };
         let progress = Arc::clone(&progress_secs);
+        let frames = Arc::clone(&frame_counter);
         let dur = file_duration;
         std::thread::spawn(move || {
             use std::io::Read;
@@ -1384,6 +1448,7 @@ async fn run_ffmpeg_with_progress(
                         for &byte in &buf[..n] {
                             if byte == b'\r' || byte == b'\n' {
                                 if !line_buf.is_empty() {
+                                    // Parse time= for progress tracking
                                     if dur > 0.0 {
                                         if let Some(pos) = line_buf.windows(5).position(|w| w == b"time=") {
                                             let ts_start = pos + 5;
@@ -1398,6 +1463,19 @@ async fn run_ffmpeg_with_progress(
                                                         std::sync::atomic::Ordering::Relaxed,
                                                     );
                                                 }
+                                            }
+                                        }
+                                    }
+                                    // Parse frame= for post-encode tag update
+                                    if let Some(pos) = line_buf.windows(6).position(|w| w == b"frame=") {
+                                        let f_start = pos + 6;
+                                        let f_end = line_buf[f_start..].iter()
+                                            .position(|&b| b == b' ' || b == b'\t')
+                                            .map(|p| f_start + p)
+                                            .unwrap_or(line_buf.len());
+                                        if let Ok(f_str) = std::str::from_utf8(&line_buf[f_start..f_end]) {
+                                            if let Ok(fc) = f_str.trim().parse::<u64>() {
+                                                frames.store(fc, std::sync::atomic::Ordering::Relaxed);
                                             }
                                         }
                                     }
@@ -1472,11 +1550,13 @@ async fn run_ffmpeg_with_progress(
     }
 
     let exit_code = exit_status.map(|s| s.code().unwrap_or(-1)).unwrap_or(-1);
+    let final_frames = frame_counter.load(std::sync::atomic::Ordering::Relaxed);
 
     Ok(FfmpegRunResult {
         exit_code,
         was_cancelled_current: batch_control.should_cancel_current(),
         was_cancelled_all: batch_control.should_cancel_all(),
+        frame_count: final_frames,
     })
 }
 
@@ -1868,7 +1948,7 @@ pub async fn execute_post_action(action: &str) -> Result<(), String> {
 }
 
 /// Parse ffmpeg's time= format "HH:MM:SS.ms" or "HH:MM:SS" into seconds.
-fn parse_ffmpeg_time(s: &str) -> Option<f64> {
+pub fn parse_ffmpeg_time(s: &str) -> Option<f64> {
     let parts: Vec<&str> = s.split(':').collect();
     if parts.len() != 3 {
         return None;

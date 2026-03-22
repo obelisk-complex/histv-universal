@@ -1,6 +1,7 @@
 pub mod events;
 pub mod encoder;
 pub mod ffmpeg;
+pub mod mkv_tags;
 pub mod probe;
 pub mod queue;
 pub mod remote;
@@ -283,6 +284,26 @@ mod gui_commands {
                         q[index].audio_streams = pr.audio_streams.clone();
                         q[index].duration_secs = pr.duration_secs;
                         q[index].status = QueueItemStatus::Pending;
+
+                        // Lightweight MKV tag repair: fix stale statistics
+                        // so the queue shows the real bitrate from import.
+                        if file_path.ends_with(".mkv") && pr.duration_secs > 0.0 {
+                            if let Ok(file_size) = std::fs::metadata(&file_path).map(|m| m.len()) {
+                                let audio_total_bps: u64 = pr.audio_streams.iter()
+                                    .map(|s| s.bitrate_kbps as u64 * 1000)
+                                    .sum();
+                                if let Ok((n, bps)) = crate::mkv_tags::lightweight_repair(
+                                    std::path::Path::new(&file_path),
+                                    file_size, pr.duration_secs, audio_total_bps, None,
+                                ) {
+                                    if n > 0 {
+                                        let corrected_mbps = bps as f64 / 1_000_000.0;
+                                        q[index].video_bitrate_bps = bps as f64;
+                                        q[index].video_bitrate_mbps = corrected_mbps;
+                                    }
+                                }
+                            }
+                        }
                     }
                     Err(_) => {
                         q[index].status = QueueItemStatus::Failed;
@@ -293,6 +314,118 @@ mod gui_commands {
         sink.queue_item_probed(index);
 
         result
+    }
+
+    /// Repair stale MKV stream statistics tags on queued files.
+    /// Probes each file, computes correct values, and patches in-place.
+    /// Returns the number of files that were updated.
+    #[tauri::command]
+    pub async fn repair_tags(
+        app: tauri::AppHandle,
+        state: tauri::State<'_, Arc<AppState>>,
+        indices: Vec<usize>,
+    ) -> Result<u32, String> {
+        let sink = tauri_sink::TauriSink::new(app.clone());
+        let mut repaired: u32 = 0;
+        let total = indices.len();
+
+        for (i, &index) in indices.iter().enumerate() {
+            let file_path = {
+                let q = state.queue.lock().await;
+                if index >= q.len() { continue; }
+                q[index].full_path.clone()
+            };
+
+            let path = std::path::Path::new(&file_path);
+            let fname = path.file_name().unwrap_or_default().to_string_lossy();
+            sink.log(&format!("[repair] ({}/{}) {}", i + 1, total, fname));
+
+            match crate::mkv_tags::repair_file_tags(path, &sink).await {
+                Ok((n, bps)) if n > 0 => {
+                    let mbps = bps as f64 / 1_000_000.0;
+                    sink.log(&format!(
+                        "[repair] Updated {} tag{} (video: {:.2}Mbps)",
+                        n, if n == 1 { "" } else { "s" }, mbps
+                    ));
+                    {
+                        let mut q = state.queue.lock().await;
+                        if index < q.len() {
+                            q[index].video_bitrate_bps = bps as f64;
+                            q[index].video_bitrate_mbps = mbps;
+                        }
+                    }
+                    sink.queue_item_probed(index);
+                    repaired += 1;
+                }
+                Ok(_) => {
+                    sink.log("[repair] No statistics tags to update");
+                }
+                Err(e) => {
+                    sink.log(&format!("[repair] ERROR: {}", e));
+                }
+            }
+        }
+
+        sink.log(&format!("[repair] Complete: {} of {} file{} updated",
+            repaired, total, if total == 1 { "" } else { "s" }));
+
+        Ok(repaired)
+    }
+
+    /// Deep repair: scan every packet to compute exact statistics,
+    /// then patch all MKV tags with byte-accurate values.
+    /// Returns the number of files updated.
+    #[tauri::command]
+    pub async fn deep_repair_tags(
+        app: tauri::AppHandle,
+        state: tauri::State<'_, Arc<AppState>>,
+        indices: Vec<usize>,
+    ) -> Result<u32, String> {
+        let sink = tauri_sink::TauriSink::new(app.clone());
+        let mut repaired: u32 = 0;
+        let total = indices.len();
+
+        for (i, &index) in indices.iter().enumerate() {
+            let file_path = {
+                let q = state.queue.lock().await;
+                if index >= q.len() { continue; }
+                q[index].full_path.clone()
+            };
+
+            let path = std::path::Path::new(&file_path);
+            let fname = path.file_name().unwrap_or_default().to_string_lossy();
+            sink.log(&format!("[deep-repair] ({}/{}) {}", i + 1, total, fname));
+
+            match crate::mkv_tags::deep_repair(path, &sink).await {
+                Ok((n, bps)) if n > 0 => {
+                    let mbps = bps as f64 / 1_000_000.0;
+                    sink.log(&format!(
+                        "[deep-repair] Updated {} tag{} (video: {:.2}Mbps)",
+                        n, if n == 1 { "" } else { "s" }, mbps
+                    ));
+                    {
+                        let mut q = state.queue.lock().await;
+                        if index < q.len() {
+                            q[index].video_bitrate_bps = bps as f64;
+                            q[index].video_bitrate_mbps = mbps;
+                        }
+                    }
+                    sink.queue_item_probed(index);
+                    repaired += 1;
+                }
+                Ok(_) => {
+                    sink.log("[deep-repair] No statistics tags to update");
+                }
+                Err(e) => {
+                    sink.log(&format!("[deep-repair] ERROR: {}", e));
+                }
+            }
+        }
+
+        sink.log(&format!("[deep-repair] Complete: {} of {} file{} updated",
+            repaired, total, if total == 1 { "" } else { "s" }));
+
+        Ok(repaired)
     }
 
     #[tauri::command]
@@ -637,6 +770,8 @@ pub fn run() {
             move_queue_item,
             get_queue,
             probe_file,
+            repair_tags,
+            deep_repair_tags,
             start_batch,
             cancel_current,
             cancel_all,

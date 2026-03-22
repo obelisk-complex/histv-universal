@@ -33,6 +33,11 @@ async fn run_ffprobe(args: &[&str]) -> Result<String, String> {
     Ok(String::from_utf8_lossy(&output.stdout).trim().to_string())
 }
 
+/// Public ffprobe runner for use by other modules (e.g. mkv_tags deep repair).
+pub async fn run_ffprobe_public(args: &[&str]) -> Result<String, String> {
+    run_ffprobe(args).await
+}
+
 /// Parse a duration tag like "01:23:45.678" into seconds (#10).
 /// Splits on ':' only so that the seconds part retains its fractional
 /// component (e.g. "45.678" parses as 45.678 via f64::parse).

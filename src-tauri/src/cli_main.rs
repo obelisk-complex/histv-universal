@@ -124,6 +124,26 @@ fn main() {
                 queue_items[i].audio_streams = pr.audio_streams;
                 queue_items[i].duration_secs = pr.duration_secs;
                 queue_items[i].status = QueueItemStatus::Pending;
+
+                // Lightweight MKV tag repair: fix stale statistics
+                // so the queue shows the real bitrate from import.
+                if file_path.ends_with(".mkv") && pr.duration_secs > 0.0 {
+                    if let Ok(file_size) = std::fs::metadata(&file_path).map(|m| m.len()) {
+                        let audio_total_bps: u64 = queue_items[i].audio_streams.iter()
+                            .map(|s| s.bitrate_kbps as u64 * 1000)
+                            .sum();
+                        if let Ok((n, bps)) = histv_lib::mkv_tags::lightweight_repair(
+                            std::path::Path::new(&file_path),
+                            file_size, pr.duration_secs, audio_total_bps, None,
+                        ) {
+                            if n > 0 {
+                                let corrected_mbps = bps as f64 / 1_000_000.0;
+                                queue_items[i].video_bitrate_bps = bps as f64;
+                                queue_items[i].video_bitrate_mbps = corrected_mbps;
+                            }
+                        }
+                    }
+                }
             }
             Err(e) => {
                 sink.log(&format!("  WARNING: Probe failed for {}: {e}", queue_items[i].file_name));
@@ -156,6 +176,69 @@ fn main() {
             failed_count,
             if failed_count == 1 { "" } else { "s" },
         ));
+    }
+
+    // ── Repair tags mode ──────────────────────────────────────────
+
+    if args.repair_tags || args.deep_repair {
+        let is_deep = args.deep_repair;
+        let mode_label = if is_deep { "Deep repairing" } else { "Repairing" };
+        eprintln!("");
+        eprintln!("{} MKV stream statistics tags...", mode_label);
+        eprintln!("");
+
+        let mut repaired: u32 = 0;
+        let mut skipped: u32 = 0;
+        let total = probed_items.len();
+
+        for (i, item) in probed_items.iter().enumerate() {
+            let path = std::path::Path::new(&item.full_path);
+            let ext = path.extension()
+                .map(|e| e.to_string_lossy().to_lowercase())
+                .unwrap_or_default();
+
+            if ext != "mkv" {
+                eprintln!("  ({}/{}) {} - skipped (not MKV)", i + 1, total, item.file_name);
+                skipped += 1;
+                continue;
+            }
+
+            if is_tty {
+                eprint!("\r\x1b[2K  ({}/{}) {}...", i + 1, total, item.file_name);
+            }
+
+            let result = if is_deep {
+                rt.block_on(histv_lib::mkv_tags::deep_repair(path, &sink))
+            } else {
+                rt.block_on(histv_lib::mkv_tags::repair_file_tags(path, &sink))
+            };
+
+            if is_tty {
+                eprint!("\r\x1b[2K");
+            }
+
+            match result {
+                Ok((n, bps)) if n > 0 => {
+                    let mbps = bps as f64 / 1_000_000.0;
+                    eprintln!("  ({}/{}) {} - updated {} tag{} (video: {:.2}Mbps)",
+                        i + 1, total, item.file_name, n, if n == 1 { "" } else { "s" }, mbps);
+                    repaired += 1;
+                }
+                Ok(_) => {
+                    eprintln!("  ({}/{}) {} - no statistics tags to update", i + 1, total, item.file_name);
+                    skipped += 1;
+                }
+                Err(e) => {
+                    eprintln!("  ({}/{}) {} - ERROR: {}", i + 1, total, item.file_name, e);
+                    skipped += 1;
+                }
+            }
+        }
+
+        eprintln!("");
+        eprintln!("Repair complete. {} file{} updated, {} skipped.",
+            repaired, if repaired == 1 { "" } else { "s" }, skipped);
+        std::process::exit(0);
     }
 
     // ── Compute encoding decisions (Phase 2.3) ─────────────────
