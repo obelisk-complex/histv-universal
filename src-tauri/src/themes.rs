@@ -108,6 +108,10 @@ fn default_dark_theme() -> Theme {
     colors.insert("success".into(), "#19411F".into());
     colors.insert("warning".into(), "#463C14".into());
     colors.insert("error".into(), "#501E1E".into());
+    colors.insert("status-done".into(), "#4ade80".into());
+    colors.insert("status-failed".into(), "#f87171".into());
+    colors.insert("status-cancelled".into(), "#fb923c".into());
+    colors.insert("status-detect".into(), "#a78bfa".into());
     Theme {
         name: "Default Dark".into(),
         colors,
@@ -128,6 +132,10 @@ fn default_light_theme() -> Theme {
     colors.insert("success".into(), "#DCFCE7".into());
     colors.insert("warning".into(), "#FEF9C3".into());
     colors.insert("error".into(), "#FEE2E2".into());
+    colors.insert("status-done".into(), "#22c55e".into());
+    colors.insert("status-failed".into(), "#ef4444".into());
+    colors.insert("status-cancelled".into(), "#f97316".into());
+    colors.insert("status-detect".into(), "#8b5cf6".into());
     Theme {
         name: "Default Light".into(),
         colors,
@@ -148,6 +156,10 @@ fn jessica_dark_theme() -> Theme {
     colors.insert("success".into(), "#19411F".into());
     colors.insert("warning".into(), "#463C14".into());
     colors.insert("error".into(), "#501E1E".into());
+    colors.insert("status-done".into(), "#4ade80".into());
+    colors.insert("status-failed".into(), "#f87171".into());
+    colors.insert("status-cancelled".into(), "#fb923c".into());
+    colors.insert("status-detect".into(), "#a78bfa".into());
     Theme {
         name: "Jessica Dark".into(),
         colors,
@@ -168,6 +180,10 @@ fn solarised_dark_theme() -> Theme {
     colors.insert("success".into(), "#0D3D2A".into());
     colors.insert("warning".into(), "#3D3A0D".into());
     colors.insert("error".into(), "#4A1A1A".into());
+    colors.insert("status-done".into(), "#4ade80".into());
+    colors.insert("status-failed".into(), "#f87171".into());
+    colors.insert("status-cancelled".into(), "#fb923c".into());
+    colors.insert("status-detect".into(), "#a78bfa".into());
     Theme {
         name: "Solarised Dark".into(),
         colors,
@@ -188,6 +204,10 @@ fn nord_theme() -> Theme {
     colors.insert("success".into(), "#2E4038".into());
     colors.insert("warning".into(), "#4A4530".into());
     colors.insert("error".into(), "#4A2E2E".into());
+    colors.insert("status-done".into(), "#4ade80".into());
+    colors.insert("status-failed".into(), "#f87171".into());
+    colors.insert("status-cancelled".into(), "#fb923c".into());
+    colors.insert("status-detect".into(), "#a78bfa".into());
     Theme {
         name: "Nord".into(),
         colors,
@@ -208,6 +228,10 @@ fn vempire_theme() -> Theme {
     colors.insert("success".into(), "#1A3A2A".into());
     colors.insert("warning".into(), "#3D3A1A".into());
     colors.insert("error".into(), "#4A1A2A".into());
+    colors.insert("status-done".into(), "#4ade80".into());
+    colors.insert("status-failed".into(), "#f87171".into());
+    colors.insert("status-cancelled".into(), "#fb923c".into());
+    colors.insert("status-detect".into(), "#a78bfa".into());
     Theme {
         name: "Vempire".into(),
         colors,

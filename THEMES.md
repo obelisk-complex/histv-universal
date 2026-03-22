@@ -27,7 +27,11 @@ Here's a minimal example:
     "info": "#1B3A4B",
     "success": "#1B4332",
     "warning": "#3D3400",
-    "error": "#4A1520"
+    "error": "#4A1520",
+    "status-done": "#4ade80",
+    "status-failed": "#f87171",
+    "status-cancelled": "#fb923c",
+    "status-detect": "#a78bfa"
   }
 }
 ```
@@ -36,7 +40,7 @@ Save it as something like `monokai.json` in the `themes/` folder, restart the ap
 
 ## Colour reference
 
-Every colour in the UI is driven by these 12 variables. Here's what each one controls:
+Every colour in the UI is driven by these 16 variables. Here's what each one controls:
 
 ### Core colours
 
@@ -69,6 +73,17 @@ These colour the background of queue rows based on their encoding status. They s
 | `warning` | Encoding in progress row tint |
 | `error` | Failed row tint |
 
+### Status icon colours
+
+These colour the small status icons in the queue's Status column and in log lines. They should be bright enough to read at icon size. If omitted, sensible defaults are used.
+
+| Variable | Used for |
+|----------|----------|
+| `status-done` | Checkmark icon for completed files, "result" log lines |
+| `status-failed` | X icon for failed files |
+| `status-cancelled` | Circle-slash icon for cancelled files |
+| `status-detect` | Encoder detection log lines |
+
 ## Tips for good themes
 
 **Start from an existing theme.** Copy `default-dark.json` or `default-light.json`, rename it, and tweak the values. This way you know every variable is present and the structure is valid.
@@ -100,7 +115,11 @@ These colour the background of queue rows based on their encoding status. They s
     "info": "#0D3D56",
     "success": "#0D3D2A",
     "warning": "#3D3A0D",
-    "error": "#4A1A1A"
+    "error": "#4A1A1A",
+    "status-done": "#4ade80",
+    "status-failed": "#f87171",
+    "status-cancelled": "#fb923c",
+    "status-detect": "#a78bfa"
   }
 }
 ```
@@ -122,7 +141,11 @@ These colour the background of queue rows based on their encoding status. They s
     "info": "#2E3D50",
     "success": "#2E4038",
     "warning": "#4A4530",
-    "error": "#4A2E2E"
+    "error": "#4A2E2E",
+    "status-done": "#4ade80",
+    "status-failed": "#f87171",
+    "status-cancelled": "#fb923c",
+    "status-detect": "#a78bfa"
   }
 }
 ```
@@ -144,7 +167,11 @@ These colour the background of queue rows based on their encoding status. They s
     "info": "#1A2744",
     "success": "#1A3A2A",
     "warning": "#3D3A1A",
-    "error": "#4A1A2A"
+    "error": "#4A1A2A",
+    "status-done": "#4ade80",
+    "status-failed": "#f87171",
+    "status-cancelled": "#fb923c",
+    "status-detect": "#a78bfa"
   }
 }
 ```
