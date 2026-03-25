@@ -211,7 +211,7 @@ html, body {
 }
 
 /* Column widths */
-#queue-table th:nth-child(1), #queue-table td:nth-child(1) { width: 24px; min-width: 24px; max-width: 24px; text-align: center; padding: 0; }
+#queue-table th:nth-child(1), #queue-table td:nth-child(1) { width: 2%; text-align: center; padding: 0 0 0 4px; }
 #queue-table th:nth-child(2), #queue-table td:nth-child(2) { width: 34%; }
 #queue-table th:nth-child(3), #queue-table td:nth-child(3) { width: 12%; }
 #queue-table th:nth-child(4), #queue-table td:nth-child(4) { width: 14%; }
@@ -224,7 +224,8 @@ html, body {
   white-space: nowrap;
   overflow: hidden;
   text-overflow: ellipsis;
-  border-bottom: 1px solid var(--glass-border);
+  border-bottom: 1px solid var(--surface-dim);
+}
 }
 .col-check { overflow: visible !important; }
 .col-check input[type="checkbox"] { cursor: pointer; margin: 0; }
