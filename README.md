@@ -17,6 +17,8 @@ Available as a desktop app and a headless CLI for servers (see [CLI-README.md](C
 
 ![](/screenshots/gui-3.png)
 
+![](/screenshots/gui-4.png)
+
 ![](/screenshots/cli-1.png)
 
 ![](/screenshots/cli-2.png)

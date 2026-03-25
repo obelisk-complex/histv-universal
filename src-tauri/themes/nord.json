@@ -1,17 +1,11 @@
 {
   "name": "Nord",
   "colors": {
+    "background": "#2E3440",
     "primary": "#88C0D0",
-    "secondary": "#616E88",
-    "accent": "#81A1C1",
-    "neutral": "#3B4252",
-    "base-100": "#2E3440",
-    "base-200": "#3B4252",
-    "base-300": "#434C5E",
-    "base-content": "#ECEFF4",
-    "info": "#2E3D50",
-    "success": "#2E4038",
-    "warning": "#4A4530",
-    "error": "#4A2E2E"
+    "success": "#4ade80",
+    "text": "#ECEFF4",
+    "error": "#f87171",
+    "surface": "#434C5E"
   }
 }

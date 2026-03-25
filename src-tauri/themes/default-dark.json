@@ -2,16 +2,10 @@
   "name": "Default Dark",
   "colors": {
     "primary": "#0078D7",
-    "secondary": "#6C757D",
-    "accent": "#0078D7",
-    "neutral": "#2A2A2A",
-    "base-100": "#1E1E1E",
-    "base-200": "#282828",
-    "base-300": "#373737",
-    "base-content": "#DCDCDC",
-    "info": "#1E3C5A",
-    "success": "#19411F",
-    "warning": "#463C14",
-    "error": "#501E1E"
+    "background": "#1E1E1E",
+    "success": "#4ade80",
+    "text": "#DCDCDC",
+    "error": "#f87171",
+    "surface": "#373737"
   }
 }

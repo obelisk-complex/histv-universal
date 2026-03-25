@@ -1,17 +1,12 @@
 {
   "name": "Vempire",
   "colors": {
-    "primary": "#BD93F9",
-    "secondary": "#6272A4",
+    "surface": "#44475A",
+    "error": "#f87171",
     "accent": "#FF79C6",
-    "neutral": "#44475A",
-    "base-100": "#282A36",
-    "base-200": "#2D2F3D",
-    "base-300": "#44475A",
-    "base-content": "#F8F8F2",
-    "info": "#1A2744",
-    "success": "#1A3A2A",
-    "warning": "#3D3A1A",
-    "error": "#4A1A2A"
+    "primary": "#BD93F9",
+    "background": "#282A36",
+    "text": "#F8F8F2",
+    "success": "#4ade80"
   }
 }
