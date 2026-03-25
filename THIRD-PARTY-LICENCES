@@ -1,0 +1,43 @@
+THIRD-PARTY LICENCES
+====================
+
+This file applies to the "-full" builds of Honey, I Shrunk the Vids,
+which bundle FFmpeg and FFprobe binaries alongside the application.
+The standard builds do not include FFmpeg.
+
+
+FFmpeg
+------
+
+FFmpeg (https://ffmpeg.org) is licensed under the GNU General Public
+Licence version 2 or later (GPLv2+). The bundled binaries are
+unmodified static builds compiled with --enable-gpl.
+
+Sources:
+  Windows / Linux: https://github.com/BtbN/FFmpeg-Builds
+  macOS:           https://evermeet.cx/ffmpeg/
+
+Source code availability:
+  The complete source code corresponding to the bundled FFmpeg binaries
+  is available from the repositories listed above. In accordance with
+  the GPL, we will also provide the corresponding source code on
+  request for a period of three years from the date of each release.
+  Requests may be sent via the project's GitHub Issues page at
+  https://github.com/obelisk-complex/histv-universal/issues.
+
+This software is based in part on the work of the Independent JPEG
+Group (IJG).
+
+FFmpeg is a trademark of Fabrice Bellard.
+
+Full licence text:
+  GPLv2 - https://www.gnu.org/licenses/old-licenses/gpl-2.0.html
+  GPLv3 - https://www.gnu.org/licenses/gpl-3.0.html
+
+
+Honey, I Shrunk the Vids
+-------------------------
+
+The application itself (everything except the bundled FFmpeg binaries)
+is released into the public domain under the Unlicence. See the
+LICENSE file for details.

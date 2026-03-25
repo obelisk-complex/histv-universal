@@ -63,6 +63,10 @@ Available as a desktop app and a headless CLI for servers (see [CLI-README.md](C
 
 Grab the latest build from the GitHub **[Releases page](https://github.com/obelisk-complex/histv-universal/releases)**.
 
+Each platform has a standard build (you provide ffmpeg) and a **-full** build (ffmpeg included). The full builds are larger but work out of the box with no extra setup.
+
+**Standard builds** - ffmpeg not included:
+
 | Platform | GUI | CLI |
 |----------|-----|-----|
 | **Windows** | `histv-windows.exe` | `histv-cli-windows.exe` |
@@ -70,9 +74,18 @@ Grab the latest build from the GitHub **[Releases page](https://github.com/obeli
 | **macOS (Apple Silicon)** | `.dmg` (arm64) | `histv-cli-macos-arm64` |
 | **macOS (Intel)** | `.dmg` (x64) | `histv-cli-macos-x64` |
 
-All binaries are portable - no installation needed. On Linux, mark the AppImage executable (`chmod +x`). On macOS, open the DMG and drag to Applications.
+**Full builds** - ffmpeg included, no extra dependencies:
 
-**ffmpeg is required.** The GUI offers to download it on first launch. The CLI expects it on your PATH (`apt install ffmpeg`, `brew install ffmpeg`, `choco install ffmpeg`, etc.).
+| Platform | GUI | CLI |
+|----------|-----|-----|
+| **Windows** | `histv-windows-full.zip` | `histv-cli-windows-full.zip` |
+| **Linux** | `histv-linux-full.AppImage` | `histv-cli-linux-full.tar.gz` |
+| **macOS (Apple Silicon)** | `histv-macos-arm64-full.dmg` | `histv-cli-macos-arm64-full.tar.gz` |
+| **macOS (Intel)** | `histv-macos-x64-full.dmg` | `histv-cli-macos-x64-full.tar.gz` |
+
+All binaries are portable - no installation needed. On Linux, mark the AppImage executable (`chmod +x`). On macOS, open the DMG and drag to Applications. On Windows, extract the zip to a folder.
+
+If you use a standard build, ffmpeg is required. The GUI offers to download it on first launch. The CLI expects it on your PATH (`apt install ffmpeg`, `brew install ffmpeg`, `choco install ffmpeg`, etc.).
 
 | OS | Architecture | GPU encoders |
 |----|-------------|-------------|
@@ -178,3 +191,7 @@ People with a pile of video files at different sizes and formats who want to shr
 ### Licence
 
 [Do whatever you want.](LICENSE)
+
+### Third-party software
+
+The **-full** builds bundle [FFmpeg](https://ffmpeg.org), which is licensed under the [GNU General Public Licence v2+](https://www.gnu.org/licenses/old-licenses/gpl-2.0.html). The bundled binaries are unmodified static GPL builds from [BtbN/FFmpeg-Builds](https://github.com/BtbN/FFmpeg-Builds) (Windows/Linux) and [evermeet.cx](https://evermeet.cx/ffmpeg/) (macOS). The corresponding source code is available from those repositories. We will provide the source on request for three years from the date of each release - file an issue on this repo. This software is based in part on the work of the Independent JPEG Group. See [THIRD-PARTY-LICENCES](THIRD-PARTY-LICENCES) for full details.

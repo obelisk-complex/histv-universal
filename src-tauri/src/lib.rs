@@ -475,8 +475,10 @@ mod gui_commands {
                 .as_str().unwrap_or("QP").to_string(),
             video_encoder: settings["videoEncoder"]
                 .as_str().unwrap_or("libx265").to_string(),
-            codec_family: settings["codecFamily"]
-                .as_str().unwrap_or("HEVC").to_string(),
+            codec_family: match settings["codecFamily"].as_str().unwrap_or("HEVC") {
+    "H.264" | "h264" => "h264",
+    _ => "hevc",
+}.to_string(),
             audio_encoder: settings["audioEncoder"]
                 .as_str().unwrap_or("ac3").to_string(),
             audio_cap: settings["audioBitrateCap"]

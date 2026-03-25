@@ -11,7 +11,8 @@
 //! 4. Well-known platform directories (Homebrew, MacPorts, Xcode CLT, snap, Chocolatey, etc.).
 //!    This is critical on macOS where GUI apps do not inherit the shell PATH,
 //!    and on older Windows/Linux installs where PATH may be incomplete.
-//! 5. User's shell PATH (macOS only — reads the login shell's PATH since GUI apps don't inherit it).
+//! 5. User's shell PATH (macOS/Linux — reads the login shell's PATH to catch
+//!    directories not in the desktop session's environment).
 //! 6. Bare name — falls back to the system PATH.
 //!
 //! Backwards-compatibility targets (~2016+):
@@ -540,11 +541,16 @@ fn well_known_dirs_windows() -> Vec<PathBuf> {
     dirs
 }
 
-// ── macOS shell PATH resolution ─────────────────────────────────
+// ── Shell PATH resolution (macOS + Linux) ──────────────────────
 
-#[cfg(target_os = "macos")]
+#[cfg(any(target_os = "macos", target_os = "linux"))]
 fn shell_path_dirs() -> Vec<PathBuf> {
-    let shell = std::env::var("SHELL").unwrap_or_else(|_| "/bin/zsh".to_string());
+    #[cfg(target_os = "macos")]
+    let default_shell = "/bin/zsh";
+    #[cfg(target_os = "linux")]
+    let default_shell = "/bin/bash";
+
+    let shell = std::env::var("SHELL").unwrap_or_else(|_| default_shell.to_string());
 
     let output = std::process::Command::new(&shell)
         .args(["-l", "-c", "echo $PATH"])
@@ -618,8 +624,24 @@ fn resolve_binary(resource_dir: Option<&Path>, name: &str) -> PathBuf {
         }
     }
 
-    // 5. (macOS only) Directories from the user's login shell PATH.
-    #[cfg(target_os = "macos")]
+    // 4b. (Linux) ~/.local/bin — common user-local install path that
+    //     can't go in the static const because it needs $HOME expansion.
+    #[cfg(target_os = "linux")]
+    {
+        if let Ok(home) = std::env::var("HOME") {
+            let candidate = PathBuf::from(home).join(".local").join("bin").join(name);
+            if candidate.exists() {
+                return candidate;
+            }
+        }
+    }
+
+    // 5. (macOS/Linux) Directories from the user's login shell PATH.
+    //    On macOS, GUI apps launched from Finder/Dock don't inherit the
+    //    shell PATH at all.  On Linux, desktop sessions usually do inherit
+    //    PATH, but some environments (Wayland compositors, snaps, AppImage
+    //    launchers) may present a reduced PATH — this catches those cases.
+    #[cfg(any(target_os = "macos", target_os = "linux"))]
     {
         for dir in shell_path_dirs() {
             let candidate = dir.join(name);

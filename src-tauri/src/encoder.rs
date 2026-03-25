@@ -139,11 +139,16 @@ pub fn crf_flags(encoder: &str, crf_str: &str, qi: &str, qp: &str) -> Vec<String
 
 /// Software fallback encoder for a given codec family.
 pub fn software_fallback(codec_family: &str) -> &'static str {
-    if codec_family == "H.264" {
+    if codec_family == "h264" {
         "libx264"
     } else {
         "libx265"
     }
+}
+
+/// Human-readable codec family name for log messages.
+pub fn display_codec_family(family: &str) -> &'static str {
+    if family == "h264" { "H.264" } else { "HEVC" }
 }
 
 // ── Encoding strategy decision ─────────────────────────────────
@@ -223,7 +228,7 @@ pub fn describe_decision(
         EncodeDecision::Copy => {
             format!(
                 "Already {} at {:.2}Mbps (at/below target) - copy",
-                codec_family, item_bitrate_mbps
+                display_codec_family(codec_family), item_bitrate_mbps
             )
         }
         EncodeDecision::Vbr { peak_bps, .. } => {
@@ -459,11 +464,7 @@ pub async fn run_encode_loop(
     let qp_str = settings.qp_p.to_string();
     let crf_str = settings.crf_val.to_string();
 
-    let target_codec = if settings.codec_family == "H.264" || settings.codec_family == "h264" {
-        "h264"
-    } else {
-        "hevc"
-    };
+    let target_codec = settings.codec_family.as_str();
 
     // ── Pre-loop invariant computation (#2, #3, #4) ──
     let preserve_hdr = settings.pix_fmt == "p010le";
@@ -707,7 +708,7 @@ pub async fn run_encode_loop(
                 video_args = vec!["-c:v".into(), "copy".into()];
                 mode_desc = format!(
                     "  Already {} at {:.2}Mbps (at/below target) - copying video",
-                    settings.codec_family, item_video_bitrate_mbps
+                    display_codec_family(&settings.codec_family), item_video_bitrate_mbps
                 );
             }
             EncodeDecision::Vbr { target_bps, peak_bps } => {

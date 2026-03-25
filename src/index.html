@@ -3,7 +3,7 @@
 <head>
   <meta charset="UTF-8" />
   <meta name="viewport" content="width=device-width, initial-scale=1.0" />
-  <title>Honey, I Shrunk The Vids v2.3.1</title>
+  <title>Honey, I Shrunk The Vids v2.3.0</title>
   <link rel="stylesheet" href="css/app.css" />
 </head>
 <body>
@@ -15,10 +15,6 @@
         <div class="panel-header">File Queue <span id="queue-summary" class="queue-summary"></span></div>
         <div id="queue-container" style="position:relative;">
           <div id="drop-overlay">Drop files or folders here</div>
-          <div id="queue-empty-state" class="visible">
-            <span>No files in queue</span>
-            <span class="empty-hint">Drag files here, paste paths, or use Add Files</span>
-          </div>
           <table id="queue-table">
             <thead>
               <tr>
@@ -33,40 +29,29 @@
             <tbody id="queue-body"></tbody>
           </table>
         </div>
-        <div id="queue-buttons">
-          <button class="btn" id="btn-add-files">Add Files</button>
-          <button class="btn" id="btn-add-folder">Add Folder</button>
-          <button class="btn" id="btn-clear-all">Clear All</button>
-        </div>
-        <div id="batch-buttons">
-          <button class="btn" id="btn-dry-run" disabled>Probe</button>
-          <button class="btn" id="btn-deep-repair" disabled title="Scans audio/subtitle packets and counts video frames to compute exact metadata. Speed depends on disk read speed. Use for files with corrupted or stale MKV statistics tags.">Deep Repair</button>
+        <div id="toolbar">
+          <button class="btn" id="btn-add-files">Add</button>
+          <button class="btn" id="btn-clear-all">Clear</button>
+          <div class="toolbar-gap"></div>
           <span id="btn-start-wrapper">
             <button class="btn btn-primary" id="btn-start" disabled>Start</button>
             <span class="start-tooltip" id="start-tooltip"></span>
           </span>
           <button class="btn" id="btn-pause" disabled>Pause</button>
-          <span class="btn-group-label">Cancel:</span>
-          <button class="btn" id="btn-cancel-current" disabled>Current</button>
-          <span class="btn-group-sep">/</span>
-          <button class="btn" id="btn-cancel-all" disabled>All</button>
+          <button class="btn" id="btn-cancel-current" disabled>Skip</button>
+          <button class="btn" id="btn-cancel-all" disabled>Cancel</button>
         </div>
       </div>
 
       <!-- ─── Splitter ─── -->
       <div id="splitter">
-        <button id="splitter-toggle" title="Hide settings panel" aria-label="Hide settings panel">&#x25B6;</button>
+        <button id="splitter-toggle" title="Toggle settings panel">&#x25B6;</button>
       </div>
 
-      <!-- ─── Right panel: settings tabs (§6, §7) ─── -->
+      <!-- ─── Right panel: settings (single scrollable column) ─── -->
       <div id="right-panel">
-        <div class="tab-bar">
-          <button class="tab-btn active" data-tab="encoding">Encoding Settings</button>
-          <button class="tab-btn" data-tab="output">Output Settings</button>
-        </div>
+        <div id="settings-panel">
 
-        <!-- ═══ Tab 1: Encoding Settings (§6) ═══ -->
-        <div class="tab-content active" id="tab-encoding">
           <div class="section-header">Video</div>
 
           <div class="form-row form-row-wrap">
@@ -74,7 +59,7 @@
               <span class="tooltip-icon">?</span>
               <span class="tooltip-text">HEVC gives you smaller files for the same quality; safe on devices from 2014 and later. H.264 is safest for pre-2014 devices.</span>
             </label>
-            <select id="sel-codec">
+            <select id="sel-codec" style="width:75px; flex:0 0 auto;">
               <option value="HEVC">HEVC</option>
               <option value="H.264">H.264</option>
             </select>
@@ -83,7 +68,7 @@
           <div class="status-text" id="encoder-status">Detecting encoders…</div>
 
           <div class="form-row">
-            <label for="num-bitrate" class="has-tooltip">Target bitrate (Mbps)
+            <label for="num-bitrate" class="has-tooltip">Bitrate (Mbps)
               <span class="tooltip-icon">?</span>
               <span class="tooltip-text">Videos bigger than this get shrunk. Videos already this size or smaller are left alone. Lower values = smaller files, but more visible quality loss. This number has the biggest impact on both file size and video quality.</span>
             </label>
@@ -91,7 +76,7 @@
           </div>
 
           <div class="form-row">
-            <label class="has-tooltip">VBR peak ceiling
+            <label class="has-tooltip">VBR peak
               <span class="tooltip-icon">?</span>
               <span class="tooltip-text">Lets the encoder use extra data for fast-moving or detailed scenes so they don't look blocky. Higher = better action scenes, but very old devices pre-2013 might stutter. 1.5x is safest; 3x looks best.</span>
             </label>
@@ -104,7 +89,7 @@
           </div>
 
           <div class="form-row" id="row-rc-mode">
-            <label class="has-tooltip">Quality mode
+            <label class="has-tooltip">Quality
               <span class="tooltip-icon">?</span>
               <span class="tooltip-text" id="rc-tooltip">QP gives you predictable file sizes but some scenes may look blocky. CRF gives you much less blocking but file sizes vary more.</span>
             </label>
@@ -131,73 +116,27 @@
             <input type="number" id="num-crf" min="0" max="51" value="20" style="width:55px;" />
           </div>
 
-          <div class="checkbox-row has-tooltip">
-            <input type="checkbox" id="chk-hdr" />
-            <label for="chk-hdr">Preserve HDR</label>
-            <span class="tooltip-icon">?</span>
-            <span class="tooltip-text">When unticked, HDR files are converted to 8-bit SDR, with industry-standard colour mapping. Leave ticked to leave HDR files as HDR.</span>
-          </div>
-
-          <div class="checkbox-row has-tooltip">
-            <input type="checkbox" id="chk-precision" />
-            <label for="chk-precision">Precision mode</label>
-            <span class="tooltip-icon">?</span>
-            <span class="tooltip-text">Takes longer but gives you the smallest file that still looks great. Tests a few clips first to make sure it won't backfire and make the file bigger.</span>
-          </div>
-
-          <div class="section-header">Performance</div>
-
-          <div class="form-row">
-            <label for="num-threads" class="has-tooltip">CPU threads
-              <span class="tooltip-icon">?</span>
-              <span class="tooltip-text">0 means full speed. Set lower if you want to use your PC for other things while encoding - it'll just take longer to finish.</span>
-            </label>
-            <input type="number" id="num-threads" min="0" max="64" value="0" style="width:55px;" />
-          </div>
-
-          <div class="checkbox-row has-tooltip">
-            <input type="checkbox" id="chk-low-priority" />
-            <label for="chk-low-priority">Low priority (reduce impact on other tasks)</label>
-            <span class="tooltip-icon">?</span>
-            <span class="tooltip-text">Your other apps won't feel sluggish while encoding runs in the background. Encoding still uses full power when nothing else needs it.</span>
-          </div>
-
           <div class="section-header">Audio</div>
 
           <div class="form-row">
-            <label for="sel-audio-codec" class="has-tooltip">Audio codec
+            <label for="sel-audio-codec" class="has-tooltip">Audio
               <span class="tooltip-icon">?</span>
-              <span class="tooltip-text">AC3 plays everywhere. EAC3 sounds the same but takes less space. AAC is the smallest. Copy leaves the audio exactly as it was.</span>
+              <span class="tooltip-text">AC3 plays everywhere. EAC3 sounds the same but takes less space. AAC is the smallest. Copy leaves the audio exactly as it was. Cap (kbps): audio already below this is left alone.</span>
             </label>
-            <select id="sel-audio-codec">
+            <select id="sel-audio-codec" style="width:70px; flex:0 0 auto;">
               <option value="AC3">AC3</option>
               <option value="EAC3">EAC3</option>
               <option value="AAC">AAC</option>
               <option value="Copy">Copy</option>
             </select>
+            <input type="number" id="num-audio-cap" min="128" max="1536" step="32" value="640" style="width:62px;" />
+            <span class="form-hint">kbps</span>
           </div>
 
-          <div class="form-row">
-            <label for="num-audio-cap" class="has-tooltip">Audio cap (kbps)
-              <span class="tooltip-icon">?</span>
-              <span class="tooltip-text">Audio already smaller than this is left alone. Raise it if you notice audio sounding thin or muffled after encoding.</span>
-            </label>
-            <input type="number" id="num-audio-cap" min="128" max="1536" step="32" value="640" />
-          </div>
-
-          <div class="section-header" style="margin-top:18px;">Theme</div>
-          <div class="form-row">
-            <label for="sel-theme">Theme</label>
-            <select id="sel-theme"></select>
-          </div>
-        </div><!-- /tab-encoding -->
-
-        <!-- ═══ Tab 2: Output Settings (§7) ═══ -->
-        <div class="tab-content" id="tab-output">
           <div class="section-header">Output</div>
 
           <div class="form-row">
-            <label for="txt-output-folder" class="has-tooltip">Output folder
+            <label for="txt-output-folder" class="has-tooltip">Folder
               <span class="tooltip-icon">?</span>
               <span class="tooltip-text">Where encoded files are saved. You can type a full path or just a folder name like "output" (created in the app's working directory).</span>
             </label>
@@ -206,7 +145,7 @@
           </div>
 
           <div class="form-row has-tooltip">
-            <label class="has-tooltip">Output mode
+            <label class="has-tooltip">Mode
               <span class="tooltip-icon">?</span>
               <span class="tooltip-text">"Use output folder" saves to the folder above. "Place next to source" creates an "output" folder beside each input file. "Replace source" swaps the original with the encoded version.</span>
             </label>
@@ -222,50 +161,64 @@
               <span class="tooltip-icon">?</span>
               <span class="tooltip-text">MKV can hold anything and is great for archiving. MP4 is better if you need to play files on TVs, phones, or game consoles.</span>
             </label>
-            <select id="sel-container">
+            <select id="sel-container" style="width:75px; flex:0 0 auto;">
               <option value="mkv">MKV</option>
               <option value="mp4">MP4</option>
             </select>
           </div>
 
+          <div class="section-header">Behaviour</div>
+
+          <div class="checkbox-row has-tooltip">
+            <input type="checkbox" id="chk-hdr" />
+            <label for="chk-hdr">Preserve HDR</label>
+            <span class="tooltip-icon">?</span>
+            <span class="tooltip-text">When unticked, HDR files are converted to 8-bit SDR, with industry-standard colour mapping. Leave ticked to leave HDR files as HDR.</span>
+          </div>
+
+          <div class="checkbox-row has-tooltip">
+            <input type="checkbox" id="chk-precision" />
+            <label for="chk-precision">Precision mode</label>
+            <span class="tooltip-icon">?</span>
+            <span class="tooltip-text">Takes longer but gives you the smallest file that still looks great. Tests a few clips first to make sure it won't backfire and make the file bigger.</span>
+          </div>
+
           <div class="checkbox-row has-tooltip">
             <input type="checkbox" id="chk-overwrite" />
-            <label for="chk-overwrite">Overwrite existing output files</label>
+            <label for="chk-overwrite">Overwrite existing files</label>
             <span class="tooltip-icon">?</span>
             <span class="tooltip-text">Automatically overwrite output files that already exist instead of asking each time.</span>
           </div>
 
           <div class="checkbox-row has-tooltip">
             <input type="checkbox" id="chk-delete-source" />
-            <label for="chk-delete-source">Delete source files after successful encode</label>
+            <label for="chk-delete-source">Delete source after encode</label>
             <span class="tooltip-icon">?</span>
             <span class="tooltip-text">Deletes the original file after a successful encode. You'll be asked to confirm before the batch starts.</span>
           </div>
 
-          <div class="section-header">Logging &amp; Notifications</div>
-
-          <div class="checkbox-row has-tooltip">
-            <input type="checkbox" id="chk-save-log" />
-            <label for="chk-save-log">Save log to output folder</label>
-            <span class="tooltip-icon">?</span>
-            <span class="tooltip-text">Saves a text log of the batch to the output folder when it finishes.</span>
-          </div>
-
-          <div class="checkbox-row has-tooltip">
-            <input type="checkbox" id="chk-toast" />
-            <label for="chk-toast">Show system notification on batch completion</label>
-            <span class="tooltip-icon">?</span>
-            <span class="tooltip-text">Shows a system notification when the batch finishes, so you know it's done even if the app is in the background.</span>
-          </div>
-
           <div class="checkbox-row has-tooltip">
             <input type="checkbox" id="chk-auto-clear" />
-            <label for="chk-auto-clear">Auto-clear completed items after batch</label>
+            <label for="chk-auto-clear">Auto-clear completed items</label>
             <span class="tooltip-icon">?</span>
             <span class="tooltip-text">Clears finished items from the queue when the batch ends. Failed, skipped, and cancelled items are kept.</span>
           </div>
 
-          <div class="section-header">Post-Batch Action</div>
+          <div class="section-header">Performance</div>
+
+          <div class="form-row">
+            <label for="num-threads" class="has-tooltip">Threads
+              <span class="tooltip-icon">?</span>
+              <span class="tooltip-text">0 means full speed. Set lower if you want to use your PC for other things while encoding. Low priority lets other apps stay responsive.</span>
+            </label>
+            <input type="number" id="num-threads" min="0" max="64" value="0" style="width:55px;" />
+            <label class="inline-check" for="chk-low-priority">
+              <input type="checkbox" id="chk-low-priority" />
+              Low priority
+            </label>
+          </div>
+
+          <div class="section-header">After Batch</div>
 
           <div class="form-row">
             <label for="sel-post-action" class="has-tooltip">Action
@@ -286,104 +239,117 @@
             <input type="text" id="txt-custom-command" placeholder="e.g. my-script.sh" />
           </div>
 
-          <div class="form-row">
+          <div class="form-row" id="row-countdown" style="display:none;">
             <label for="num-countdown" class="has-tooltip">Countdown (seconds)
               <span class="tooltip-icon">?</span>
               <span class="tooltip-text">Seconds to wait before running the post-batch action, giving you a chance to cancel. 0 means run immediately.</span>
             </label>
             <input type="number" id="num-countdown" min="0" max="3600" value="0" />
           </div>
-        </div><!-- /tab-output -->
 
+          <div class="checkbox-row has-tooltip">
+            <input type="checkbox" id="chk-save-log" />
+            <label for="chk-save-log">Save log to file</label>
+            <span class="tooltip-icon">?</span>
+            <span class="tooltip-text">Saves a text log of the batch to the output folder when it finishes.</span>
+          </div>
+
+          <div class="checkbox-row has-tooltip">
+            <input type="checkbox" id="chk-toast" />
+            <label for="chk-toast">Notify when done</label>
+            <span class="tooltip-icon">?</span>
+            <span class="tooltip-text">Shows a system notification when the batch finishes, so you know it's done even if the app is in the background.</span>
+          </div>
+
+          <div class="settings-footer">
+            <label for="sel-theme">Theme</label>
+            <select id="sel-theme"></select>
+          </div>
+
+        </div><!-- /settings-panel -->
       </div><!-- /right-panel -->
     </div><!-- /main-area -->
 
-    <!-- ═══ Bottom panel (§12) ═══ -->
+    <!-- ═══ Bottom area: status strip + collapsible log ═══ -->
     <div id="bottom-panel">
-      <div id="bottom-panel-handle">
-        <button id="bottom-panel-toggle" title="Toggle job details & log">
-          <span id="bottom-panel-arrow">&#x25B2;</span> Job Details &amp; Log
+      <!-- Compact status strip - always visible -->
+      <div id="status-strip">
+        <div id="status-strip-info">
+          <span class="status-strip-label" id="job-status">No job running</span>
+          <span class="status-strip-file" id="job-file"></span>
+          <span class="status-strip-progress" id="job-progress-text"></span>
+        </div>
+        <div id="status-strip-bars">
+          <div class="bar-row">
+            <span class="bar-label">File</span>
+            <div class="progress-bar-container">
+              <div id="progress-bar"></div>
+            </div>
+          </div>
+          <div class="bar-row">
+            <span class="bar-label">All</span>
+            <div class="progress-bar-container">
+              <div id="batch-progress-bar"></div>
+            </div>
+          </div>
+        </div>
+        <button id="bottom-panel-toggle" title="Toggle log">
+          <span id="bottom-panel-arrow">&#x25B2;</span> Log
         </button>
       </div>
+      <!-- Hidden element for JS compatibility -->
+      <span id="job-cmd" style="display:none;"></span>
+      <!-- Expandable log -->
       <div id="bottom-panel-body">
-        <!-- Left: log console -->
         <div id="log-panel">
           <div id="log-panel-header">
-            <span>Log Console</span>
             <div class="log-filters">
-              <button class="log-filter-btn active" data-filter="all" title="Toggle all log categories">All</button>
-              <button class="log-filter-btn active" data-filter="cmd" title="Show/hide ffmpeg commands">CMD</button>
-              <button class="log-filter-btn active" data-filter="detect" title="Show/hide encoder detection messages">Detect</button>
+              <button class="log-filter-btn active" data-filter="all" title="Show or hide all log categories at once">All</button>
+              <button class="log-filter-btn active" data-filter="error" title="Error messages from ffmpeg or the app">Errors</button>
+              <button class="log-filter-btn active" data-filter="warn" title="Non-fatal warnings (skipped streams, fallback decisions, etc.)">Warn</button>
+              <button class="log-filter-btn active" data-filter="result" title="Encoding results (file sizes, savings, copy/remux outcomes)">Results</button>
+              <button class="log-filter-btn active" data-filter="cmd" title="Full ffmpeg command lines (useful for debugging)">CMD</button>
+              <button class="log-filter-btn active" data-filter="detect" title="Encoder detection messages from startup">Detect</button>
             </div>
           </div>
           <div id="log-content"></div>
-        </div>
-        <!-- Vertical splitter between log and job details -->
-        <div id="bottom-splitter"></div>
-        <!-- Right: job details -->
-        <div id="job-details">
-          <div class="job-detail-row">
-            <span class="job-label">Status</span>
-            <span class="job-value" id="job-status">No job running</span>
-          </div>
-          <div class="job-detail-row">
-            <span class="job-label">File</span>
-            <span class="job-value" id="job-file">-</span>
-          </div>
-          <div class="job-detail-row">
-            <span class="job-label">Progress</span>
-            <span class="job-value" id="job-progress-text">-</span>
-          </div>
-          <div class="job-detail-label">File</div>
-          <div class="progress-bar-container">
-            <div id="progress-bar"></div>
-          </div>
-          <div class="job-detail-label">Overall</div>
-          <div class="progress-bar-container">
-            <div id="batch-progress-bar"></div>
-          </div>
-          <div class="job-detail-row">
-            <span class="job-label">Command</span>
-            <span class="job-value job-cmd" id="job-cmd">-</span>
-          </div>
         </div>
       </div>
     </div>
 
     <!-- ═══ Context menu (§5.5) ═══ -->
-    <div id="context-menu" role="menu">
-      <button class="ctx-item" id="ctx-requeue-selected" role="menuitem">Re-queue selected</button>
-      <button class="ctx-item" id="ctx-requeue-all" role="menuitem">Re-queue all</button>
-      <div class="ctx-separator" role="separator"></div>
-      <button class="ctx-item" id="ctx-remove-selected" role="menuitem">Remove selected</button>
-      <button class="ctx-item" id="ctx-clear-completed" role="menuitem">Clear completed</button>
-      <button class="ctx-item" id="ctx-clear-non-pending" role="menuitem">Clear non-pending</button>
-      <button class="ctx-item" id="ctx-clear-all" role="menuitem">Clear all</button>
-      <div class="ctx-separator" role="separator"></div>
-      <button class="ctx-item" id="ctx-open-source" role="menuitem">Open source file</button>
-      <button class="ctx-item" id="ctx-reveal-source" role="menuitem">Reveal in file manager</button>
-      <div class="ctx-separator" role="separator"></div>
-      <button class="ctx-item" id="ctx-repair-tags" role="menuitem">Repair MKV tags</button>
-      <button class="ctx-item" id="ctx-deep-repair" role="menuitem" title="Scans audio and subtitle streams to compute exact byte counts, then derives the video bitrate by subtraction. Also counts video frames. Speed depends on disk read speed. Use for files with severely corrupted metadata.">Deep repair MKV tags</button>
+    <div id="context-menu">
+      <div class="ctx-item" id="ctx-requeue-selected">Re-queue selected</div>
+      <div class="ctx-item" id="ctx-requeue-all">Re-queue all</div>
+      <div class="ctx-separator"></div>
+      <div class="ctx-item" id="ctx-remove-selected">Remove selected</div>
+      <div class="ctx-item" id="ctx-clear-completed">Clear completed</div>
+      <div class="ctx-item" id="ctx-clear-all">Clear all</div>
+      <div class="ctx-separator"></div>
+      <div class="ctx-item" id="ctx-open-source">Open source file</div>
+      <div class="ctx-item" id="ctx-reveal-source">Reveal in file manager</div>
+      <div class="ctx-separator"></div>
+      <div class="ctx-item" id="ctx-repair-tags">Repair MKV tags</div>
+      <div class="ctx-item" id="ctx-deep-repair" title="Scans audio and subtitle streams to compute exact byte counts, then derives the video bitrate by subtraction. Also counts video frames. Speed depends on disk read speed. Use for files with severely corrupted metadata.">Deep repair MKV tags</div>
     </div>
 
     <!-- ═══ Modal: Overwrite prompt (§7.3) ═══ -->
-    <div class="modal-overlay" id="modal-overwrite" role="dialog" aria-modal="true" aria-labelledby="modal-overwrite-title">
+    <div class="modal-overlay" id="modal-overwrite">
       <div class="modal-box">
-        <div class="modal-title" id="modal-overwrite-title">File Already Exists</div>
+        <div class="modal-title">File Already Exists</div>
         <div class="modal-body" id="overwrite-body">Output file already exists. Overwrite?</div>
         <div class="modal-buttons">
-          <button class="btn btn-primary" id="ow-yes">Yes</button>
+          <button class="btn" id="ow-yes">Yes</button>
           <button class="btn" id="ow-no">No</button>
-          <button class="btn" id="ow-always">Always</button>
+          <button class="btn btn-primary" id="ow-always">Always</button>
         </div>
       </div>
     </div>
 
     <!-- ═══ Modal: Fallback prompt (§10.6) ═══ -->
-    <div class="modal-overlay" id="modal-fallback" role="dialog" aria-modal="true" aria-labelledby="modal-fallback-title">
+    <div class="modal-overlay" id="modal-fallback">
       <div class="modal-box">
-        <div class="modal-title" id="modal-fallback-title">Hardware Encoder Failed</div>
+        <div class="modal-title">Hardware Encoder Failed</div>
         <div class="modal-body" id="fallback-body">Fall back to software encoding for this file and continue?</div>
         <div class="modal-buttons">
           <button class="btn btn-primary" id="fb-yes">Yes</button>
@@ -393,9 +359,9 @@
     </div>
 
     <!-- ═══ Modal: Delete-source confirmation (§7.4) ═══ -->
-    <div class="modal-overlay" id="modal-delete-confirm" role="dialog" aria-modal="true" aria-labelledby="modal-delete-title">
+    <div class="modal-overlay" id="modal-delete-confirm">
       <div class="modal-box">
-        <div class="modal-title" id="modal-delete-title">Delete Source Files</div>
+        <div class="modal-title">Delete Source Files</div>
         <div class="modal-body">"Delete source" is enabled. Source files will be permanently deleted after each successful encode. Continue?</div>
         <div class="modal-buttons">
           <button class="btn btn-primary" id="dc-yes">Continue</button>
@@ -405,9 +371,9 @@
     </div>
 
     <!-- ═══ Modal: Post-batch countdown (§7.6) ═══ -->
-    <div class="modal-overlay" id="modal-countdown" role="dialog" aria-modal="true" aria-labelledby="modal-countdown-title">
+    <div class="modal-overlay" id="modal-countdown">
       <div class="modal-box">
-        <div class="modal-title" id="modal-countdown-title">Post-Batch Action</div>
+        <div class="modal-title">Post-Batch Action</div>
         <div class="modal-body" id="countdown-body">Performing action in <strong id="countdown-value">0</strong> seconds…</div>
         <div class="modal-buttons">
           <button class="btn" id="cd-cancel">Cancel</button>
@@ -416,9 +382,9 @@
     </div>
 	
 	<!-- ═══ Modal: ffmpeg missing ═══ -->
-    <div class="modal-overlay" id="modal-ffmpeg-missing" role="dialog" aria-modal="true" aria-labelledby="modal-ffmpeg-title">
+    <div class="modal-overlay" id="modal-ffmpeg-missing">
       <div class="modal-box">
-        <div class="modal-title" id="modal-ffmpeg-title">ffmpeg Not Found</div>
+        <div class="modal-title">ffmpeg Not Found</div>
         <div class="modal-body" id="ffmpeg-missing-body">
           ffmpeg and ffprobe are required but were not found on your system.
           Would you like to download them automatically? (~80 MB)
@@ -517,9 +483,8 @@
     const queueSummary    = $('#queue-summary');
     const btnCancelCur    = $('#btn-cancel-current');
     const btnCancelAll    = $('#btn-cancel-all');
-    const btnDryRun       = $('#btn-dry-run');
-    const btnDeepRepair   = $('#btn-deep-repair');
     const btnPause        = $('#btn-pause');
+    const rowCountdown    = $('#row-countdown');
     const bottomPanelBody = $('#bottom-panel-body');
     const bottomPanelToggle = $('#bottom-panel-toggle');
     const bottomPanelArrow  = $('#bottom-panel-arrow');
@@ -531,12 +496,12 @@
     // ── Status icons (SVG) ─────────────────────────────────────────
     const STATUS_ICONS = {
       pending: '',
-      probing: '<svg aria-hidden="true" class="spinner" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5"><circle cx="12" cy="12" r="10" stroke-dasharray="31.4 31.4" stroke-linecap="round"/></svg>',
-      encoding: '<svg aria-hidden="true" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><circle cx="12" cy="12" r="9"/><path d="M12 6v6l4 2"/></svg>',
-      done: '<svg aria-hidden="true" viewBox="0 0 24 24" fill="none" stroke="var(--status-done)" stroke-width="2.5"><path d="M5 13l4 4L19 7"/></svg>',
-      failed: '<svg aria-hidden="true" viewBox="0 0 24 24" fill="none" stroke="var(--status-failed)" stroke-width="2.5"><path d="M6 6l12 12M18 6L6 18"/></svg>',
-      skipped: '<svg aria-hidden="true" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M5 5l14 7-14 7V5z"/><line x1="19" y1="5" x2="19" y2="19"/></svg>',
-      cancelled: '<svg aria-hidden="true" viewBox="0 0 24 24" fill="none" stroke="var(--status-cancelled)" stroke-width="2.5"><circle cx="12" cy="12" r="9"/><line x1="9" y1="9" x2="15" y2="15"/></svg>',
+      probing: '<svg class="spinner" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5"><circle cx="12" cy="12" r="10" stroke-dasharray="31.4 31.4" stroke-linecap="round"/></svg>',
+      encoding: '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><circle cx="12" cy="12" r="9"/><path d="M12 6v6l4 2"/></svg>',
+      done: '<svg viewBox="0 0 24 24" fill="none" stroke="#4ade80" stroke-width="2.5"><path d="M5 13l4 4L19 7"/></svg>',
+      failed: '<svg viewBox="0 0 24 24" fill="none" stroke="#f87171" stroke-width="2.5"><path d="M6 6l12 12M18 6L6 18"/></svg>',
+      skipped: '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M5 5l14 7-14 7V5z"/><line x1="19" y1="5" x2="19" y2="19"/></svg>',
+      cancelled: '<svg viewBox="0 0 24 24" fill="none" stroke="#fb923c" stroke-width="2.5"><circle cx="12" cy="12" r="9"/><line x1="9" y1="9" x2="15" y2="15"/></svg>',
     };
 
     // ═══════════════════════════════════════════════════════════════
@@ -545,7 +510,6 @@
     document.addEventListener('DOMContentLoaded', async () => {
       const savedConfig = await loadConfig();
       await loadThemes(savedConfig);
-      setupTabs();
       setupSplitter();
       setupQueueButtons();
       setupSettingsListeners();
@@ -571,6 +535,7 @@
           populateEncoderDropdown();
           const total = ve.length + ae.length;
           encoderStatus.textContent = `${total} encoders available (${ve.length} video, ${ae.length} audio)`;
+          fadeEncoderStatus();
           encoderDetectionDone = true;
           if (chkPrecision.checked) applyPrecisionMode();
           updateBatchButtons();
@@ -582,10 +547,11 @@
         const ffmpegMissing = await invoke('get_ffmpeg_missing_status');
         if (ffmpegMissing) {
           encoderStatus.textContent = 'ffmpeg not found';
-          showModal('modal-ffmpeg-missing');
+          const modal = document.querySelector('#modal-ffmpeg-missing');
+          modal.classList.add('visible');
 
           document.querySelector('#ffmpeg-dl-yes').onclick = async () => {
-            hideModal('modal-ffmpeg-missing');
+            modal.classList.remove('visible');
             encoderStatus.textContent = 'Downloading ffmpeg...';
             try {
               await invoke('download_ffmpeg');
@@ -593,12 +559,12 @@
               encoderStatus.textContent = 'Download failed: ' + e;
               const body = document.querySelector('#ffmpeg-missing-body');
               body.textContent = 'Download failed: ' + e + '. You can install ffmpeg manually and restart the app.';
-              showModal('modal-ffmpeg-missing');
+              modal.classList.add('visible');
             }
           };
 
           document.querySelector('#ffmpeg-dl-no').onclick = () => {
-            hideModal('modal-ffmpeg-missing');
+            modal.classList.remove('visible');
             encoderStatus.textContent = 'ffmpeg not found - install ffmpeg and restart';
           };
         }
@@ -715,20 +681,37 @@
       const theme = themes.find(t => t.name === name);
       if (!theme) return;
       const root = document.documentElement;
-      // Clear any previously-set theme properties so keys absent from the
-      // new theme fall back to the :root defaults rather than persisting
-      // from the old theme's inline styles.
-      for (let i = root.style.length - 1; i >= 0; i--) {
-        const prop = root.style[i];
-        if (prop.startsWith('--')) root.style.removeProperty(prop);
-      }
       for (const [key, value] of Object.entries(theme.colors)) {
         root.style.setProperty(`--${key}`, value);
       }
       // Set color-scheme so native form controls (checkboxes, selects,
       // scrollbars) match the theme automatically.
       const base100 = theme.colors['base-100'] || '#1E1E1E';
-      root.style.colorScheme = isLightColor(base100) ? 'light' : 'dark';
+      const light = isLightColor(base100);
+      root.style.colorScheme = light ? 'light' : 'dark';
+
+      // Adapt glass tokens to theme lightness
+      if (light) {
+        root.style.setProperty('--glass-bg', 'rgba(255, 255, 255, 0.55)');
+        root.style.setProperty('--glass-border', 'rgba(0, 0, 0, 0.08)');
+        root.style.setProperty('--glass-input-bg', 'rgba(0, 0, 0, 0.04)');
+        root.style.setProperty('--glass-th-bg', 'rgba(255, 255, 255, 0.8)');
+        root.style.setProperty('--glass-hover', 'rgba(0, 0, 0, 0.04)');
+        root.style.setProperty('--glass-toggle-bg', 'rgba(0, 0, 0, 0.04)');
+        root.style.setProperty('--glass-log-bg', 'rgba(20, 20, 20, 0.95)');
+        root.style.setProperty('--glass-strip-bg', 'rgba(255, 255, 255, 0.6)');
+        root.style.setProperty('--glass-overlay-bg', 'rgba(255, 255, 255, 0.92)');
+      } else {
+        root.style.setProperty('--glass-bg', 'rgba(40, 40, 40, 0.65)');
+        root.style.setProperty('--glass-border', 'rgba(255, 255, 255, 0.06)');
+        root.style.setProperty('--glass-input-bg', 'rgba(55, 55, 55, 0.5)');
+        root.style.setProperty('--glass-th-bg', 'rgba(55, 55, 55, 0.9)');
+        root.style.setProperty('--glass-hover', 'rgba(255, 255, 255, 0.08)');
+        root.style.setProperty('--glass-toggle-bg', 'rgba(55, 55, 55, 0.4)');
+        root.style.setProperty('--glass-log-bg', 'rgba(8, 8, 8, 0.9)');
+        root.style.setProperty('--glass-strip-bg', 'rgba(40, 40, 40, 0.7)');
+        root.style.setProperty('--glass-overlay-bg', 'rgba(40, 40, 40, 0.92)');
+      }
     }
 
     // Quick luminance check: returns true if the hex colour is closer
@@ -746,20 +729,6 @@
       applyTheme(selTheme.value);
       scheduleConfigSave();
     });
-
-    // ═══════════════════════════════════════════════════════════════
-    //  TABS
-    // ═══════════════════════════════════════════════════════════════
-    function setupTabs() {
-      for (const btn of $$('.tab-btn')) {
-        btn.addEventListener('click', () => {
-          $$('.tab-btn').forEach(b => b.classList.remove('active'));
-          $$('.tab-content').forEach(c => c.classList.remove('active'));
-          btn.classList.add('active');
-          $(`#tab-${btn.dataset.tab}`).classList.add('active');
-        });
-      }
-    }
 
     // ═══════════════════════════════════════════════════════════════
     //  SPLITTER (§4.1)
@@ -817,14 +786,12 @@
           rightPanel.classList.add('collapsed');
           splitterToggle.innerHTML = '&#x25C0;';
           splitterToggle.title = 'Show settings panel';
-          splitterToggle.setAttribute('aria-label', 'Show settings panel');
           leftPanel.style.flex = '1';
           leftPanel.style.width = '';
         } else {
           rightPanel.classList.remove('collapsed');
           splitterToggle.innerHTML = '&#x25B6;';
           splitterToggle.title = 'Hide settings panel';
-          splitterToggle.setAttribute('aria-label', 'Hide settings panel');
           // Let flex layout restore the split naturally
           leftPanel.style.flex = 'none';
           const mainRect = mainArea.getBoundingClientRect();
@@ -860,10 +827,6 @@
     // and only updates cells within a row if the underlying values differ.
     // Falls back to a full rebuild when the row count changes.
     function renderQueue() {
-      // Toggle empty-state
-      const emptyState = document.getElementById('queue-empty-state');
-      if (emptyState) emptyState.classList.toggle('visible', queueData.length === 0);
-
       const existingRows = queueBody.children;
 
       // Full rebuild needed if row count changed
@@ -1174,7 +1137,7 @@
       const rows = queueBody.children;
       const settings = getTargetBitrateSettings();
       for (let i = 0; i < rows.length && i < queueData.length; i++) {
-        const td = rows[i].children[3];
+        const td = rows[i].children[4];
         if (td) td.textContent = computeTargetBitrateLabel(queueData[i], settings);
       }
     }
@@ -1256,17 +1219,6 @@
           }
         } catch (e) {
           console.error('File dialog error:', e);
-        }
-      });
-
-      $('#btn-add-folder').addEventListener('click', async () => {
-        try {
-          const folder = await dialogOpen({ directory: true });
-          if (folder) {
-            await addFilesToQueue([folder]);
-          }
-        } catch (e) {
-          console.error('Folder dialog error:', e);
         }
       });
 
@@ -1544,13 +1496,11 @@
       // Codec change → repopulate encoder dropdown, refresh target bitrates, update RC visibility
       selCodec.addEventListener('change', () => {
         populateEncoderDropdown();
-        updateRcModeVisibility();
-        scheduleRefreshTargetBitrates();
-        scheduleConfigSave();
-      });
-
-      selEncoder.addEventListener('change', () => {
-        updateRcModeVisibility();
+        if (chkPrecision.checked) {
+          applyPrecisionMode();
+        } else {
+          updateRcModeVisibility();
+        }
         scheduleRefreshTargetBitrates();
         scheduleConfigSave();
       });
@@ -1621,7 +1571,9 @@
     }
 
     function toggleCustomCommand() {
+      const isNone = selPostAction.value === 'None';
       rowCustomCmd.style.display = selPostAction.value === 'Custom Command' ? 'flex' : 'none';
+      rowCountdown.style.display = isNone ? 'none' : 'flex';
     }
 
     function getOutputMode() {
@@ -1769,61 +1721,11 @@
     //  BOTTOM PANEL TOGGLE & RESIZE (§11)
     // ═══════════════════════════════════════════════════════════════
     function setupBottomPanel() {
-      const handle = $('#bottom-panel-handle');
-      const bSplitter = $('#bottom-splitter');
-      const jobDetails = $('#job-details');
-      const logPanel = $('#log-panel');
-      let draggingPanel = false;
-      let dragStartY = 0;
-      let dragStartHeight = 0;
-      let draggingBSplitter = false;
-      let bSplitterStartX = 0;
-      let bSplitterStartWidth = 0;
-
       // Toggle open/close on click
       bottomPanelToggle.addEventListener('click', () => {
         const isOpen = bottomPanelBody.classList.toggle('open');
         bottomPanelArrow.textContent = isOpen ? '\u25BC' : '\u25B2';
         scheduleConfigSave();
-      });
-
-      // Draggable resize - drag the handle bar to resize the panel height
-      handle.addEventListener('mousedown', (e) => {
-        if (e.target === bottomPanelToggle || bottomPanelToggle.contains(e.target)) return;
-        if (!bottomPanelBody.classList.contains('open')) return;
-        draggingPanel = true;
-        dragStartY = e.clientY;
-        dragStartHeight = bottomPanelBody.offsetHeight;
-        e.preventDefault();
-      });
-
-      // Bottom splitter - resize job details panel width
-      bSplitter.addEventListener('mousedown', (e) => {
-        draggingBSplitter = true;
-        bSplitterStartX = e.clientX;
-        bSplitterStartWidth = jobDetails.offsetWidth;
-        e.preventDefault();
-      });
-
-      document.addEventListener('mousemove', (e) => {
-        if (draggingPanel) {
-          const delta = dragStartY - e.clientY;
-          const newHeight = Math.max(80, Math.min(window.innerHeight * 0.6, dragStartHeight + delta));
-          bottomPanelBody.style.height = newHeight + 'px';
-        }
-        if (draggingBSplitter) {
-          // Dragging left makes job details wider, right makes it narrower
-          const delta = bSplitterStartX - e.clientX;
-          const bodyWidth = bottomPanelBody.offsetWidth;
-          const newWidth = Math.max(150, Math.min(bodyWidth - 200, bSplitterStartWidth + delta));
-          jobDetails.style.flex = 'none';
-          jobDetails.style.width = newWidth + 'px';
-        }
-      });
-
-      document.addEventListener('mouseup', () => {
-        draggingPanel = false;
-        draggingBSplitter = false;
       });
     }
 
@@ -1841,11 +1743,11 @@
       if (trimmed.startsWith('[detect]'))
         return { cls: 'log-line-detect', filter: 'detect' };
       if (trimmed.includes('ERROR'))
-        return { cls: 'log-line-error', filter: '' };
+        return { cls: 'log-line-error', filter: 'error' };
       if (trimmed.includes('WARNING'))
-        return { cls: 'log-line-warn', filter: '' };
+        return { cls: 'log-line-warn', filter: 'warn' };
       if (trimmed.startsWith('Done →') || trimmed.startsWith('Remuxed') || trimmed.startsWith('Batch done') || trimmed.startsWith('Batch cancelled'))
-        return { cls: 'log-line-result', filter: '' };
+        return { cls: 'log-line-result', filter: 'result' };
       if (/^\[\d+\/\d+\]/.test(trimmed))
         return { cls: 'log-line-file', filter: '' };
       return { cls: '', filter: '' };
@@ -2023,20 +1925,15 @@
         });
 
         // Enable/disable based on context
-        const setCtxState = (id, disabled) => {
-          $(id).classList.toggle('disabled', disabled);
-          $(id).setAttribute('aria-disabled', String(disabled));
-        };
-        setCtxState('#ctx-requeue-selected', batchRunning || !selectedHasTerminal);
-        setCtxState('#ctx-requeue-all', batchRunning || !hasTerminal);
-        setCtxState('#ctx-remove-selected', batchRunning || !hasSelection);
-        setCtxState('#ctx-clear-completed', batchRunning);
-        setCtxState('#ctx-clear-non-pending', batchRunning);
-        setCtxState('#ctx-clear-all', batchRunning);
-        setCtxState('#ctx-open-source', !hasSelection);
-        setCtxState('#ctx-reveal-source', !hasSelection);
-        setCtxState('#ctx-repair-tags', batchRunning || !hasSelection);
-        setCtxState('#ctx-deep-repair', batchRunning || !hasSelection);
+        $('#ctx-requeue-selected').classList.toggle('disabled', batchRunning || !selectedHasTerminal);
+        $('#ctx-requeue-all').classList.toggle('disabled', batchRunning || !hasTerminal);
+        $('#ctx-remove-selected').classList.toggle('disabled', batchRunning || !hasSelection);
+        $('#ctx-clear-completed').classList.toggle('disabled', batchRunning);
+        $('#ctx-clear-all').classList.toggle('disabled', batchRunning);
+        $('#ctx-open-source').classList.toggle('disabled', !hasSelection);
+        $('#ctx-reveal-source').classList.toggle('disabled', !hasSelection);
+        $('#ctx-repair-tags').classList.toggle('disabled', batchRunning || !hasSelection);
+        $('#ctx-deep-repair').classList.toggle('disabled', batchRunning || !hasSelection);
 
         contextMenu.style.left = e.clientX + 'px';
         contextMenu.style.top = e.clientY + 'px';
@@ -2094,19 +1991,6 @@
           renderQueue();
         } catch (e) {
           console.error('Clear completed error:', e);
-        }
-      });
-
-      // Clear non-pending (Done + Failed + Skipped + Cancelled)
-      $('#ctx-clear-non-pending').addEventListener('click', async () => {
-        if (batchRunning) return;
-        try {
-          await invoke('clear_non_pending');
-          selectedRows.clear();
-          queueData = await invoke('get_queue');
-          renderQueue();
-        } catch (e) {
-          console.error('Clear non-pending error:', e);
         }
       });
 
@@ -2187,25 +2071,6 @@
       btnStart.addEventListener('click', startBatch);
       btnCancelCur.addEventListener('click', () => invoke('cancel_current'));
       btnCancelAll.addEventListener('click', () => invoke('cancel_all'));
-      btnDryRun.addEventListener('click', dryRun);
-      btnDeepRepair.addEventListener('click', async () => {
-        // Use selected rows if any, otherwise all queue items
-        const indices = selectedRows.size > 0
-          ? [...selectedRows]
-          : Array.from({ length: queueData.length }, (_, i) => i);
-        if (indices.length === 0) return;
-        btnDeepRepair.disabled = true;
-        try {
-          const count = await invoke('deep_repair_tags', { indices });
-          if (count > 0) {
-            queueData = await invoke('get_queue');
-            renderQueue();
-          }
-        } catch (e) {
-          console.error('Deep repair error:', e);
-        }
-        updateBatchButtons();
-      });
       btnPause.addEventListener('click', togglePause);
 
       // Browse output folder
@@ -2233,8 +2098,6 @@
       }
 
       btnStart.disabled = !encoderDetectionDone || batchRunning || !hasPending;
-      btnDryRun.disabled = !encoderDetectionDone || batchRunning || !hasPending;
-      btnDeepRepair.disabled = batchRunning || queueData.length === 0;
       btnCancelCur.disabled = !batchRunning;
       btnCancelAll.disabled = !batchRunning;
       btnPause.disabled = !batchRunning;
@@ -2314,18 +2177,6 @@
       }
     }
 
-    // ── Probe all (§14) ──
-    async function dryRun() {
-      appendLog('[probe] Probing all unprobed files...');
-      for (let i = 0; i < queueData.length; i++) {
-        const status = (queueData[i].status || '').toLowerCase();
-        if (status === 'pending' && queueData[i].videoBitrateMbps <= 0) {
-          await probeFileAt(i);
-        }
-      }
-      appendLog('[probe] Complete.');
-    }
-
     // ── Pause / Resume (§10.5) ──
     async function togglePause() {
       try {
@@ -2339,69 +2190,29 @@
     // ═══════════════════════════════════════════════════════════════
     //  MODAL DIALOGS
     // ═══════════════════════════════════════════════════════════════
-    // ── Focus trap for modals (accessibility) ──
-    function trapFocus(modalEl) {
-      const focusable = modalEl.querySelectorAll(
-        'button:not([disabled]), [href], input:not([disabled]), select:not([disabled]), textarea:not([disabled]), [tabindex]:not([tabindex="-1"])'
-      );
-      if (focusable.length === 0) return;
-      const first = focusable[0];
-      const last = focusable[focusable.length - 1];
-      first.focus();
-      const handler = (e) => {
-        if (e.key !== 'Tab') return;
-        if (e.shiftKey) {
-          if (document.activeElement === first) { e.preventDefault(); last.focus(); }
-        } else {
-          if (document.activeElement === last) { e.preventDefault(); first.focus(); }
-        }
-      };
-      modalEl.addEventListener('keydown', handler);
-      modalEl._focusTrapHandler = handler;
-    }
-
-    function releaseFocus(modalEl) {
-      if (modalEl._focusTrapHandler) {
-        modalEl.removeEventListener('keydown', modalEl._focusTrapHandler);
-        delete modalEl._focusTrapHandler;
-      }
-    }
-
-    function showModal(id) {
-      const el = document.getElementById(id);
-      el.classList.add('visible');
-      trapFocus(el);
-    }
-
-    function hideModal(id) {
-      const el = document.getElementById(id);
-      el.classList.remove('visible');
-      releaseFocus(el);
-    }
-
     function setupModalButtons() {
       // Overwrite prompt (§7.3)
       $('#ow-yes').addEventListener('click', () => {
         invoke('respond_overwrite', { response: 'yes' });
-        hideModal('modal-overwrite');
+        $('#modal-overwrite').classList.remove('visible');
       });
       $('#ow-no').addEventListener('click', () => {
         invoke('respond_overwrite', { response: 'no' });
-        hideModal('modal-overwrite');
+        $('#modal-overwrite').classList.remove('visible');
       });
       $('#ow-always').addEventListener('click', () => {
         invoke('respond_overwrite', { response: 'always' });
-        hideModal('modal-overwrite');
+        $('#modal-overwrite').classList.remove('visible');
       });
 
       // Fallback prompt (§10.6)
       $('#fb-yes').addEventListener('click', () => {
         invoke('respond_fallback', { response: 'yes' });
-        hideModal('modal-fallback');
+        $('#modal-fallback').classList.remove('visible');
       });
       $('#fb-no').addEventListener('click', () => {
         invoke('respond_fallback', { response: 'no' });
-        hideModal('modal-fallback');
+        $('#modal-fallback').classList.remove('visible');
       });
 
       // Delete-source confirmation
@@ -2410,7 +2221,7 @@
       // Countdown cancel
       $('#cd-cancel').addEventListener('click', () => {
         clearCountdownTimer();
-        hideModal('modal-countdown');
+        $('#modal-countdown').classList.remove('visible');
       });
     }
 
@@ -2418,11 +2229,11 @@
     function showDeleteConfirm() {
       return new Promise((resolve) => {
         const modal = $('#modal-delete-confirm');
-        showModal('modal-delete-confirm');
+        modal.classList.add('visible');
         const yesBtn = $('#dc-yes');
         const noBtn = $('#dc-no');
         function cleanup() {
-          hideModal('modal-delete-confirm');
+          modal.classList.remove('visible');
           yesBtn.removeEventListener('click', onYes);
           noBtn.removeEventListener('click', onNo);
         }
@@ -2446,7 +2257,7 @@
       const body = $('#countdown-body');
       const valueEl = $('#countdown-value');
       body.innerHTML = `<strong>${action}</strong> in <strong id="countdown-value">${remaining}</strong> seconds...`;
-      showModal('modal-countdown');
+      modal.classList.add('visible');
 
       countdownInterval = setInterval(() => {
         remaining--;
@@ -2454,7 +2265,7 @@
         if (v) v.textContent = remaining;
         if (remaining <= 0) {
           clearCountdownTimer();
-          hideModal('modal-countdown');
+          modal.classList.remove('visible');
           executePostAction(action);
         }
       }, 1000);
@@ -2525,6 +2336,7 @@
           populateEncoderDropdown();
           const total = ve.length + ae.length;
           encoderStatus.textContent = `${total} encoders available (${ve.length} video, ${ae.length} audio)`;
+          fadeEncoderStatus();
         } catch (e) {
           encoderStatus.textContent = 'Encoder detection failed';
         }
@@ -2535,11 +2347,12 @@
       // ffmpeg not found - prompt to download
       listen('ffmpeg-missing', () => {
         encoderStatus.textContent = 'ffmpeg not found';
+        const modal = document.querySelector('#modal-ffmpeg-missing');
         const body = document.querySelector('#ffmpeg-missing-body');
-        showModal('modal-ffmpeg-missing');
+        modal.classList.add('visible');
 
         document.querySelector('#ffmpeg-dl-yes').onclick = async () => {
-          hideModal('modal-ffmpeg-missing');
+          modal.classList.remove('visible');
           encoderStatus.textContent = 'Downloading ffmpeg...';
           try {
             await invoke('download_ffmpeg');
@@ -2547,12 +2360,12 @@
           } catch (e) {
             encoderStatus.textContent = 'Download failed: ' + e;
             body.textContent = 'Download failed: ' + e + '. You can install ffmpeg manually and restart the app.';
-            showModal('modal-ffmpeg-missing');
+            modal.classList.add('visible');
           }
         };
 
         document.querySelector('#ffmpeg-dl-no').onclick = () => {
-          hideModal('modal-ffmpeg-missing');
+          modal.classList.remove('visible');
           encoderStatus.textContent = 'ffmpeg not found - install ffmpeg and restart';
         };
       });
@@ -2708,9 +2521,9 @@
         document.title = defaultTitle;
         btnPause.textContent = 'Pause';
         jobStatus.textContent = 'No job running';
-        statusCmd.textContent = '-';
-        jobFile.textContent = '-';
-        jobProgressText.textContent = '-';
+        statusCmd.textContent = '';
+        jobFile.textContent = '';
+        jobProgressText.textContent = '';
         progressBar.style.width = '0%';
         batchProgressBar.style.width = '0%';
         updateBatchButtons();
@@ -2740,7 +2553,7 @@
       listen('overwrite-prompt', (event) => {
         const filename = event.payload;
         $('#overwrite-body').textContent = `Output file already exists:\n${filename}\n\nOverwrite?`;
-        showModal('modal-overwrite');
+        $('#modal-overwrite').classList.add('visible');
       });
 
       // Fallback prompt from backend
@@ -2748,7 +2561,7 @@
         const filename = event.payload;
         $('#fallback-body').textContent =
           `Hardware encoder failed for "${filename}".\nFall back to software encoding for this file and continue?`;
-        showModal('modal-fallback');
+        $('#modal-fallback').classList.add('visible');
       });
 
       // Toast notification (§7.7)
@@ -2774,6 +2587,21 @@
         startCountdown(action, countdown);
       });
     }
+
+    // ═══════════════════════════════════════════════════════════════
+    //  ENCODER STATUS FADE
+    // ═══════════════════════════════════════════════════════════════
+    function fadeEncoderStatus() {
+      // Collapse the encoder status line after a few seconds
+      setTimeout(() => {
+        encoderStatus.style.transition = 'opacity 0.6s, max-height 0.6s, margin 0.6s';
+        encoderStatus.style.opacity = '0';
+        encoderStatus.style.maxHeight = '0';
+        encoderStatus.style.marginBottom = '0';
+        encoderStatus.style.overflow = 'hidden';
+      }, 4000);
+    }
+
   </script>
 </body>
 </html>

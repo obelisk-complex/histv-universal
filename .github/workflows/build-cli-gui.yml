@@ -18,24 +18,32 @@ jobs:
             label: windows
             cli-name: histv-cli.exe
             cli-artefact: histv-cli-windows.exe
+            ffmpeg-url: "https://github.com/BtbN/FFmpeg-Builds/releases/download/latest/ffmpeg-master-latest-win64-gpl.zip"
+            ffprobe-url: ""
           - os: ubuntu-22.04
             target: x86_64-unknown-linux-gnu
             label: linux
             bundles: appimage
             cli-name: histv-cli
             cli-artefact: histv-cli-linux
+            ffmpeg-url: "https://github.com/BtbN/FFmpeg-Builds/releases/download/latest/ffmpeg-master-latest-linux64-gpl.tar.xz"
+            ffprobe-url: ""
           - os: macos-latest
             target: aarch64-apple-darwin
             label: macos-arm64
             bundles: dmg
             cli-name: histv-cli
             cli-artefact: histv-cli-macos-arm64
+            ffmpeg-url: "https://evermeet.cx/ffmpeg/get/zip"
+            ffprobe-url: "https://evermeet.cx/ffmpeg/get/ffprobe/zip"
           - os: macos-14
             target: x86_64-apple-darwin
             label: macos-x64
             bundles: dmg
             cli-name: histv-cli
             cli-artefact: histv-cli-macos-x64
+            ffmpeg-url: "https://evermeet.cx/ffmpeg/get/zip"
+            ffprobe-url: "https://evermeet.cx/ffmpeg/get/ffprobe/zip"
 
     runs-on: ${{ matrix.os }}
 
@@ -96,6 +104,133 @@ jobs:
             cp "$CLI_BIN" "artefacts/${{ matrix.cli-artefact }}"
           fi
           ls -lh artefacts/
+
+      # ── Download ffmpeg for -full variant builds ───────────────
+
+      - name: Download ffmpeg
+        shell: bash
+        run: |
+          mkdir -p ffmpeg-bin
+
+          echo "Downloading ffmpeg from ${{ matrix.ffmpeg-url }}"
+          curl -fSL --retry 3 -o ffmpeg-archive "${{ matrix.ffmpeg-url }}"
+
+          case "${{ matrix.label }}" in
+            windows)
+              unzip -q ffmpeg-archive -d ffmpeg-extract
+              FFMPEG=$(find ffmpeg-extract -name "ffmpeg.exe" -type f | head -1)
+              FFPROBE=$(find ffmpeg-extract -name "ffprobe.exe" -type f | head -1)
+              cp "$FFMPEG" ffmpeg-bin/ffmpeg.exe
+              cp "$FFPROBE" ffmpeg-bin/ffprobe.exe
+              ;;
+            linux)
+              mkdir -p ffmpeg-extract
+              tar xf ffmpeg-archive -C ffmpeg-extract
+              FFMPEG=$(find ffmpeg-extract -name "ffmpeg" -not -name "ffprobe" -type f | head -1)
+              FFPROBE=$(find ffmpeg-extract -name "ffprobe" -type f | head -1)
+              cp "$FFMPEG" ffmpeg-bin/ffmpeg
+              cp "$FFPROBE" ffmpeg-bin/ffprobe
+              chmod +x ffmpeg-bin/ffmpeg ffmpeg-bin/ffprobe
+              ;;
+            macos-*)
+              # evermeet.cx ships ffmpeg and ffprobe as separate downloads
+              unzip -q ffmpeg-archive -d ffmpeg-bin
+              echo "Downloading ffprobe from ${{ matrix.ffprobe-url }}"
+              curl -fSL --retry 3 -o ffprobe-archive "${{ matrix.ffprobe-url }}"
+              unzip -q ffprobe-archive -d ffmpeg-bin
+              chmod +x ffmpeg-bin/ffmpeg ffmpeg-bin/ffprobe
+              ;;
+          esac
+
+          echo "--- ffmpeg-bin contents ---"
+          ls -lh ffmpeg-bin/
+          echo "--- version check ---"
+          ffmpeg-bin/ffmpeg$([ "${{ matrix.label }}" = "windows" ] && echo ".exe") -version | head -1 || true
+
+      # ── Build -full variant bundles ────────────────────────────
+
+      - name: Bundle full (Windows)
+        if: matrix.label == 'windows'
+        shell: bash
+        run: |
+          # GUI full - zip with ffmpeg
+          mkdir -p bundle-gui
+          cp "artefacts/histv-windows.exe" bundle-gui/
+          cp ffmpeg-bin/ffmpeg.exe bundle-gui/
+          cp ffmpeg-bin/ffprobe.exe bundle-gui/
+          cp THIRD-PARTY-LICENCES bundle-gui/
+          cd bundle-gui && 7z a -tzip -mx=9 ../artefacts/histv-windows-full.zip * && cd ..
+
+          # CLI full - zip with ffmpeg
+          mkdir -p bundle-cli
+          cp "artefacts/histv-cli-windows.exe" bundle-cli/
+          cp ffmpeg-bin/ffmpeg.exe bundle-cli/
+          cp ffmpeg-bin/ffprobe.exe bundle-cli/
+          cp THIRD-PARTY-LICENCES bundle-cli/
+          cd bundle-cli && 7z a -tzip -mx=9 ../artefacts/histv-cli-windows-full.zip * && cd ..
+
+      - name: Bundle full (Linux)
+        if: matrix.label == 'linux'
+        shell: bash
+        run: |
+          # GUI full - repack the AppImage with ffmpeg inside
+          APPIMAGE=$(find artefacts -name "*.AppImage" | head -1)
+          chmod +x "$APPIMAGE"
+          "$APPIMAGE" --appimage-extract
+
+          cp ffmpeg-bin/ffmpeg squashfs-root/usr/bin/
+          cp ffmpeg-bin/ffprobe squashfs-root/usr/bin/
+          cp THIRD-PARTY-LICENCES squashfs-root/
+
+          # Get appimagetool to repack
+          curl -fSL --retry 3 -o appimagetool \
+            "https://github.com/AppImage/appimagetool/releases/download/continuous/appimagetool-x86_64.AppImage"
+          chmod +x appimagetool
+          ARCH=x86_64 ./appimagetool --appimage-extract-and-run squashfs-root/ artefacts/histv-linux-full.AppImage
+
+          # CLI full - tar.gz with ffmpeg
+          mkdir -p bundle-cli
+          cp "artefacts/histv-cli-linux" bundle-cli/
+          cp ffmpeg-bin/ffmpeg bundle-cli/
+          cp ffmpeg-bin/ffprobe bundle-cli/
+          cp THIRD-PARTY-LICENCES bundle-cli/
+          tar czf artefacts/histv-cli-linux-full.tar.gz -C bundle-cli .
+
+      - name: Bundle full (macOS)
+        if: startsWith(matrix.label, 'macos')
+        shell: bash
+        run: |
+          # GUI full - extract DMG, inject ffmpeg, create new DMG
+          DMG=$(find artefacts -name "*.dmg" | head -1)
+
+          mkdir -p /tmp/dmg_src
+          hdiutil attach "$DMG" -mountpoint /tmp/dmg_src -nobrowse -readonly
+
+          mkdir -p dmg-contents
+          cp -R /tmp/dmg_src/* dmg-contents/
+          hdiutil detach /tmp/dmg_src
+
+          APP=$(find dmg-contents -maxdepth 1 -name "*.app" | head -1)
+          cp ffmpeg-bin/ffmpeg "$APP/Contents/MacOS/"
+          cp ffmpeg-bin/ffprobe "$APP/Contents/MacOS/"
+          mkdir -p "$APP/Contents/Resources"
+          cp THIRD-PARTY-LICENCES "$APP/Contents/Resources/"
+
+          hdiutil create \
+            -srcfolder dmg-contents \
+            -format UDZO \
+            -ov \
+            "artefacts/histv-${{ matrix.label }}-full.dmg"
+
+          rm -rf dmg-contents
+
+          # CLI full - tar.gz with ffmpeg
+          mkdir -p bundle-cli
+          cp "artefacts/${{ matrix.cli-artefact }}" bundle-cli/
+          cp ffmpeg-bin/ffmpeg bundle-cli/
+          cp ffmpeg-bin/ffprobe bundle-cli/
+          cp THIRD-PARTY-LICENCES bundle-cli/
+          tar czf "artefacts/histv-cli-${{ matrix.label }}-full.tar.gz" -C bundle-cli .
 
       - name: Upload artefacts
         uses: actions/upload-artifact@v4
