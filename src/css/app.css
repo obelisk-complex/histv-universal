@@ -228,7 +228,7 @@ html, body {
 }
 }
 .col-check { overflow: visible !important; }
-.col-check input[type="checkbox"] { cursor: pointer; margin: 0; }
+.col-check input[type="checkbox"] { cursor: pointer; margin: 0; accent-color: var(--primary); }
 #queue-table td input[type="checkbox"] {
   accent-color: currentColor;
 }
