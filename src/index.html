@@ -3,7 +3,7 @@
 <head>
   <meta charset="UTF-8" />
   <meta name="viewport" content="width=device-width, initial-scale=1.0" />
-  <title>Honey, I Shrunk The Vids v2.3.0</title>
+  <title>Honey, I Shrunk The Vids v2.3.3</title>
   <link rel="stylesheet" href="css/app.css" />
 </head>
 <body>
@@ -493,8 +493,8 @@
     const jobProgressText = $('#job-progress-text');
     const contextMenu     = $('#context-menu');
 
-    // ── Status icons (SVG) ─────────────────────────────────────────
-    const STATUS_ICONS = {
+    // Status icons - done/failed/cancelled colours are updated by applyTheme
+    let STATUS_ICONS = {
       pending: '',
       probing: '<svg class="spinner" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5"><circle cx="12" cy="12" r="10" stroke-dasharray="31.4 31.4" stroke-linecap="round"/></svg>',
       encoding: '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><circle cx="12" cy="12" r="9"/><path d="M12 6v6l4 2"/></svg>',
@@ -677,20 +677,85 @@
       }
     }
 
+// ── Theme colour derivation ─────────────────────────────────
+    // New themes only need 6 keys: background, surface, text,
+    // primary, success, error. Everything else is derived here.
+    // Legacy themes with the old keys still work - any explicitly
+    // provided key overrides the derived value.
+
     function applyTheme(name) {
       const theme = themes.find(t => t.name === name);
       if (!theme) return;
+      const c = theme.colors;
       const root = document.documentElement;
-      for (const [key, value] of Object.entries(theme.colors)) {
+
+      // ── Read the 6 core values (with legacy fallbacks) ──
+      const bg      = c['background'] || c['base-100'] || '#1E1E1E';
+      const surface = c['surface']    || c['base-300'] || '#373737';
+      const text    = c['text']       || c['base-content'] || '#DCDCDC';
+      const primary = c['primary']    || '#0078D7';
+      const success = c['success']    || '#4ade80';
+      const error   = c['error']      || '#f87171';
+
+      const light = isLightColor(bg);
+
+      // ── Derive all variables ──
+      // Helpers produce values only if the theme didn't explicitly set them.
+      // This lets power users override any derived value in their JSON.
+      const derived = {};
+
+      // Core
+      derived['background']     = bg;
+      derived['surface']        = surface;
+      derived['text']           = text;
+      derived['primary']        = primary;
+      derived['success']        = success;
+      derived['error']          = error;
+
+      // Surface hierarchy
+      derived['surface-dim']    = c['surface-dim']    || blendHex(surface, bg, 0.5);
+      derived['surface-bright'] = c['surface-bright'] || shiftBrightness(surface, light ? -0.08 : 0.08);
+      derived['text-muted']     = c['text-muted']     || c['secondary'] || hexToRgba(text, 0.55);
+      derived['accent']         = c['accent']         || primary;
+
+      // Row tints - muted overlays of semantic colours onto the background
+      derived['row-info']       = c['row-info']       || c['info']    || blendHex(primary, bg, 0.15);
+      derived['row-done']       = c['row-done']       || overlayOnBg(success, bg, light);
+      derived['row-encoding']   = c['row-encoding']   || c['warning'] || shiftBrightness(surface, light ? -0.04 : 0.04);
+      derived['row-failed']     = c['row-failed']     || overlayOnBg(error, bg, light);
+      derived['row-cancelled']  = c['row-cancelled']  || blendHex(derived['row-failed'], derived['row-encoding'], 0.5);
+
+      // Progress bar
+      derived['progress-fill']  = c['progress-fill']  || derived['row-done'];
+      derived['progress-bg']    = c['progress-bg']    || derived['row-encoding'];
+
+      // Icon / log colours (bright, full saturation)
+      derived['icon-done']      = c['icon-done']      || c['status-done']      || success;
+      derived['icon-failed']    = c['icon-failed']    || c['status-failed']    || error;
+      derived['icon-cancelled'] = c['icon-cancelled'] || c['status-cancelled'] || '#fb923c';
+      derived['log-result']     = c['log-result']     || derived['icon-done'];
+      derived['log-warn']       = c['log-warn']       || derived['icon-cancelled'];
+      derived['log-error']      = c['log-error']      || derived['icon-failed'];
+      derived['log-detect']     = c['log-detect']     || c['status-detect'] || '#a78bfa';
+      derived['log-file']       = c['log-file']       || '#7dd3fc';
+
+      // ── Apply all to :root ──
+      for (const [key, value] of Object.entries(derived)) {
         root.style.setProperty(`--${key}`, value);
       }
-      // Set color-scheme so native form controls (checkboxes, selects,
-      // scrollbars) match the theme automatically.
-      const base100 = theme.colors['base-100'] || '#1E1E1E';
-      const light = isLightColor(base100);
+
+      // Also apply any extra keys from the theme JSON that we didn't
+      // derive (forward-compatibility for future variables).
+      for (const [key, value] of Object.entries(c)) {
+        if (!(key in derived)) {
+          root.style.setProperty(`--${key}`, value);
+        }
+      }
+
+      // Colour-scheme for native form controls
       root.style.colorScheme = light ? 'light' : 'dark';
 
-      // Adapt glass tokens to theme lightness
+      // Glass tokens - adapt to theme lightness
       if (light) {
         root.style.setProperty('--glass-bg', 'rgba(255, 255, 255, 0.55)');
         root.style.setProperty('--glass-border', 'rgba(0, 0, 0, 0.08)');
@@ -712,7 +777,14 @@
         root.style.setProperty('--glass-strip-bg', 'rgba(40, 40, 40, 0.7)');
         root.style.setProperty('--glass-overlay-bg', 'rgba(40, 40, 40, 0.92)');
       }
+
+      // Update SVG status icons with themed colours
+      STATUS_ICONS.done = `<svg viewBox="0 0 24 24" fill="none" stroke="${derived['icon-done']}" stroke-width="2.5"><path d="M5 13l4 4L19 7"/></svg>`;
+      STATUS_ICONS.failed = `<svg viewBox="0 0 24 24" fill="none" stroke="${derived['icon-failed']}" stroke-width="2.5"><path d="M6 6l12 12M18 6L6 18"/></svg>`;
+      STATUS_ICONS.cancelled = `<svg viewBox="0 0 24 24" fill="none" stroke="${derived['icon-cancelled']}" stroke-width="2.5"><circle cx="12" cy="12" r="9"/><line x1="9" y1="9" x2="15" y2="15"/></svg>`;
     }
+
+    // ── Colour helper functions ──────────────────────────────────
 
     // Quick luminance check: returns true if the hex colour is closer
     // to white than black.
@@ -721,8 +793,55 @@
       const r = parseInt(c.substring(0, 2), 16);
       const g = parseInt(c.substring(2, 4), 16);
       const b = parseInt(c.substring(4, 6), 16);
-      // Perceived brightness (ITU-R BT.601)
       return (r * 299 + g * 587 + b * 114) / 1000 > 128;
+    }
+
+    // Parse hex to [r, g, b]
+    function hexToRgb(hex) {
+      const c = hex.replace('#', '');
+      return [
+        parseInt(c.substring(0, 2), 16),
+        parseInt(c.substring(2, 4), 16),
+        parseInt(c.substring(4, 6), 16),
+      ];
+    }
+
+    // [r, g, b] to hex
+    function rgbToHex(r, g, b) {
+      const clamp = v => Math.max(0, Math.min(255, Math.round(v)));
+      return '#' + [clamp(r), clamp(g), clamp(b)]
+        .map(v => v.toString(16).padStart(2, '0')).join('');
+    }
+
+    // Hex to rgba() string
+    function hexToRgba(hex, alpha) {
+      const [r, g, b] = hexToRgb(hex);
+      return `rgba(${r}, ${g}, ${b}, ${alpha})`;
+    }
+
+    // Blend two hex colours: result = a * t + b * (1-t)
+    function blendHex(a, b, t) {
+      const [ar, ag, ab] = hexToRgb(a);
+      const [br, bg, bb] = hexToRgb(b);
+      return rgbToHex(
+        ar * t + br * (1 - t),
+        ag * t + bg * (1 - t),
+        ab * t + bb * (1 - t),
+      );
+    }
+
+    // Shift brightness by a factor (-1 to 1). Positive = lighter, negative = darker.
+    function shiftBrightness(hex, amount) {
+      const [r, g, b] = hexToRgb(hex);
+      const shift = amount * 255;
+      return rgbToHex(r + shift, g + shift, b + shift);
+    }
+
+    // Overlay a bright colour onto a background at low opacity to produce a muted tint.
+    // For dark themes: 15% overlay. For light themes: 12% overlay.
+    function overlayOnBg(colour, bg, isLight) {
+      const alpha = isLight ? 0.12 : 0.15;
+      return blendHex(colour, bg, alpha);
     }
 
     selTheme.addEventListener('change', () => {

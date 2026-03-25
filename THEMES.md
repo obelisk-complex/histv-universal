@@ -1,125 +1,145 @@
 # Creating Themes
 
-Honey, I Shrunk The Vids supports custom themes via simple JSON files. The app ships with Default Dark and Default Light, but you can create your own to match whatever aesthetic you're after.
+Honey, I Shrunk The Vids supports custom themes via simple JSON files. You pick 6 colours and the app derives everything else - borders, row tints, icon colours, progress bars - automatically.
 
 ## Where to put themes
 
-Theme files live in a `themes/` folder next to the application executable. On first launch the app creates this folder and writes the two default themes into it. Any `.json` file you drop in there will appear in the Theme dropdown on the Encoding Settings tab.
+Theme files live in a `themes/` folder next to the application executable. On first launch the app creates this folder and writes the built-in themes into it. Any `.json` file you drop in there will appear in the Theme dropdown.
 
 ## Theme file format
 
-A theme file is a JSON object with two fields: a `name` (what shows up in the dropdown) and a `colors` object mapping colour variable names to hex values.
+A theme file is a JSON object with a `name` and a `colors` object containing 6 colour values:
 
-Here's a minimal example:
+```json
+{
+  "name": "My Theme",
+  "colors": {
+    "background": "#1E1E1E",
+    "surface": "#373737",
+    "text": "#DCDCDC",
+    "primary": "#0078D7",
+    "success": "#4ade80",
+    "error": "#f87171"
+  }
+}
+```
+
+That's all you need. Save it as a `.json` file in the `themes/` folder, restart the app, and it appears in the dropdown.
+
+## What each colour controls
+
+| Key | What it does |
+|-----|-------------|
+| `background` | The deepest layer - main app background, bottom bar |
+| `surface` | Panels, inputs, table headers, buttons, borders. The app automatically creates lighter and darker variants from this. |
+| `text` | All text. A muted variant at 55% opacity is derived automatically for secondary labels, hints, and status text. |
+| `primary` | Buttons, active highlights, focused borders, selection outlines, progress bars, checkboxes, section headers |
+| `success` | Done/completed status - used for the row tint (muted automatically), checkmark icon, and result log lines |
+| `error` | Failed status - used for the row tint (muted automatically), X icon, and error log lines |
+
+## How derivation works
+
+From your 6 colours, the app computes:
+
+- **Surface hierarchy** - a dimmer variant (between surface and background) and a brighter variant, giving depth without you picking three separate shades
+- **Muted text** - your text colour at 55% opacity for labels and hints
+- **Row tints** - your success and error colours overlaid at low opacity onto the background, producing muted tints that don't wash out the text
+- **Encoding row** - a subtle brightening of the surface colour
+- **Cancelled row** - a blend of the failed and encoding tints
+- **Progress bar** - fill uses the done tint, unfilled uses the encoding tint
+- **Icon colours** - success and error at full brightness for the small status icons
+- **Log colours** - result lines use success, errors use error, warnings use an amber derived from the cancelled colour
+- **Glass effects** - semi-transparent overlays adapted to whether your background is light or dark
+
+## Optional overrides
+
+Power users can override any derived value by adding extra keys to the `colors` object. The app derives a value only if the key is absent from your JSON.
+
+```json
+{
+  "name": "Custom",
+  "colors": {
+    "background": "#272822",
+    "surface": "#3E3D32",
+    "text": "#F8F8F2",
+    "primary": "#F92672",
+    "success": "#A6E22E",
+    "error": "#F92672",
+    "accent": "#A6E22E",
+    "progress-fill": "#3D1A2A",
+    "progress-bg": "#3E3D32",
+    "icon-cancelled": "#FD971F",
+    "log-detect": "#AE81FF"
+  }
+}
+```
+
+### All overridable keys
+
+| Key | Default derivation |
+|-----|-------------------|
+| `surface-dim` | Blend of surface toward background |
+| `surface-bright` | Surface lightened (dark themes) or darkened (light themes) |
+| `text-muted` | Text at 55% opacity |
+| `accent` | Same as primary |
+| `row-info` | Primary at 15% opacity over background |
+| `row-done` | Success at 15% opacity over background |
+| `row-encoding` | Surface shifted slightly brighter |
+| `row-failed` | Error at 15% opacity over background |
+| `row-cancelled` | Blend of row-failed and row-encoding |
+| `progress-fill` | Same as row-done |
+| `progress-bg` | Same as row-encoding |
+| `icon-done` | Same as success |
+| `icon-failed` | Same as error |
+| `icon-cancelled` | Amber (#fb923c) |
+| `log-result` | Same as icon-done |
+| `log-warn` | Same as icon-cancelled |
+| `log-error` | Same as icon-failed |
+| `log-detect` | Purple (#a78bfa) |
+| `log-file` | Light blue (#7dd3fc) |
+
+## Backward compatibility
+
+Themes using the old key names (`base-100`, `base-200`, `base-300`, `base-content`, `secondary`, `neutral`, `info`, `warning`, `status-done`, `status-failed`, `status-cancelled`, `status-detect`) still work. The app reads them as fallbacks when the new keys are absent.
+
+## Tips
+
+**Start from an existing theme.** Copy one of the built-in JSON files, rename it, and change the 6 values.
+
+**Keep success and error bright.** The app mutes them automatically for row backgrounds. Use the full-saturation version you'd want for an icon or text highlight.
+
+**Test with a real queue.** Add a few files with different statuses (done, failed, pending) to see all the row tints together.
+
+## Example themes
+
+### Monokai
 
 ```json
 {
   "name": "Monokai",
   "colors": {
+    "background": "#272822",
+    "surface": "#3E3D32",
+    "text": "#F8F8F2",
     "primary": "#F92672",
-    "secondary": "#75715E",
-    "accent": "#A6E22E",
-    "neutral": "#3E3D32",
-    "base-100": "#272822",
-    "base-200": "#2D2E27",
-    "base-300": "#3E3D32",
-    "base-content": "#F8F8F2",
-    "info": "#1B3A4B",
-    "success": "#1B4332",
-    "warning": "#3D3400",
-    "error": "#4A1520",
-    "status-done": "#4ade80",
-    "status-failed": "#f87171",
-    "status-cancelled": "#fb923c",
-    "status-detect": "#a78bfa"
+    "success": "#A6E22E",
+    "error": "#F92672"
   }
 }
 ```
 
-Save it as something like `monokai.json` in the `themes/` folder, restart the app, and it'll appear in the dropdown.
-
-## Colour reference
-
-Every colour in the UI is driven by these 16 variables. Here's what each one controls:
-
-### Core colours
-
-| Variable | Used for |
-|----------|----------|
-| `primary` | Buttons, active tab highlights, progress bar, selected items, focused input borders, the splitter on hover, drop zone borders, checkboxes |
-| `secondary` | Inactive tab text, status text, log toggle text, status bar text |
-| `accent` | Selection outline around queue rows (often the same as `primary`, but you can make it different) |
-
-### Background layers
-
-These three form a layered hierarchy - `base-100` is the deepest background, `base-200` is panels and tables, and `base-300` is elevated surfaces and borders.
-
-| Variable | Used for |
-|----------|----------|
-| `base-100` | Main app background, bottom bar background |
-| `base-200` | Queue table background, modal backgrounds, context menu background |
-| `base-300` | Table headers, splitter, tab bar border, input field backgrounds, buttons, log toggle bar, borders throughout |
-| `base-content` | All primary text - filenames, labels, headings, button text, table content |
-| `neutral` | Input borders, table header bottom border, button hover background, splitter default colour |
-
-### Status row tints
-
-These colour the background of queue rows based on their encoding status. They should be quite muted - the text colour is always `base-content`, so these need enough contrast to remain readable.
-
-| Variable | Used for |
-|----------|----------|
-| `info` | Probing status row tint |
-| `success` | Done / completed row tint |
-| `warning` | Encoding in progress row tint |
-| `error` | Failed row tint |
-
-### Status icon colours
-
-These colour the small status icons in the queue's Status column and in log lines. They should be bright enough to read at icon size. If omitted, sensible defaults are used.
-
-| Variable | Used for |
-|----------|----------|
-| `status-done` | Checkmark icon for completed files, "result" log lines |
-| `status-failed` | X icon for failed files |
-| `status-cancelled` | Circle-slash icon for cancelled files |
-| `status-detect` | Encoder detection log lines |
-
-## Tips for good themes
-
-**Start from an existing theme.** Copy `default-dark.json` or `default-light.json`, rename it, and tweak the values. This way you know every variable is present and the structure is valid.
-
-**Keep status tints subtle.** The status colours (`info`, `success`, `warning`, `error`) are used as full row backgrounds with white/light text on top. If you make them too bright, the text becomes unreadable. For dark themes, keep them dark and saturated. For light themes, use pale pastels.
-
-**Test the `base` hierarchy.** The three `base-` colours need to create a clear visual hierarchy: `base-100` darkest (or lightest), `base-300` most prominent. If `base-200` and `base-300` are too similar, the UI looks flat.
-
-**Mind the contrast.** `base-content` is your text colour - make sure it's readable against `base-100`, `base-200`, and `base-300`. Similarly, `primary` needs to be visible against `base-300` (since buttons use `base-300` as their default background).
-
-**`primary` and `accent` can differ.** If you want the selection highlight on queue rows to be a different colour from buttons and tabs, set `accent` to something distinct from `primary`.
-
-## Example themes
-
-### Solarized Dark
+### Solarised Dark
 
 ```json
 {
   "name": "Solarised Dark",
   "colors": {
+    "background": "#002B36",
+    "surface": "#0A4050",
+    "text": "#93A1A1",
     "primary": "#268BD2",
-    "secondary": "#586E75",
-    "accent": "#2AA198",
-    "neutral": "#073642",
-    "base-100": "#002B36",
-    "base-200": "#073642",
-    "base-300": "#0A4050",
-    "base-content": "#93A1A1",
-    "info": "#0D3D56",
-    "success": "#0D3D2A",
-    "warning": "#3D3A0D",
-    "error": "#4A1A1A",
-    "status-done": "#4ade80",
-    "status-failed": "#f87171",
-    "status-cancelled": "#fb923c",
-    "status-detect": "#a78bfa"
+    "success": "#4ade80",
+    "error": "#f87171"
   }
 }
 ```
@@ -130,48 +150,12 @@ These colour the small status icons in the queue's Status column and in log line
 {
   "name": "Nord",
   "colors": {
+    "background": "#2E3440",
+    "surface": "#434C5E",
+    "text": "#ECEFF4",
     "primary": "#88C0D0",
-    "secondary": "#616E88",
-    "accent": "#81A1C1",
-    "neutral": "#3B4252",
-    "base-100": "#2E3440",
-    "base-200": "#3B4252",
-    "base-300": "#434C5E",
-    "base-content": "#ECEFF4",
-    "info": "#2E3D50",
-    "success": "#2E4038",
-    "warning": "#4A4530",
-    "error": "#4A2E2E",
-    "status-done": "#4ade80",
-    "status-failed": "#f87171",
-    "status-cancelled": "#fb923c",
-    "status-detect": "#a78bfa"
-  }
-}
-```
-
-### Vempire
-
-```json
-{
-  "name": "Vempire",
-  "colors": {
-    "primary": "#BD93F9",
-    "secondary": "#6272A4",
-    "accent": "#FF79C6",
-    "neutral": "#44475A",
-    "base-100": "#282A36",
-    "base-200": "#2D2F3D",
-    "base-300": "#44475A",
-    "base-content": "#F8F8F2",
-    "info": "#1A2744",
-    "success": "#1A3A2A",
-    "warning": "#3D3A1A",
-    "error": "#4A1A2A",
-    "status-done": "#4ade80",
-    "status-failed": "#f87171",
-    "status-cancelled": "#fb923c",
-    "status-detect": "#a78bfa"
+    "success": "#4ade80",
+    "error": "#f87171"
   }
 }
 ```
