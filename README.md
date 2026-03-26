@@ -121,7 +121,7 @@ You set a target bitrate and the app decides what to do with each file:
 | Already small enough | **Copied as-is** - no re-encoding, regardless of codec |
 | Too big | **Shrunk** to hit the target bitrate using VBR encoding |
 | Zero bitrate / unreadable header | **Re-encoded for quality** using QP or CRF |
-| GIF or APNG | **Always re-encoded** into a proper video |
+| GIF, APNG, or animated WebP | **Always re-encoded** into a proper video |
 
 Files within 15% above the threshold that are already in the target codec are also copied rather than re-encoded, to avoid wasting time on marginal gains.
 
@@ -185,6 +185,7 @@ People with a pile of video files at different sizes and formats who want to shr
 │   │   ├── disk_monitor.rs     # Disk-space estimation + runtime monitoring
 │   │   ├── config.rs           # GUI persistent settings
 │   │   └── themes.rs           # Theme loading + built-in themes
+│   │   ├── webp_decode.rs      # Animated WebP RIFF parser + decode pipeline
 │   └── themes/                 # User-editable theme JSON files
 ├── .github/workflows/          # CI: per-platform builds
 ├── THEMES.md                   # Theme creation guide
