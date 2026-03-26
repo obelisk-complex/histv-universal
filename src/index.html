@@ -3,7 +3,7 @@
 <head>
   <meta charset="UTF-8" />
   <meta name="viewport" content="width=device-width, initial-scale=1.0" />
-  <title>Honey, I Shrunk The Vids v2.3.3</title>
+  <title>Honey, I Shrunk The Vids v2.3.4</title>
   <link rel="stylesheet" href="css/app.css" />
 </head>
 <body>
@@ -15,6 +15,10 @@
         <div class="panel-header">File Queue <span id="queue-summary" class="queue-summary"></span></div>
         <div id="queue-container" style="position:relative;">
           <div id="drop-overlay">Drop files or folders here</div>
+          <div id="queue-empty-state" class="visible">
+            <div>No files in queue</div>
+            <div class="empty-hint">Drag files here, paste paths, or use Add</div>
+          </div>
           <table id="queue-table">
             <thead>
               <tr>
@@ -45,7 +49,7 @@
 
       <!-- ─── Splitter ─── -->
       <div id="splitter">
-        <button id="splitter-toggle" title="Toggle settings panel">&#x25B6;</button>
+        <button id="splitter-toggle" title="Hide settings panel" aria-label="Hide settings panel">&#x25B6;</button>
       </div>
 
       <!-- ─── Right panel: settings (single scrollable column) ─── -->
@@ -318,38 +322,38 @@
     </div>
 
     <!-- ═══ Context menu (§5.5) ═══ -->
-    <div id="context-menu">
-      <div class="ctx-item" id="ctx-requeue-selected">Re-queue selected</div>
-      <div class="ctx-item" id="ctx-requeue-all">Re-queue all</div>
-      <div class="ctx-separator"></div>
-      <div class="ctx-item" id="ctx-remove-selected">Remove selected</div>
-      <div class="ctx-item" id="ctx-clear-completed">Clear completed</div>
-      <div class="ctx-item" id="ctx-clear-all">Clear all</div>
-      <div class="ctx-separator"></div>
-      <div class="ctx-item" id="ctx-open-source">Open source file</div>
-      <div class="ctx-item" id="ctx-reveal-source">Reveal in file manager</div>
-      <div class="ctx-separator"></div>
-      <div class="ctx-item" id="ctx-repair-tags">Repair MKV tags</div>
-      <div class="ctx-item" id="ctx-deep-repair" title="Scans audio and subtitle streams to compute exact byte counts, then derives the video bitrate by subtraction. Also counts video frames. Speed depends on disk read speed. Use for files with severely corrupted metadata.">Deep repair MKV tags</div>
-    </div>
+    <div id="context-menu" role="menu">
+      <button class="ctx-item" id="ctx-requeue-selected" role="menuitem">Re-queue selected</button>
+      <button class="ctx-item" id="ctx-requeue-all" role="menuitem">Re-queue all</button>
+      <div class="ctx-separator" role="separator"></div>
+      <button class="ctx-item" id="ctx-remove-selected" role="menuitem">Remove selected</button>
+      <button class="ctx-item" id="ctx-clear-completed" role="menuitem">Clear completed</button>
+      <button class="ctx-item" id="ctx-clear-all" role="menuitem">Clear all</button>
+      <div class="ctx-separator" role="separator"></div>
+      <button class="ctx-item" id="ctx-open-source" role="menuitem">Open source file</button>
+      <button class="ctx-item" id="ctx-reveal-source" role="menuitem">Reveal in file manager</button>
+      <div class="ctx-separator" role="separator"></div>
+      <button class="ctx-item" id="ctx-repair-tags" role="menuitem">Repair MKV tags</button>
+      <button class="ctx-item" id="ctx-deep-repair" role="menuitem" title="Scans audio and subtitle streams to compute exact byte counts, then derives the video bitrate by subtraction. Also counts video frames. Speed depends on disk read speed. Use for files with severely corrupted metadata.">Deep repair MKV tags</button>
+	 </div>
 
     <!-- ═══ Modal: Overwrite prompt (§7.3) ═══ -->
-    <div class="modal-overlay" id="modal-overwrite">
+    <div class="modal-overlay" id="modal-overwrite" role="dialog" aria-modal="true" aria-labelledby="modal-overwrite-title">
       <div class="modal-box">
-        <div class="modal-title">File Already Exists</div>
+        <div class="modal-title" id="modal-overwrite-title">File Already Exists</div>
         <div class="modal-body" id="overwrite-body">Output file already exists. Overwrite?</div>
         <div class="modal-buttons">
-          <button class="btn" id="ow-yes">Yes</button>
+          <button class="btn btn-primary" id="ow-yes">Yes</button>
           <button class="btn" id="ow-no">No</button>
-          <button class="btn btn-primary" id="ow-always">Always</button>
+          <button class="btn" id="ow-always">Always</button>
         </div>
       </div>
     </div>
 
     <!-- ═══ Modal: Fallback prompt (§10.6) ═══ -->
-    <div class="modal-overlay" id="modal-fallback">
+    <div class="modal-overlay" id="modal-fallback" role="dialog" aria-modal="true" aria-labelledby="modal-fallback-title">
       <div class="modal-box">
-        <div class="modal-title">Hardware Encoder Failed</div>
+        <div class="modal-title" id="modal-fallback-title">Hardware Encoder Failed</div>
         <div class="modal-body" id="fallback-body">Fall back to software encoding for this file and continue?</div>
         <div class="modal-buttons">
           <button class="btn btn-primary" id="fb-yes">Yes</button>
@@ -359,9 +363,9 @@
     </div>
 
     <!-- ═══ Modal: Delete-source confirmation (§7.4) ═══ -->
-    <div class="modal-overlay" id="modal-delete-confirm">
+    <div class="modal-overlay" id="modal-delete-confirm" role="dialog" aria-modal="true" aria-labelledby="modal-delete-title">
       <div class="modal-box">
-        <div class="modal-title">Delete Source Files</div>
+        <div class="modal-title" id="modal-delete-title">Delete Source Files</div>
         <div class="modal-body">"Delete source" is enabled. Source files will be permanently deleted after each successful encode. Continue?</div>
         <div class="modal-buttons">
           <button class="btn btn-primary" id="dc-yes">Continue</button>
@@ -371,9 +375,9 @@
     </div>
 
     <!-- ═══ Modal: Post-batch countdown (§7.6) ═══ -->
-    <div class="modal-overlay" id="modal-countdown">
+    <div class="modal-overlay" id="modal-countdown" role="dialog" aria-modal="true" aria-labelledby="modal-countdown-title">
       <div class="modal-box">
-        <div class="modal-title">Post-Batch Action</div>
+        <div class="modal-title" id="modal-countdown-title">Post-Batch Action</div>
         <div class="modal-body" id="countdown-body">Performing action in <strong id="countdown-value">0</strong> seconds…</div>
         <div class="modal-buttons">
           <button class="btn" id="cd-cancel">Cancel</button>
@@ -382,9 +386,9 @@
     </div>
 	
 	<!-- ═══ Modal: ffmpeg missing ═══ -->
-    <div class="modal-overlay" id="modal-ffmpeg-missing">
+    <div class="modal-overlay" id="modal-ffmpeg-missing" role="dialog" aria-modal="true" aria-labelledby="modal-ffmpeg-title">
       <div class="modal-box">
-        <div class="modal-title">ffmpeg Not Found</div>
+        <div class="modal-title" id="modal-ffmpeg-title">ffmpeg Not Found</div>
         <div class="modal-body" id="ffmpeg-missing-body">
           ffmpeg and ffprobe are required but were not found on your system.
           Would you like to download them automatically? (~80 MB)
@@ -496,12 +500,12 @@
     // Status icons - done/failed/cancelled colours are updated by applyTheme
     let STATUS_ICONS = {
       pending: '',
-      probing: '<svg class="spinner" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5"><circle cx="12" cy="12" r="10" stroke-dasharray="31.4 31.4" stroke-linecap="round"/></svg>',
-      encoding: '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><circle cx="12" cy="12" r="9"/><path d="M12 6v6l4 2"/></svg>',
-      done: '<svg viewBox="0 0 24 24" fill="none" stroke="#4ade80" stroke-width="2.5"><path d="M5 13l4 4L19 7"/></svg>',
-      failed: '<svg viewBox="0 0 24 24" fill="none" stroke="#f87171" stroke-width="2.5"><path d="M6 6l12 12M18 6L6 18"/></svg>',
-      skipped: '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M5 5l14 7-14 7V5z"/><line x1="19" y1="5" x2="19" y2="19"/></svg>',
-      cancelled: '<svg viewBox="0 0 24 24" fill="none" stroke="#fb923c" stroke-width="2.5"><circle cx="12" cy="12" r="9"/><line x1="9" y1="9" x2="15" y2="15"/></svg>',
+      probing: '<svg aria-hidden="true" class="spinner" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5"><circle cx="12" cy="12" r="10" stroke-dasharray="31.4 31.4" stroke-linecap="round"/></svg>',
+      encoding: '<svg aria-hidden="true" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><circle cx="12" cy="12" r="9"/><path d="M12 6v6l4 2"/></svg>',
+      done: '<svg aria-hidden="true" viewBox="0 0 24 24" fill="none" stroke="#4ade80" stroke-width="2.5"><path d="M5 13l4 4L19 7"/></svg>',
+      failed: '<svg aria-hidden="true" viewBox="0 0 24 24" fill="none" stroke="#f87171" stroke-width="2.5"><path d="M6 6l12 12M18 6L6 18"/></svg>',
+      skipped: '<svg aria-hidden="true" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M5 5l14 7-14 7V5z"/><line x1="19" y1="5" x2="19" y2="19"/></svg>',
+      cancelled: '<svg aria-hidden="true" viewBox="0 0 24 24" fill="none" stroke="#fb923c" stroke-width="2.5"><circle cx="12" cy="12" r="9"/><line x1="9" y1="9" x2="15" y2="15"/></svg>',
     };
 
     // ═══════════════════════════════════════════════════════════════
@@ -779,9 +783,9 @@
       }
 
       // Update SVG status icons with themed colours
-      STATUS_ICONS.done = `<svg viewBox="0 0 24 24" fill="none" stroke="${derived['icon-done']}" stroke-width="2.5"><path d="M5 13l4 4L19 7"/></svg>`;
-      STATUS_ICONS.failed = `<svg viewBox="0 0 24 24" fill="none" stroke="${derived['icon-failed']}" stroke-width="2.5"><path d="M6 6l12 12M18 6L6 18"/></svg>`;
-      STATUS_ICONS.cancelled = `<svg viewBox="0 0 24 24" fill="none" stroke="${derived['icon-cancelled']}" stroke-width="2.5"><circle cx="12" cy="12" r="9"/><line x1="9" y1="9" x2="15" y2="15"/></svg>`;
+      STATUS_ICONS.done = `<svg aria-hidden="true" viewBox="0 0 24 24" fill="none" stroke="${derived['icon-done']}" stroke-width="2.5"><path d="M5 13l4 4L19 7"/></svg>`;
+      STATUS_ICONS.failed = `<svg aria-hidden="true" viewBox="0 0 24 24" fill="none" stroke="${derived['icon-failed']}" stroke-width="2.5"><path d="M6 6l12 12M18 6L6 18"/></svg>`;
+      STATUS_ICONS.cancelled = `<svg aria-hidden="true" viewBox="0 0 24 24" fill="none" stroke="${derived['icon-cancelled']}" stroke-width="2.5"><circle cx="12" cy="12" r="9"/><line x1="9" y1="9" x2="15" y2="15"/></svg>`;
     }
 
     // ── Colour helper functions ──────────────────────────────────
@@ -905,12 +909,14 @@
           rightPanel.classList.add('collapsed');
           splitterToggle.innerHTML = '&#x25C0;';
           splitterToggle.title = 'Show settings panel';
+          splitterToggle.setAttribute('aria-label', 'Show settings panel');
           leftPanel.style.flex = '1';
           leftPanel.style.width = '';
         } else {
           rightPanel.classList.remove('collapsed');
           splitterToggle.innerHTML = '&#x25B6;';
           splitterToggle.title = 'Hide settings panel';
+          splitterToggle.setAttribute('aria-label', 'Hide settings panel');
           // Let flex layout restore the split naturally
           leftPanel.style.flex = 'none';
           const mainRect = mainArea.getBoundingClientRect();
@@ -1025,6 +1031,11 @@
 
     // ── Full queue rebuild (used when row count changes) ──
     function fullRenderQueue() {
+	// Toggle empty-state placeholder
+      const emptyState = $('#queue-empty-state');
+      if (emptyState) {
+        emptyState.classList.toggle('visible', queueData.length === 0);
+      }
       const fragment = document.createDocumentFragment();
       const settings = getTargetBitrateSettings(); // read DOM once (#6)
       for (let i = 0; i < queueData.length; i++) {
@@ -1222,7 +1233,7 @@
       const mbps = item.videoBitrateMbps;
       const sourceCodec = (item.videoCodec || '').toLowerCase();
       // Codecs that cannot be stream-copied into MKV/MP4
-      const isNonCopyable = ['gif', 'apng', 'mjpeg'].includes(sourceCodec);
+      const isNonCopyable = ['gif', 'apng', 'mjpeg', 'webp'].includes(sourceCodec);
 
       if (!mbps || mbps <= 0) {
         if (settings.rcMode === 'CRF') {
@@ -2044,15 +2055,19 @@
         });
 
         // Enable/disable based on context
-        $('#ctx-requeue-selected').classList.toggle('disabled', batchRunning || !selectedHasTerminal);
-        $('#ctx-requeue-all').classList.toggle('disabled', batchRunning || !hasTerminal);
-        $('#ctx-remove-selected').classList.toggle('disabled', batchRunning || !hasSelection);
-        $('#ctx-clear-completed').classList.toggle('disabled', batchRunning);
-        $('#ctx-clear-all').classList.toggle('disabled', batchRunning);
-        $('#ctx-open-source').classList.toggle('disabled', !hasSelection);
-        $('#ctx-reveal-source').classList.toggle('disabled', !hasSelection);
-        $('#ctx-repair-tags').classList.toggle('disabled', batchRunning || !hasSelection);
-        $('#ctx-deep-repair').classList.toggle('disabled', batchRunning || !hasSelection);
+        const setCtxState = (id, disabled) => {
+          $(id).classList.toggle('disabled', disabled);
+          $(id).setAttribute('aria-disabled', String(disabled));
+        };
+        setCtxState('#ctx-requeue-selected', batchRunning || !selectedHasTerminal);
+        setCtxState('#ctx-requeue-all', batchRunning || !hasTerminal);
+        setCtxState('#ctx-remove-selected', batchRunning || !hasSelection);
+        setCtxState('#ctx-clear-completed', batchRunning);
+        setCtxState('#ctx-clear-all', batchRunning);
+        setCtxState('#ctx-open-source', !hasSelection);
+        setCtxState('#ctx-reveal-source', !hasSelection);
+        setCtxState('#ctx-repair-tags', batchRunning || !hasSelection);
+        setCtxState('#ctx-deep-repair', batchRunning || !hasSelection);
 
         contextMenu.style.left = e.clientX + 'px';
         contextMenu.style.top = e.clientY + 'px';

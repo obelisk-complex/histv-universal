@@ -72,7 +72,33 @@ fn parse_numeric(s: &str) -> Option<f64> {
 /// metadata in one go. Only the packet-counting bitrate fallback (tier 4)
 /// requires a second invocation, and that's rare.
 pub async fn probe_file(file_path: &str, sink: &dyn EventSink) -> Result<ProbeResult, String> {
-    // ── Single-pass probe: all streams + format in one call ──
+    // Animated WebP: ffprobe can't extract metadata, use RIFF parser
+    if file_path.to_lowercase().ends_with(".webp") {
+        if let Ok(Some(info)) = crate::webp_decode::probe_webp(std::path::Path::new(file_path)) {
+            let duration = info.total_duration_ms as f64 / 1000.0;
+            let file_size = std::fs::metadata(file_path).map(|m| m.len()).unwrap_or(0);
+            let bitrate_bps = if duration > 0.0 {
+                (file_size as f64 * 8.0) / duration
+            } else {
+                0.0
+            };
+            return Ok(ProbeResult {
+                video_codec: "webp".to_string(),
+                video_width: info.width,
+                video_height: info.height,
+                video_bitrate_bps: bitrate_bps,
+                video_bitrate_mbps: bitrate_bps / 1_000_000.0,
+                is_hdr: false,
+                color_transfer: String::new(),
+                audio_streams: Vec::new(),
+                duration_secs: duration,
+            });
+        }
+        // Fall through to normal probe if RIFF parse fails
+        // (might be a static WebP, which ffprobe can handle)
+    }
+	
+	// ── Single-pass probe: all streams + format in one call ──
     let json_raw = run_ffprobe(&[
         "-v", "error",
         "-show_streams",

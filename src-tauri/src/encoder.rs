@@ -189,10 +189,13 @@ pub fn decide_encode_strategy(
     peak_multiplier: f64,
 ) -> EncodeDecision {
     // Codecs that cannot be stream-copied into MKV/MP4 - always transcode.
-    let is_copyable = !matches!(video_codec, "gif" | "apng" | "mjpeg");
+    let is_copyable = !matches!(video_codec, "gif" | "apng" | "mjpeg" | "webp");
     let is_already_target = video_codec == target_codec;
 
     if bitrate_mbps <= threshold || bitrate_mbps <= 0.0 {
+		// Below threshold and copyable: stream-copy regardless of codec.
+        // A 2Mbps H.264 file with HEVC target stays H.264; re-encoding
+        // would risk quality loss for a file that's already small enough.
         if bitrate_mbps > 0.0 && is_copyable {
             EncodeDecision::Copy
         } else if rate_control_mode == "CRF" || rate_control_mode == "crf" {
@@ -549,7 +552,9 @@ pub async fn run_encode_loop(
         let item_video_bitrate_mbps = queue[idx].video_bitrate_mbps;
         let item_duration_secs = queue[idx].duration_secs;
         let item_is_hdr = queue[idx].is_hdr;
-        let is_image_source = matches!(item_video_codec.as_str(), "gif" | "apng" | "mjpeg");
+        let is_image_source = matches!(item_video_codec.as_str(), "gif" | "apng" | "mjpeg" | "webp");
+		let is_animated_webp = item_video_codec == "webp"
+			&& item_full_path.to_lowercase().ends_with(".webp");
 
         // Per-file pixel format and optional tonemap filter (#1, #2).
         // preserve_hdr is hoisted above the loop; tonemap uses a static str.
@@ -857,6 +862,62 @@ pub async fn run_encode_loop(
                 &queue[idx].audio_streams, &settings.audio_encoder, settings.audio_cap, sink,
             )
         };
+		
+        let exit_code: i32;
+        let mut final_frame_count: Option<u64>;
+		
+// ── Animated WebP: dedicated decode + encode pipeline ──
+        if is_animated_webp {
+            sink.log("  Animated WebP: using RIFF decode pipeline");
+            let webp_result = crate::webp_decode::transcode_animated_webp(
+                &item_full_path,
+                &output_str,
+                &video_args,
+                settings.threads,
+                settings.low_priority,
+                sink,
+                batch_control,
+            ).await;
+
+            match webp_result {
+                Ok(r) if r.was_cancelled => {
+                    if batch_control.should_cancel_all() {
+                        was_cancelled = true;
+                        queue[idx].status = QueueItemStatus::Cancelled;
+                        sink.queue_item_updated(idx, "Cancelled");
+                        break;
+                    }
+                    queue[idx].status = QueueItemStatus::Cancelled;
+                    sink.queue_item_updated(idx, "Cancelled");
+                    continue;
+                }
+                Ok(r) if r.exit_code != 0 => {
+                    let err_msg = format!("  ERROR: WebP encode failed (exit code {})", r.exit_code);
+                    sink.log(&err_msg);
+                    write_log(&mut log_writer, &err_msg);
+                    if temp_output_file.exists() { let _ = std::fs::remove_file(&temp_output_file); }
+                    queue[idx].status = QueueItemStatus::Failed;
+                    sink.queue_item_updated(idx, "Failed");
+                    fail_count += 1;
+                    continue;
+                }
+                Ok(r) => {
+                    final_frame_count = Some(r.frame_count);
+                }
+
+                Err(e) => {
+                    sink.log(&format!("  ERROR: {e}"));
+                    write_log(&mut log_writer, &format!("  ERROR: {e}"));
+                    queue[idx].status = QueueItemStatus::Failed;
+                    sink.queue_item_updated(idx, "Failed");
+                    fail_count += 1;
+                    continue;
+                }
+            }
+
+            // Skip the normal ffmpeg path - jump to post-encode size check
+            // (the code after the single-pass/two-pass blocks)
+        } else {
 
         // Assemble ffmpeg command
         let video_arg_refs: Vec<&str> = video_args.iter().map(|s| s.as_str()).collect();
@@ -881,8 +942,6 @@ pub async fn run_encode_loop(
         let use_two_pass = precision_two_pass;
 
         let proc_start = std::time::Instant::now();
-        let exit_code: i32;
-        let mut final_frame_count: Option<u64>;
 
         if use_two_pass {
             // ── Two-pass VBR (software encoders only) (#5) ──
@@ -997,7 +1056,7 @@ pub async fn run_encode_loop(
                 Ok(r) if r.was_cancelled_all => {
                     sink.log("  Cancelled (batch cancel)");
                     write_log(&mut log_writer, "  Cancelled (batch cancel)");
-                    if output_file.exists() { let _ = std::fs::remove_file(&temp_output_file); }
+                    if temp_output_file.exists() { let _ = std::fs::remove_file(&temp_output_file); }
                     queue[idx].status = QueueItemStatus::Cancelled;
                     sink.queue_item_updated(idx, "Cancelled");
                     was_cancelled = true;
@@ -1006,7 +1065,7 @@ pub async fn run_encode_loop(
                 Ok(r) if r.was_cancelled_current => {
                     sink.log("  Cancelled current file");
                     write_log(&mut log_writer, "  Cancelled");
-                    if output_file.exists() {
+                    if temp_output_file.exists() {
                         let _ = std::fs::remove_file(&temp_output_file);
                         sink.log("  Partial output removed");
                     }
@@ -1042,7 +1101,7 @@ pub async fn run_encode_loop(
                     sink.log(&format!("  Falling back to software encoder ({})...", sw_fallback));
                     write_log(&mut log_writer, &format!("  Fallback to {}", sw_fallback));
 
-                    if output_file.exists() { let _ = std::fs::remove_file(&temp_output_file); }
+                    if temp_output_file.exists() { let _ = std::fs::remove_file(&temp_output_file); }
 
                     // Rebuild with software encoder
                     let mut sw_video_args: Vec<String>;
@@ -1118,7 +1177,7 @@ pub async fn run_encode_loop(
                 } else {
                     sink.log("  Stopping batch due to encoder failure");
                     write_log(&mut log_writer, "  Batch stopped (encoder failure)");
-                    if output_file.exists() { let _ = std::fs::remove_file(&temp_output_file); }
+                    if temp_output_file.exists() { let _ = std::fs::remove_file(&temp_output_file); }
                     queue[idx].status = QueueItemStatus::Failed;
                     sink.queue_item_updated(idx, "Failed");
                     fail_count += 1;
@@ -1129,7 +1188,7 @@ pub async fn run_encode_loop(
             let err_msg = format!("  ERROR: ffmpeg exited with code {}", exit_code);
             sink.log(&err_msg);
             write_log(&mut log_writer, &err_msg);
-            if output_file.exists() {
+            if temp_output_file.exists() {
                 let _ = std::fs::remove_file(&temp_output_file);
                 sink.log("  Failed output removed");
             }
@@ -1138,6 +1197,7 @@ pub async fn run_encode_loop(
             fail_count += 1;
             continue;
         }
+	}
 
         // Post-encode size check
         // In replace mode, ffmpeg wrote to temp_output_file; in other modes temp == final.

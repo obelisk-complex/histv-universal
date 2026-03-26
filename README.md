@@ -1,6 +1,6 @@
 # Honey, I Shrunk The Vids
 
-[![Quillx](https://raw.githubusercontent.com/qainsights/Quillx/main/badges/quillx-3.svg)](https://github.com/qainsights/Quillx)
+[![](https://raw.githubusercontent.com/qainsights/Quillx/main/badges/quillx-3.svg)](https://github.com/qainsights/Quillx)
 
 A cross-platform batch video encoder that shrinks your video files to a target quality level. No need to babysit the queue or tweak settings per file - just pick a target bitrate, add your files, and hit start.
 
@@ -44,6 +44,7 @@ Available as a desktop app and a headless CLI for servers (see [CLI-README.md](C
 - **Subtitles** - all subtitle tracks are kept.
 - **Output options** - save to a folder, next to the source file, or replace the source. MKV or MP4 output.
 - **Size safety net** - if the encoded file ends up bigger than the original, the app throws it away and copies the original into the new container instead.
+- **MKV tag repair** - detects and corrects stale stream statistics tags left behind by ffmpeg and third-party muxing tools, so bitrate decisions use the real numbers. Runs automatically at import and after each encode, with optional manual deep repair for severely corrupted metadata.
 - **Performance controls** - limit CPU threads and/or run encoding at low priority so your PC stays usable.
 - **ETA** - shows estimated time remaining in the progress bar and the window title, so you can see it from the taskbar.
 - **Batch controls** - start, pause, cancel current file, cancel everything. Progress bars per file and overall.
@@ -54,7 +55,7 @@ Available as a desktop app and a headless CLI for servers (see [CLI-README.md](C
 - **Log console** - colour-coded log with filters, optional file export.
 - **Notifications** - system notification when the batch finishes.
 - **Auto-clear** - optionally clears finished items from the queue.
-- **Themes** - dark and light themes included. Drop custom JSON theme files into the themes folder. See [THEMES.md](THEMES.md).
+- **Themes** - six built-in themes (dark, light, and four community-inspired palettes). Create your own with just 6 colour values - the app derives everything else automatically. See [THEMES.md](THEMES.md).
 - **ffmpeg downloader** - offers to download ffmpeg for you if it's not installed.
 - **Remembers settings** - everything is saved to config.json in the same folder as the .exe, and restored on next launch.
 - **CLI version** - same engine as a command-line tool for servers and scripts. See [CLI-README.md](CLI-README.md).
@@ -117,10 +118,12 @@ You set a target bitrate and the app decides what to do with each file:
 
 | Situation | What happens |
 |-----------|-------------|
-| Already small enough, same codec | **Copied as-is** - no re-encoding |
-| Already small enough, different codec | **Re-encoded for quality** using QP or CRF |
-| Too big | **Shrunk** to hit the target bitrate |
+| Already small enough | **Copied as-is** - no re-encoding, regardless of codec |
+| Too big | **Shrunk** to hit the target bitrate using VBR encoding |
+| Zero bitrate / unreadable header | **Re-encoded for quality** using QP or CRF |
 | GIF or APNG | **Always re-encoded** into a proper video |
+
+Files within 15% above the threshold that are already in the target codec are also copied rather than re-encoded, to avoid wasting time on marginal gains.
 
 If an encode makes the file bigger than it was, the app throws away the encode and copies the original into the new container instead.
 
@@ -170,6 +173,7 @@ People with a pile of video files at different sizes and formats who want to shr
 │   │   ├── ffmpeg.rs           # Binary resolution, download, spawning
 │   │   ├── probe.rs            # Media probing via ffprobe
 │   │   ├── queue.rs            # Queue data structures, file collection
+│   │   ├── mkv_tags.rs         # MKV stream statistics tag repair (EBML)
 │   │   ├── events.rs           # EventSink + BatchControl trait definitions
 │   │   ├── tauri_sink.rs       # GUI EventSink (Tauri emit)
 │   │   ├── tauri_batch_control.rs # GUI BatchControl (Mutex + emit-and-poll)
@@ -180,11 +184,11 @@ People with a pile of video files at different sizes and formats who want to shr
 │   │   ├── staging.rs          # Local staging for remote files
 │   │   ├── disk_monitor.rs     # Disk-space estimation + runtime monitoring
 │   │   ├── config.rs           # GUI persistent settings
-│   │   └── themes.rs           # Theme loading
-│   └── themes/
-│       ├── default-dark.json
-│       └── default-light.json
+│   │   └── themes.rs           # Theme loading + built-in themes
+│   └── themes/                 # User-editable theme JSON files
 ├── .github/workflows/          # CI: per-platform builds
+├── THEMES.md                   # Theme creation guide
+├── CLI-README.md               # CLI documentation
 └── README.md
 ```
 

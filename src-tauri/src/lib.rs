@@ -7,6 +7,7 @@ pub mod queue;
 pub mod remote;
 pub mod disk_monitor;
 pub mod staging;
+pub mod webp_decode;
 
 #[cfg(feature = "custom-protocol")]
 mod config;
