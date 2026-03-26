@@ -4,6 +4,10 @@ Command-line batch video encoder - the headless companion to [Honey, I Shrunk Th
 
 Same encoding engine as the desktop app: figures out what each file needs, uses your GPU if available, handles audio tracks individually, copies files from network drives before encoding, watches disk space, and checks output sizes. Built for servers and automation.
 
+#### Can I use this with Sonarr/Radarr?
+
+Yes! Please see the [Sonarr-Radarr Guide](https://github.com/obelisk-complex/histv-universal/Sonarr-Radarr-Integration.md) for details.
+
 ## Installation
 
 Download the binary from the [Releases page](https://github.com/obelisk-complex/histv-universal/releases). Place it on your PATH. On Linux/macOS: `chmod +x histv-cli-*`

@@ -4,7 +4,7 @@
 
 A cross-platform batch video encoder that shrinks your video files to a target quality level. No need to babysit the queue or tweak settings per file - just pick a target bitrate, add your files, and hit start.
 
-Available as a desktop app and a headless CLI for servers (see [CLI-README.md](CLI-README.md)). Both use the same encoding engine. Portable binaries are on the GitHub [Releases page](https://github.com/obelisk-complex/histv-universal/releases).
+Available as a desktop app and a headless CLI for servers (see [CLI-README.md](CLI-README.md)) The CLI can be used with Sonarr/Radarr via Custom Script; please see the [Sonarr-Radarr Guide](Sonarr-Radarr-Integration.md) for details. Both GUI and CLI use the same encoding engine for compatibility and maintainability. Portable binaries are on the GitHub [Releases page](https://github.com/obelisk-complex/histv-universal/releases).
 
 ---
 
