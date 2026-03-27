@@ -1,0 +1,34 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<component type="desktop-application">
+  <id>com.histv.encoder</id>
+  <name>Honey, I Shrunk The Vids</name>
+  <summary>Batch video encoder with smart bitrate decisions</summary>
+  <metadata_license>CC0-1.0</metadata_license>
+  <project_license>LicenseRef-proprietary=https://github.com/obelisk-complex/histv-universal/blob/main/LICENSE</project_license>
+  <description>
+    <p>
+      A cross-platform batch video encoder that shrinks your video files to a
+      target quality level. Pick a target bitrate, add your files, and hit start.
+      The app figures out what to do with each file automatically.
+    </p>
+    <p>
+      Supports GPU-accelerated encoding (AMF, NVENC, QSV, VAAPI, VideoToolbox),
+      HDR preservation and tonemapping, animated WebP/GIF/APNG conversion,
+      precision mode with CRF quality targeting, and 25+ input formats.
+    </p>
+  </description>
+  <url type="homepage">https://github.com/obelisk-complex/histv-universal</url>
+  <url type="bugtracker">https://github.com/obelisk-complex/histv-universal/issues</url>
+  <launchable type="desktop-id">com.histv.encoder.desktop</launchable>
+  <provides>
+    <binary>histv</binary>
+  </provides>
+  <content_rating type="oars-1.1" />
+  <releases>
+    <release version="2.3.4" date="2026-03-26">
+      <description>
+        <p>Animated WebP support, theme overhaul, accessibility pass, expanded format support.</p>
+      </description>
+    </release>
+  </releases>
+</component>

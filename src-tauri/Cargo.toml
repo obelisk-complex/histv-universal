@@ -1,6 +1,6 @@
 [package]
 name = "histv"
-version = "2.3.4"
+version = "2.3.5"
 description = "Honey, I Shrunk The Vids - batch video encoder"
 authors = ["claude.ai", "obelisk-complex"]
 edition = "2021"

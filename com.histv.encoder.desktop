@@ -1,0 +1,9 @@
+[Desktop Entry]
+Name=Honey, I Shrunk The Vids
+Comment=Batch video encoder with smart bitrate decisions
+Exec=histv
+Icon=com.histv.encoder
+Terminal=false
+Type=Application
+Categories=AudioVideo;Video;
+Keywords=video;encoder;batch;ffmpeg;transcode;

@@ -3,7 +3,7 @@
 <head>
   <meta charset="UTF-8" />
   <meta name="viewport" content="width=device-width, initial-scale=1.0" />
-  <title>Honey, I Shrunk The Vids v2.3.4</title>
+  <title>Honey, I Shrunk The Vids v2.3.5</title>
   <link rel="stylesheet" href="css/app.css" />
 </head>
 <body>
@@ -425,7 +425,8 @@
     }
 
     // ── State ──────────────────────────────────────────────────────
-    let queueData = [];                // mirrors backend queue
+    let isFlatpak = false;             // check if we're in flatpak
+	let queueData = [];                // mirrors backend queue
     let videoEncoders = [];            // EncoderInfo[]
     let audioEncoders = [];            // string[]
     let themes = [];                   // Theme[]
@@ -507,11 +508,57 @@
       skipped: '<svg aria-hidden="true" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M5 5l14 7-14 7V5z"/><line x1="19" y1="5" x2="19" y2="19"/></svg>',
       cancelled: '<svg aria-hidden="true" viewBox="0 0 24 24" fill="none" stroke="#fb923c" stroke-width="2.5"><circle cx="12" cy="12" r="9"/><line x1="9" y1="9" x2="15" y2="15"/></svg>',
     };
+	
+	function applyFlatpakMode() {
+      // Hide the output folder row (text field + Browse button)
+      const folderRow = txtOutputFolder.closest('.form-row');
+      if (folderRow) folderRow.style.display = 'none';
+
+      // Hide the "Use output folder" radio option, keep "beside" and "replace"
+      const folderRadio = document.querySelector('input[name="output-mode"][value="folder"]');
+      if (folderRadio) {
+        folderRadio.closest('.radio-label').style.display = 'none';
+        // If "folder" was the saved selection, switch to "beside"
+        if (folderRadio.checked) {
+          const besideRadio = document.querySelector('input[name="output-mode"][value="beside"]');
+          if (besideRadio) {
+            besideRadio.checked = true;
+          }
+        }
+      }
+
+      // Update the tooltip to reflect the reduced options
+      const modeTooltip = document.querySelector('#radio-output-mode')
+        ?.closest('.has-tooltip')
+        ?.querySelector('.tooltip-text');
+      if (modeTooltip) {
+        modeTooltip.textContent = '"Place next to source" creates an "output" folder beside each input file. "Replace source" swaps the original with the encoded version.';
+      }
+
+      // Disable drag-and-drop
+      const container = document.querySelector('#queue-container');
+      if (container) {
+        // Remove existing drag listeners by replacing the node
+        // (cleaner than tracking and removing individual listeners)
+        container.removeAttribute('data-drag-enabled');
+      }
+      // Hide the drop overlay entirely
+      const overlay = document.querySelector('#drop-overlay');
+      if (overlay) overlay.style.display = 'none';
+
+      // Update empty state hint (no drag-and-drop)
+      const emptyHint = document.querySelector('#queue-empty-state .empty-hint');
+      if (emptyHint) {
+        emptyHint.textContent = 'Use Add to select files';
+      }
+    }
 
     // ═══════════════════════════════════════════════════════════════
     //  INITIALISATION
     // ═══════════════════════════════════════════════════════════════
     document.addEventListener('DOMContentLoaded', async () => {
+	  isFlatpak = await invoke('is_flatpak');
+      if (isFlatpak) applyFlatpakMode();
       const savedConfig = await loadConfig();
       await loadThemes(savedConfig);
       setupSplitter();
@@ -1367,6 +1414,7 @@
 
     // ── Drag-and-drop (§5.1) ──
     function setupDragAndDrop() {
+      if (isFlatpak) return;
       const container = $('#queue-container');
       let dragCounter = 0;
 
@@ -1411,6 +1459,7 @@
 
     // ── Clipboard paste (§5.1 / §15.4) ──
     function setupClipboardPaste() {
+      if (isFlatpak) return;
       document.addEventListener('keydown', async (e) => {
         if ((e.ctrlKey || e.metaKey) && e.key === 'v') {
           // Only paste into the queue area

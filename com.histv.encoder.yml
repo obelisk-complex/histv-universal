@@ -1,0 +1,44 @@
+id: com.histv.encoder
+runtime: org.gnome.Platform
+runtime-version: '46'
+sdk: org.gnome.Sdk
+command: histv
+
+finish-args:
+  - --socket=wayland
+  - --socket=fallback-x11
+  - --share=ipc
+  - --device=dri
+
+modules:
+  # ── ffmpeg (static build, GPL for QSV support) ──
+  - name: ffmpeg
+    buildsystem: simple
+    sources:
+      - type: archive
+        url: https://github.com/BtbN/FFmpeg-Builds/releases/download/autobuild-2026-03-26-13-16/ffmpeg-n8.0.1-76-gfa4ee7ab3c-linux64-gpl-8.0.tar.xz
+        sha256: caafc66dde5057d9228d39dbc1667292df521b6a0ceb63c49d8046ba0ab4740c
+        strip-components: 1
+    build-commands:
+      - install -Dm755 bin/ffmpeg /app/bin/ffmpeg
+      - install -Dm755 bin/ffprobe /app/bin/ffprobe
+
+  # ── HISTV binary + assets ──
+  - name: histv
+    buildsystem: simple
+    sources:
+      - type: file
+        path: histv-deb-extract/usr/bin/histv
+      - type: file
+        path: histv-deb-extract/usr/lib/histv/
+      - type: file
+        path: com.histv.encoder.desktop
+      - type: file
+        path: com.histv.encoder.metainfo.xml
+      - type: file
+        path: src-tauri/icons/128x128.png
+    build-commands:
+      - install -Dm755 histv /app/bin/histv
+      - install -Dm644 com.histv.encoder.desktop /app/share/applications/com.histv.encoder.desktop
+      - install -Dm644 com.histv.encoder.metainfo.xml /app/share/metainfo/com.histv.encoder.metainfo.xml
+      - install -Dm644 128x128.png /app/share/icons/hicolor/128x128/apps/com.histv.encoder.png

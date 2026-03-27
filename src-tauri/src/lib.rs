@@ -55,6 +55,12 @@ pub struct AppState {
 mod gui_commands {
     use super::*;
     use tauri::Emitter;
+	
+	#[tauri::command]
+	#[allow(dead_code)]
+    pub fn is_flatpak() -> bool {
+        std::env::var("FLATPAK_ID").is_ok()
+    }
 
     #[tauri::command]
     pub async fn get_themes(state: tauri::State<'_, Arc<AppState>>) -> Result<Vec<Theme>, String> {
