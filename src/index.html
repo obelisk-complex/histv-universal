@@ -429,6 +429,7 @@
 	let queueData = [];                // mirrors backend queue
     let videoEncoders = [];            // EncoderInfo[]
     let audioEncoders = [];            // string[]
+	let batchWasCancelled = false;     // check if batch was user-cancelled
     let themes = [];                   // Theme[]
     let selectedRows = new Set();      // indices of selected rows
     let batchRunning = false;
@@ -439,6 +440,7 @@
     let batchCurrentFile = 0;          // current file index in batch (1-based)
     let batchTotalFiles = 0;           // total files in batch
     let currentEncodingIndex = -1;     // queue index of the currently-encoding row
+	let currentEncodeProgress = '';    // store the file progress as a global value
     let fileEncodeStart = 0;           // wall-clock timestamp when current file started
     const defaultTitle = document.title;
 
@@ -1083,6 +1085,7 @@
       if (emptyState) {
         emptyState.classList.toggle('visible', queueData.length === 0);
       }
+	  
       const fragment = document.createDocumentFragment();
       const settings = getTargetBitrateSettings(); // read DOM once (#6)
       for (let i = 0; i < queueData.length; i++) {
@@ -1093,6 +1096,9 @@
         if (selectedRows.has(i)) tr.classList.add('selected');
         tr.dataset.index = i;
         tr.dataset.status = statusLower;
+		if (statusLower === 'encoding' && i === currentEncodingIndex && currentEncodeProgress) {
+          tr.style.setProperty('--encode-progress', currentEncodeProgress);
+        }
 
         // Checkbox
         const tdCheck = document.createElement('td');
@@ -1140,7 +1146,6 @@
         badge.appendChild(document.createTextNode(item.status || 'Pending'));
         tdStatus.appendChild(badge);
         tr.appendChild(tdStatus);
-
         fragment.appendChild(tr);
       }
       queueBody.innerHTML = '';
@@ -1332,10 +1337,21 @@
     function scheduleQueueRefresh() {
       if (queueRefreshDebounce) clearTimeout(queueRefreshDebounce);
       queueRefreshDebounce = setTimeout(async () => {
-        queueData = await invoke('get_queue');
+        await fetchQueue();
         renderQueue();
         checkHdrAuto();
       }, 80);
+	}
+	  
+	  async function fetchQueue() {
+      queueData = await invoke('get_queue');
+      // The backend queue is a snapshot from before encoding started.
+      // During a batch, the encoding item's status is only tracked on the
+      // frontend via queue-item-updated events. Re-apply it after every
+      // backend fetch so renders show the correct status.
+      if (batchRunning && currentEncodingIndex >= 0 && currentEncodingIndex < queueData.length) {
+        queueData[currentEncodingIndex].status = 'Encoding';
+      }
     }
 
     // ── Add files via backend ──
@@ -1344,7 +1360,7 @@
       try {
         const { startIndex, count } = await invoke('add_files_to_queue', { paths });
         // Re-fetch full queue to stay in sync
-        queueData = await invoke('get_queue');
+        await fetchQueue();
         renderQueue();
         // Probe newly-added items by index range - no path lookups (#2)
         for (let i = startIndex; i < startIndex + count; i++) {
@@ -1492,7 +1508,7 @@
           try {
             await invoke('remove_queue_items', { indices: Array.from(selectedRows) });
             selectedRows.clear();
-            queueData = await invoke('get_queue');
+            await fetchQueue();
             renderQueue();
           } catch (err) {
             console.error('Delete key remove error:', err);
@@ -1518,7 +1534,7 @@
           e.preventDefault();
           try {
             await invoke('requeue_items', { indices: Array.from(selectedRows) });
-            queueData = await invoke('get_queue');
+            await fetchQueue();
             renderQueue();
           } catch (err) {
             console.error('Requeue shortcut error:', err);
@@ -1659,7 +1675,7 @@
           try {
             await invoke('move_queue_item', { from: fromIndex, to: toIndex });
             selectedRows.clear();
-            queueData = await invoke('get_queue');
+            await fetchQueue();
             renderQueue();
           } catch (err) {
             console.error('Move item error:', err);
@@ -2132,7 +2148,7 @@
         if (batchRunning || selectedRows.size === 0) return;
         try {
           await invoke('requeue_items', { indices: Array.from(selectedRows) });
-          queueData = await invoke('get_queue');
+          await fetchQueue();
           renderQueue();
         } catch (e) {
           console.error('Requeue selected error:', e);
@@ -2144,7 +2160,7 @@
         if (batchRunning) return;
         try {
           await invoke('requeue_all');
-          queueData = await invoke('get_queue');
+          await fetchQueue();
           renderQueue();
         } catch (e) {
           console.error('Requeue all error:', e);
@@ -2157,7 +2173,7 @@
         try {
           await invoke('remove_queue_items', { indices: Array.from(selectedRows) });
           selectedRows.clear();
-          queueData = await invoke('get_queue');
+          await fetchQueue();
           renderQueue();
         } catch (e) {
           console.error('Remove selected error:', e);
@@ -2170,7 +2186,7 @@
         try {
           await invoke('clear_completed');
           selectedRows.clear();
-          queueData = await invoke('get_queue');
+          await fetchQueue();
           renderQueue();
         } catch (e) {
           console.error('Clear completed error:', e);
@@ -2223,7 +2239,7 @@
         try {
           const count = await invoke('repair_tags', { indices });
           if (count > 0) {
-            queueData = await invoke('get_queue');
+            await fetchQueue();
             renderQueue();
           }
         } catch (e) {
@@ -2238,7 +2254,7 @@
         try {
           const count = await invoke('deep_repair_tags', { indices });
           if (count > 0) {
-            queueData = await invoke('get_queue');
+            await fetchQueue();
             renderQueue();
           }
         } catch (e) {
@@ -2253,7 +2269,7 @@
     function setupBottomButtons() {
       btnStart.addEventListener('click', startBatch);
       btnCancelCur.addEventListener('click', () => invoke('cancel_current'));
-      btnCancelAll.addEventListener('click', () => invoke('cancel_all'));
+      btnCancelAll.addEventListener('click', () => { batchWasCancelled = true; invoke('cancel_all'); });
       btnPause.addEventListener('click', togglePause);
 
       // Browse output folder
@@ -2318,9 +2334,9 @@
     }
 
     // ── Start batch (§10.1) ──
-    async function startBatch() {
+    async function startBatch(skipDeleteConfirm = false) {
       // Delete-source confirmation (§7.4)
-      if (chkDeleteSource.checked) {
+      if (chkDeleteSource.checked && !skipDeleteConfirm) {
         const confirmed = await showDeleteConfirm();
         if (!confirmed) return;
       }
@@ -2606,7 +2622,8 @@
         if (currentEncodingIndex >= 0) {
           const encodingRow = queueBody.children[currentEncodingIndex];
           if (encodingRow) {
-            encodingRow.style.setProperty('--encode-progress', percent.toFixed(1) + '%');
+            currentEncodeProgress = percent.toFixed(1) + '%';
+            encodingRow.style.setProperty('--encode-progress', currentEncodeProgress);
           }
         }
       });
@@ -2707,6 +2724,7 @@
         statusCmd.textContent = '';
         jobFile.textContent = '';
         jobProgressText.textContent = '';
+		currentEncodeProgress = '';
         progressBar.style.width = '0%';
         batchProgressBar.style.width = '0%';
         updateBatchButtons();
@@ -2721,14 +2739,23 @@
         }
 
         // Re-fetch queue to get final statuses
-        queueData = await invoke('get_queue');
+        await fetchQueue();
         renderQueue();
+		
+		// Auto-continue: if new files were added during the batch, start another
+        if (!batchWasCancelled) {
+          const hasPending = queueData.some(i => (i.status || '').toLowerCase() === 'pending');
+          if (hasPending) {
+            startBatch(true);
+          }
+        }
+        batchWasCancelled = false;
       });
 
       // Queue sync complete — the backend syncs queue statuses after
       // batch-finished fires. Re-fetch to pick up the authoritative state.
       listen('queue-sync-complete', async () => {
-        queueData = await invoke('get_queue');
+        await fetchQueue();
         renderQueue();
       });
 

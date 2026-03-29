@@ -762,6 +762,7 @@ pub fn run() {
         .plugin(tauri_plugin_shell::init())
         .manage(app_state.clone())
         .invoke_handler(tauri::generate_handler![
+		    is_flatpak,
             get_themes,
             load_themes,
             get_config,

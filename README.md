@@ -33,7 +33,7 @@ Available as a desktop app and a headless CLI for servers (see [CLI-README.md](C
 <summary><strong>Full feature list</strong></summary>
 
 - **Queue management** - drag-and-drop, clipboard paste (Ctrl+V), file/folder picker. Click, Shift+click, Ctrl+click, Ctrl+A, Delete. Right-click context menu. Drag to reorder.
-- **GIF/APNG support** - animated GIFs and APNGs are converted to proper video files automatically.
+- **GIF/APNG/WebP support** - animated GIFs, APNGs, and WebPs are converted to proper video files automatically.
 - **Smart decisions** - the app figures out what to do with each file before you start. Files that are already small enough get copied untouched. Files that are too big get shrunk. The queue shows the plan in real time as you change settings.
 - **GPU encoding** - tests your GPU at startup and picks the fastest working encoder. Falls back to software automatically if the GPU encoder fails mid-file.
 - **QP / CRF quality modes** - two ways to control quality when files are below your target bitrate. QP gives predictable sizes; CRF gives better-looking results with less predictable sizes.
@@ -47,7 +47,7 @@ Available as a desktop app and a headless CLI for servers (see [CLI-README.md](C
 - **MKV tag repair** - detects and corrects stale stream statistics tags left behind by ffmpeg and third-party muxing tools, so bitrate decisions use the real numbers. Runs automatically at import and after each encode, with optional manual deep repair for severely corrupted metadata.
 - **Performance controls** - limit CPU threads and/or run encoding at low priority so your PC stays usable.
 - **ETA** - shows estimated time remaining in the progress bar and the window title, so you can see it from the taskbar.
-- **Batch controls** - start, pause, cancel current file, cancel everything. Progress bars per file and overall.
+- **Batch controls** - start, pause, cancel current file, cancel everything. Progress bars per file and overall. Files added mid-batch are picked up automatically.
 - **Dry run** - shows what the app would do without actually encoding anything.
 - **Network drive support** - detects files on network shares and copies them locally before encoding, so slow networks don't bottleneck the encoder.
 - **Disk space monitoring** - pauses encoding if your drive gets too full, resumes when space frees up.
@@ -55,6 +55,7 @@ Available as a desktop app and a headless CLI for servers (see [CLI-README.md](C
 - **Log console** - colour-coded log with filters, optional file export.
 - **Notifications** - system notification when the batch finishes.
 - **Auto-clear** - optionally clears finished items from the queue.
+- **Flatpak support** - available as a sandboxed Flatpak bundle for Linux with zero filesystem permissions. All file access goes through XDG Desktop Portals.
 - **Themes** - six built-in themes (dark, light, and four community-inspired palettes). Create your own with just 6 colour values - the app derives everything else automatically. See [THEMES.md](THEMES.md).
 - **ffmpeg downloader** - offers to download ffmpeg for you if it's not installed.
 - **Remembers settings** - everything is saved to config.json in the same folder as the .exe, and restored on next launch.
@@ -85,6 +86,14 @@ Each platform has a standard build (you provide ffmpeg) and a **-full** build (f
 | **Linux** | `histv-linux-full.AppImage` | `histv-cli-linux-full.tar.gz` |
 | **macOS (Apple Silicon)** | `histv-macos-arm64-full.dmg` | `histv-cli-macos-arm64-full.tar.gz` |
 | **macOS (Intel)** | `histv-macos-x64-full.dmg` | `histv-cli-macos-x64-full.tar.gz` |
+
+**Flatpak** - sandboxed Linux build with ffmpeg included:
+
+| Platform | GUI |
+|----------|-----|
+| **Linux** | `histv-linux.flatpak` |
+
+The Flatpak uses XDG Desktop Portals for file access. Drag-and-drop and clipboard paste are disabled; use the Add button to select files. The CLI is not included in the Flatpak.
 
 All binaries are portable - no installation needed. On Linux, mark the AppImage executable (`chmod +x`). On macOS, open the DMG and drag to Applications. On Windows, extract the zip to a folder.
 
@@ -174,9 +183,9 @@ People with a pile of video files at different sizes and formats who want to shr
 │   │   ├── probe.rs            # Media probing via ffprobe
 │   │   ├── queue.rs            # Queue data structures, file collection
 │   │   ├── mkv_tags.rs         # MKV stream statistics tag repair (EBML)
-│   │   ├── events.rs           # EventSink + BatchControl trait definitions
-│   │   ├── tauri_sink.rs       # GUI EventSink (Tauri emit)
-│   │   ├── tauri_batch_control.rs # GUI BatchControl (Mutex + emit-and-poll)
+│   │   ├── config.rs           # GUI persistent settings
+│   │   ├── themes.rs           # Theme loading + built-in themes
+│   │   └── webp_decode.rs      # Animated WebP RIFF parser + decode pipeline
 │   │   ├── cli_sink.rs         # CLI EventSink (stderr + indicatif)
 │   │   ├── batch_control.rs    # CLI BatchControl (atomics + TTY prompts)
 │   │   ├── cli.rs              # CLI arg parsing (clap) + job files
