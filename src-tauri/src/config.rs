@@ -12,7 +12,7 @@ pub struct AppConfig {
     pub theme: String,
     pub output_folder: String,
     pub output_container: String, // "mkv" | "mp4"
-    pub output_mode: String, // "folder" | "beside" | "replace"
+    pub output_mode: String,      // "folder" | "beside" | "replace"
     pub overwrite: bool,
     pub delete_source: bool,
     pub save_log: bool,
@@ -35,10 +35,12 @@ pub struct AppConfig {
     pub threads: u32,
     pub low_priority: bool,
     pub precision_mode: bool,
-	#[serde(default)]
+    #[serde(default)]
     pub compatibility_mode: bool,
     #[serde(default)]
     pub preserve_av1: bool,
+    #[serde(default)]
+    pub force_local: bool,
 }
 
 impl Default for AppConfig {
@@ -46,7 +48,7 @@ impl Default for AppConfig {
         Self {
             theme: "Default Dark".to_string(),
             output_folder: "output".to_string(),
-            output_container: "mkv".to_string(),
+            output_container: "auto".to_string(),
             output_mode: "folder".to_string(),
             overwrite: false,
             delete_source: false,
@@ -70,8 +72,9 @@ impl Default for AppConfig {
             threads: 0,
             low_priority: false,
             precision_mode: false,
-			compatibility_mode: false,
+            compatibility_mode: false,
             preserve_av1: false,
+            force_local: false,
         }
     }
 }

@@ -74,10 +74,7 @@ pub fn estimate_file(item: &QueueItem, decision: &EncodeDecision) -> FileEstimat
 }
 
 /// Estimate total disk-space impact for a batch of files.
-pub fn estimate_batch(
-    items: &[&QueueItem],
-    decisions: &[EncodeDecision],
-) -> BatchEstimate {
+pub fn estimate_batch(items: &[&QueueItem], decisions: &[EncodeDecision]) -> BatchEstimate {
     let mut total_output_bytes: u64 = 0;
     let mut peak_additional: u64 = 0;
     let mut peak_additional_delete: u64 = 0;
@@ -300,7 +297,10 @@ impl DiskMonitor {
     ) -> bool {
         // Check output partition
         if self.is_over_limit(&self.output_path, sink) {
-            if !self.wait_for_space(&self.output_path, sink, batch_control).await {
+            if !self
+                .wait_for_space(&self.output_path, sink, batch_control)
+                .await
+            {
                 return false;
             }
         }

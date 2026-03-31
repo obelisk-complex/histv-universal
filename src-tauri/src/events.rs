@@ -24,6 +24,12 @@ pub trait EventSink: Send + Sync {
     fn ffmpeg_download_progress(&self, message: &str);
     fn toast(&self, message: &str);
     fn post_batch(&self, action: &str, countdown: u32);
+
+    // ── Wave-based staging events (Phase 3) ───────────────────
+    fn wave_progress(&self, _wave: u32, _total_waves: u32, _file_in_wave: u32, _wave_size: u32) {}
+    fn wave_status(&self, _message: &str) {}
+    fn batch_time_estimate(&self, _elapsed_secs: f64, _remaining_secs: f64) {}
+    fn wave_time_estimate(&self, _elapsed_secs: f64, _remaining_secs: f64) {}
 }
 
 /// Bidirectional batch control interface for cancellation, overwrite policy,

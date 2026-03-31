@@ -47,6 +47,22 @@ struct PostBatchPayload {
     countdown: u32,
 }
 
+#[derive(Serialize, Clone)]
+#[serde(rename_all = "camelCase")]
+struct WaveProgressPayload {
+    wave: u32,
+    total_waves: u32,
+    file_in_wave: u32,
+    wave_size: u32,
+}
+
+#[derive(Serialize, Clone)]
+#[serde(rename_all = "camelCase")]
+struct TimeEstimatePayload {
+    elapsed_secs: f64,
+    remaining_secs: f64,
+}
+
 /// Wraps a Tauri `AppHandle` to satisfy the `EventSink` trait.
 pub struct TauriSink {
     app: AppHandle,
@@ -70,16 +86,18 @@ impl EventSink for TauriSink {
                 percent,
                 time_secs,
                 total_secs,
-                pass: pass.map(|(cur, tot)| PassInfo { current: cur, total: tot }),
+                pass: pass.map(|(cur, tot)| PassInfo {
+                    current: cur,
+                    total: tot,
+                }),
             },
         );
     }
 
     fn batch_progress(&self, current: u32, total: usize) {
-        let _ = self.app.emit(
-            "batch-progress",
-            BatchProgressPayload { current, total },
-        );
+        let _ = self
+            .app
+            .emit("batch-progress", BatchProgressPayload { current, total });
     }
 
     fn batch_status(&self, message: &str) {
@@ -132,6 +150,44 @@ impl EventSink for TauriSink {
             PostBatchPayload {
                 action: action.to_string(),
                 countdown,
+            },
+        );
+    }
+
+    // ── Wave-based staging events (Phase 3) ───────────────────
+
+    fn wave_progress(&self, wave: u32, total_waves: u32, file_in_wave: u32, wave_size: u32) {
+        let _ = self.app.emit(
+            "wave-progress",
+            WaveProgressPayload {
+                wave,
+                total_waves,
+                file_in_wave,
+                wave_size,
+            },
+        );
+    }
+
+    fn wave_status(&self, message: &str) {
+        let _ = self.app.emit("wave-status", message);
+    }
+
+    fn batch_time_estimate(&self, elapsed_secs: f64, remaining_secs: f64) {
+        let _ = self.app.emit(
+            "batch-time-estimate",
+            TimeEstimatePayload {
+                elapsed_secs,
+                remaining_secs,
+            },
+        );
+    }
+
+    fn wave_time_estimate(&self, elapsed_secs: f64, remaining_secs: f64) {
+        let _ = self.app.emit(
+            "wave-time-estimate",
+            TimeEstimatePayload {
+                elapsed_secs,
+                remaining_secs,
             },
         );
     }

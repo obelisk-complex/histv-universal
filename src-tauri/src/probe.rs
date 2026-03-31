@@ -16,6 +16,9 @@ pub struct ProbeResult {
     pub color_transfer: String,
     pub audio_streams: Vec<AudioStreamInfo>,
     pub duration_secs: f64,
+    pub dovi_profile: Option<u8>,
+    pub dovi_bl_compat_id: Option<u8>,
+    pub has_hdr10plus: bool,
 }
 
 /// Run ffprobe with the given arguments and return trimmed stdout.
@@ -92,18 +95,23 @@ pub async fn probe_file(file_path: &str, sink: &dyn EventSink) -> Result<ProbeRe
                 color_transfer: String::new(),
                 audio_streams: Vec::new(),
                 duration_secs: duration,
+                dovi_profile: None,
+                dovi_bl_compat_id: None,
+                has_hdr10plus: false,
             });
         }
         // Fall through to normal probe if RIFF parse fails
         // (might be a static WebP, which ffprobe can handle)
     }
-	
-	// ── Single-pass probe: all streams + format in one call ──
+
+    // ── Single-pass probe: all streams + format in one call ──
     let json_raw = run_ffprobe(&[
-        "-v", "error",
+        "-v",
+        "error",
         "-show_streams",
         "-show_format",
-        "-of", "json",
+        "-of",
+        "json",
         file_path,
     ])
     .await
@@ -127,6 +135,9 @@ pub async fn probe_file(file_path: &str, sink: &dyn EventSink) -> Result<ProbeRe
     let mut tag_duration: Option<f64> = None;
     let mut audio_streams: Vec<AudioStreamInfo> = Vec::new();
     let mut audio_index: u32 = 0;
+    let mut dovi_profile: Option<u8> = None;
+    let mut dovi_bl_compat_id: Option<u8> = None;
+    let mut has_hdr10plus = false;
 
     if let Some(streams_arr) = streams {
         for s in streams_arr {
@@ -134,6 +145,25 @@ pub async fn probe_file(file_path: &str, sink: &dyn EventSink) -> Result<ProbeRe
 
             if codec_type == "video" && video_codec.is_empty() {
                 // First video stream
+
+                // ── Dolby Vision / HDR10+ side data detection ──
+                if let Some(side_data_list) = s["side_data_list"].as_array() {
+                    for sd in side_data_list {
+                        let sd_type = sd["side_data_type"].as_str().unwrap_or("");
+                        if sd_type == "DOVI configuration record" {
+                            dovi_profile = sd["dv_profile"].as_u64().map(|v| v as u8);
+                            dovi_bl_compat_id = sd["dv_bl_signal_compatibility_id"]
+                                .as_u64()
+                                .map(|v| v as u8);
+                        }
+                        if sd_type.contains("HDR10+")
+                            || sd_type.contains("SMPTE2094-40")
+                            || sd_type.contains("HDR Dynamic Metadata")
+                        {
+                            has_hdr10plus = true;
+                        }
+                    }
+                }
                 video_codec = s["codec_name"].as_str().unwrap_or("").to_string();
                 video_width = s["width"].as_u64().unwrap_or(0) as u32;
                 video_height = s["height"].as_u64().unwrap_or(0) as u32;
@@ -199,7 +229,8 @@ pub async fn probe_file(file_path: &str, sink: &dyn EventSink) -> Result<ProbeRe
     // averages (e.g. MPEG1 streams report the sequence header's declared
     // rate, not the real average).
     let file_size = std::fs::metadata(file_path).map(|m| m.len()).unwrap_or(0);
-    let audio_total_bps: f64 = audio_streams.iter()
+    let audio_total_bps: f64 = audio_streams
+        .iter()
         .map(|s| s.bitrate_kbps as f64 * 1000.0)
         .sum();
 
@@ -267,22 +298,28 @@ pub async fn probe_file(file_path: &str, sink: &dyn EventSink) -> Result<ProbeRe
     } else {
         packet_scan_duration(file_path, sink).await
     };
-	
-	let video_bitrate_bps = if file_size > 0 && duration_secs > 0.0 {
+
+    let video_bitrate_bps = if file_size > 0 && duration_secs > 0.0 {
         let total_bps = (file_size as f64 * 8.0) / duration_secs;
         (total_bps - audio_total_bps).max(0.0)
     } else if let Some(bps) = stream_bitrate {
         bps
     } else if let (Some(bytes), Some(dur)) = (tag_bytes, tag_duration) {
-        if dur > 0.0 { (bytes * 8.0) / dur } else { 0.0 }
-    } else if let Some(bps) = format["bit_rate"]
-        .as_str()
-        .and_then(parse_numeric)
-    {
+        if dur > 0.0 {
+            (bytes * 8.0) / dur
+        } else {
+            0.0
+        }
+    } else if let Some(bps) = format["bit_rate"].as_str().and_then(parse_numeric) {
         bps
     } else {
         packet_count_bitrate(file_path, sink).await
     };
+
+    // If no video stream was found, the file is not a valid video
+    if video_codec.is_empty() {
+        return Err("No video stream found".to_string());
+    }
 
     let video_bitrate_mbps = video_bitrate_bps / 1_000_000.0;
 
@@ -296,6 +333,9 @@ pub async fn probe_file(file_path: &str, sink: &dyn EventSink) -> Result<ProbeRe
         color_transfer,
         audio_streams,
         duration_secs,
+        dovi_profile,
+        dovi_bl_compat_id,
+        has_hdr10plus,
     })
 }
 
@@ -312,11 +352,16 @@ async fn packet_scan_duration(file_path: &str, sink: &dyn EventSink) -> f64 {
     // Approach 1: seek near the end and read the last packet's PTS.
     // This is fast even on large files since ffprobe seeks by percentage.
     let raw = run_ffprobe(&[
-        "-v", "error",
-        "-select_streams", "v:0",
-        "-read_intervals", "99999%+#1",
-        "-show_entries", "packet=pts_time",
-        "-of", "default=noprint_wrappers=1:nokey=1",
+        "-v",
+        "error",
+        "-select_streams",
+        "v:0",
+        "-read_intervals",
+        "99999%+#1",
+        "-show_entries",
+        "packet=pts_time",
+        "-of",
+        "default=noprint_wrappers=1:nokey=1",
         file_path,
     ])
     .await
@@ -330,10 +375,13 @@ async fn packet_scan_duration(file_path: &str, sink: &dyn EventSink) -> f64 {
     // Approach 2: force ffprobe to calculate duration via the demuxer
     // by requesting format duration with -count_packets.
     let raw2 = run_ffprobe(&[
-        "-v", "error",
+        "-v",
+        "error",
         "-count_packets",
-        "-show_entries", "format=duration",
-        "-of", "default=noprint_wrappers=1:nokey=1",
+        "-show_entries",
+        "format=duration",
+        "-of",
+        "default=noprint_wrappers=1:nokey=1",
         file_path,
     ])
     .await
@@ -357,12 +405,18 @@ async fn packet_count_bitrate(file_path: &str, sink: &dyn EventSink) -> f64 {
     ));
 
     let raw = match run_ffprobe(&[
-        "-v", "error",
-        "-select_streams", "v:0",
-        "-show_entries", "packet=size",
-        "-show_entries", "stream=duration",
-        "-show_entries", "format=duration",
-        "-of", "json",
+        "-v",
+        "error",
+        "-select_streams",
+        "v:0",
+        "-show_entries",
+        "packet=size",
+        "-show_entries",
+        "stream=duration",
+        "-show_entries",
+        "format=duration",
+        "-of",
+        "json",
         file_path,
     ])
     .await
@@ -371,19 +425,14 @@ async fn packet_count_bitrate(file_path: &str, sink: &dyn EventSink) -> f64 {
         Err(_) => return 0.0,
     };
 
-    let json: serde_json::Value =
-        serde_json::from_str(&raw).unwrap_or(serde_json::Value::Null);
+    let json: serde_json::Value = serde_json::from_str(&raw).unwrap_or(serde_json::Value::Null);
 
     // Sum packet sizes
     let total_bytes: f64 = json["packets"]
         .as_array()
         .map(|arr| {
             arr.iter()
-                .filter_map(|p| {
-                    p["size"]
-                        .as_str()
-                        .and_then(|s| s.parse::<f64>().ok())
-                })
+                .filter_map(|p| p["size"].as_str().and_then(|s| s.parse::<f64>().ok()))
                 .sum()
         })
         .unwrap_or(0.0);
@@ -396,15 +445,10 @@ async fn packet_count_bitrate(file_path: &str, sink: &dyn EventSink) -> f64 {
     let duration = json["streams"]
         .as_array()
         .and_then(|arr| {
-            arr.iter().find_map(|s| {
-                s["duration"].as_str().and_then(parse_numeric)
-            })
+            arr.iter()
+                .find_map(|s| s["duration"].as_str().and_then(parse_numeric))
         })
-        .or_else(|| {
-            json["format"]["duration"]
-                .as_str()
-                .and_then(parse_numeric)
-        })
+        .or_else(|| json["format"]["duration"].as_str().and_then(parse_numeric))
         .unwrap_or(0.0);
 
     if duration > 0.0 {

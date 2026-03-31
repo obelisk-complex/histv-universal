@@ -1,20 +1,24 @@
-pub mod events;
+pub mod disk_monitor;
+pub mod dovi_pipeline;
+pub mod dovi_tools;
 pub mod encoder;
+pub mod events;
 pub mod ffmpeg;
+pub mod hdr10plus_pipeline;
+pub mod hevc_utils;
 pub mod mkv_tags;
 pub mod probe;
 pub mod queue;
 pub mod remote;
-pub mod disk_monitor;
 pub mod staging;
 pub mod webp_decode;
 
 #[cfg(feature = "custom-protocol")]
 mod config;
 #[cfg(feature = "custom-protocol")]
-mod tauri_sink;
-#[cfg(feature = "custom-protocol")]
 mod tauri_batch_control;
+#[cfg(feature = "custom-protocol")]
+mod tauri_sink;
 #[cfg(feature = "custom-protocol")]
 mod themes;
 
@@ -24,7 +28,7 @@ use std::sync::{atomic::Ordering, Arc};
 use tokio::sync::Mutex;
 
 pub use encoder::EncoderInfo;
-pub use events::{EventSink, BatchControl};
+pub use events::{BatchControl, EventSink};
 pub use probe::ProbeResult;
 pub use queue::{AddResult, BatchState, QueueItem, QueueItemStatus};
 
@@ -55,9 +59,9 @@ pub struct AppState {
 mod gui_commands {
     use super::*;
     use tauri::Emitter;
-	
-	#[tauri::command]
-	#[allow(dead_code)]
+
+    #[tauri::command]
+    #[allow(dead_code)]
     pub fn is_flatpak() -> bool {
         std::env::var("FLATPAK_ID").is_ok()
     }
@@ -243,7 +247,9 @@ mod gui_commands {
     }
 
     #[tauri::command]
-    pub async fn get_queue(state: tauri::State<'_, Arc<AppState>>) -> Result<Vec<QueueItem>, String> {
+    pub async fn get_queue(
+        state: tauri::State<'_, Arc<AppState>>,
+    ) -> Result<Vec<QueueItem>, String> {
         let q = state.queue.lock().await;
         Ok(q.clone())
     }
@@ -290,26 +296,21 @@ mod gui_commands {
                         q[index].color_transfer = pr.color_transfer.clone();
                         q[index].audio_streams = pr.audio_streams.clone();
                         q[index].duration_secs = pr.duration_secs;
+                        q[index].dovi_profile = pr.dovi_profile;
+                        q[index].dovi_bl_compat_id = pr.dovi_bl_compat_id;
+                        q[index].has_hdr10plus = pr.has_hdr10plus;
                         q[index].status = QueueItemStatus::Pending;
 
                         // Lightweight MKV tag repair: fix stale statistics
                         // so the queue shows the real bitrate from import.
-                        if file_path.ends_with(".mkv") && pr.duration_secs > 0.0 {
-                            if let Ok(file_size) = std::fs::metadata(&file_path).map(|m| m.len()) {
-                                let audio_total_bps: u64 = pr.audio_streams.iter()
-                                    .map(|s| s.bitrate_kbps as u64 * 1000)
-                                    .sum();
-                                if let Ok((n, bps)) = crate::mkv_tags::lightweight_repair(
-                                    std::path::Path::new(&file_path),
-                                    file_size, pr.duration_secs, audio_total_bps, None,
-                                ) {
-                                    if n > 0 {
-                                        let corrected_mbps = bps as f64 / 1_000_000.0;
-                                        q[index].video_bitrate_bps = bps as f64;
-                                        q[index].video_bitrate_mbps = corrected_mbps;
-                                    }
-                                }
-                            }
+                        if let Some(bps) = crate::mkv_tags::repair_after_probe(
+                            &file_path,
+                            pr.duration_secs,
+                            &pr.audio_streams,
+                        ) {
+                            let corrected_mbps = bps as f64 / 1_000_000.0;
+                            q[index].video_bitrate_bps = bps as f64;
+                            q[index].video_bitrate_mbps = corrected_mbps;
                         }
                     }
                     Err(_) => {
@@ -339,7 +340,9 @@ mod gui_commands {
         for (i, &index) in indices.iter().enumerate() {
             let file_path = {
                 let q = state.queue.lock().await;
-                if index >= q.len() { continue; }
+                if index >= q.len() {
+                    continue;
+                }
                 q[index].full_path.clone()
             };
 
@@ -352,7 +355,9 @@ mod gui_commands {
                     let mbps = bps as f64 / 1_000_000.0;
                     sink.log(&format!(
                         "[repair] Updated {} tag{} (video: {:.2}Mbps)",
-                        n, if n == 1 { "" } else { "s" }, mbps
+                        n,
+                        if n == 1 { "" } else { "s" },
+                        mbps
                     ));
                     {
                         let mut q = state.queue.lock().await;
@@ -373,8 +378,12 @@ mod gui_commands {
             }
         }
 
-        sink.log(&format!("[repair] Complete: {} of {} file{} updated",
-            repaired, total, if total == 1 { "" } else { "s" }));
+        sink.log(&format!(
+            "[repair] Complete: {} of {} file{} updated",
+            repaired,
+            total,
+            if total == 1 { "" } else { "s" }
+        ));
 
         Ok(repaired)
     }
@@ -395,7 +404,9 @@ mod gui_commands {
         for (i, &index) in indices.iter().enumerate() {
             let file_path = {
                 let q = state.queue.lock().await;
-                if index >= q.len() { continue; }
+                if index >= q.len() {
+                    continue;
+                }
                 q[index].full_path.clone()
             };
 
@@ -408,7 +419,9 @@ mod gui_commands {
                     let mbps = bps as f64 / 1_000_000.0;
                     sink.log(&format!(
                         "[deep-repair] Updated {} tag{} (video: {:.2}Mbps)",
-                        n, if n == 1 { "" } else { "s" }, mbps
+                        n,
+                        if n == 1 { "" } else { "s" },
+                        mbps
                     ));
                     {
                         let mut q = state.queue.lock().await;
@@ -429,10 +442,22 @@ mod gui_commands {
             }
         }
 
-        sink.log(&format!("[deep-repair] Complete: {} of {} file{} updated",
-            repaired, total, if total == 1 { "" } else { "s" }));
+        sink.log(&format!(
+            "[deep-repair] Complete: {} of {} file{} updated",
+            repaired,
+            total,
+            if total == 1 { "" } else { "s" }
+        ));
 
         Ok(repaired)
+    }
+
+    #[tauri::command]
+    pub async fn preflight_check(
+        state: tauri::State<'_, Arc<AppState>>,
+    ) -> Result<Vec<encoder::PreflightWarning>, String> {
+        let q = state.queue.lock().await;
+        Ok(encoder::preflight_scan(&q))
     }
 
     #[tauri::command]
@@ -461,7 +486,8 @@ mod gui_commands {
             let resolved = base.join(&raw_output_folder);
             sink.log(&format!(
                 "[batch] Resolved relative output '{}' to '{}'",
-                raw_output_folder, resolved.display()
+                raw_output_folder,
+                resolved.display()
             ));
             resolved.to_string_lossy().to_string()
         } else {
@@ -470,57 +496,61 @@ mod gui_commands {
 
         let batch_settings = encoder::BatchSettings {
             output_folder,
-            output_container: "mkv".to_string(), // legacy: resolved per-file now
+            output_container: settings["outputContainer"]
+                .as_str()
+                .unwrap_or("auto")
+                .to_string(),
             output_mode,
-            threshold: settings["targetBitrate"]
-                .as_f64().unwrap_or(5.0),
-            qp_i: settings["qpI"].as_u64().unwrap_or(20) as u32,
-            qp_p: settings["qpP"].as_u64().unwrap_or(22) as u32,
-            crf_val: settings["crf"].as_u64().unwrap_or(20) as u32,
+            threshold: settings["targetBitrate"].as_f64().unwrap_or(5.0),
+            qp_i: (settings["qpI"].as_u64().unwrap_or(20).min(51)) as u32,
+            qp_p: (settings["qpP"].as_u64().unwrap_or(22).min(51)) as u32,
+            crf_val: (settings["crf"].as_u64().unwrap_or(20).min(51)) as u32,
             rate_control_mode: settings["rateControlMode"]
-                .as_str().unwrap_or("QP").to_string(),
+                .as_str()
+                .unwrap_or("QP")
+                .to_string(),
             video_encoder: "auto".to_string(), // legacy: resolved per-file now
             codec_family: "hevc".to_string(),  // legacy: resolved per-file now
             audio_encoder: "ac3".to_string(),  // legacy: resolved per-file now
             audio_cap: 640,                    // legacy: resolved per-file now
-            pix_fmt: settings["pixFmt"]
-                .as_str().unwrap_or("yuv420p").to_string(),
-            delete_source: settings["deleteSource"]
-                .as_bool().unwrap_or(false),
-            save_log: settings["saveLog"]
-                .as_bool().unwrap_or(false),
+            pix_fmt: settings["pixFmt"].as_str().unwrap_or("yuv420p").to_string(),
+            delete_source: settings["deleteSource"].as_bool().unwrap_or(false),
+            save_log: settings["saveLog"].as_bool().unwrap_or(false),
             post_command: None,
-            peak_multiplier: settings["peakMultiplier"]
-                .as_f64().unwrap_or(1.5),
-            threads: settings["threads"]
-                .as_u64().unwrap_or(0) as u32,
-            low_priority: settings["lowPriority"]
-                .as_bool().unwrap_or(false),
-            precision_mode: settings["precisionMode"]
-                .as_bool().unwrap_or(false),
-            compatibility_mode: settings["compatibilityMode"]
-                .as_bool().unwrap_or(false),
-            preserve_av1: settings["preserveAv1"]
-                .as_bool().unwrap_or(false),
-            force_local: false,
+            peak_multiplier: settings["peakMultiplier"].as_f64().unwrap_or(1.5),
+            threads: (settings["threads"].as_u64().unwrap_or(0).min(64)) as u32,
+            low_priority: settings["lowPriority"].as_bool().unwrap_or(false),
+            precision_mode: settings["precisionMode"].as_bool().unwrap_or(false),
+            compatibility_mode: settings["compatibilityMode"].as_bool().unwrap_or(false),
+            preserve_av1: settings["preserveAv1"].as_bool().unwrap_or(false),
+            force_local: settings["forceLocal"].as_bool().unwrap_or(false),
         };
 
         let show_toast = settings["showToast"].as_bool().unwrap_or(false);
         let post_action = settings["postAction"]
-            .as_str().unwrap_or("None").to_string();
-        let post_countdown: u32 = settings["postCountdown"]
-            .as_u64().unwrap_or(0) as u32;
+            .as_str()
+            .unwrap_or("None")
+            .to_string();
+        let post_countdown: u32 = settings["postCountdown"].as_u64().unwrap_or(0) as u32;
 
         // Validate output folder (only in folder mode)
         if batch_settings.output_mode == "folder" {
             let out_path = std::path::Path::new(&batch_settings.output_folder);
             if !out_path.exists() {
-                std::fs::create_dir_all(out_path)
-                    .map_err(|e| format!("Could not create output folder '{}': {e}", batch_settings.output_folder))?;
+                std::fs::create_dir_all(out_path).map_err(|e| {
+                    format!(
+                        "Could not create output folder '{}': {e}",
+                        batch_settings.output_folder
+                    )
+                })?;
             }
             let test_path = out_path.join(".histv_write_test");
-            std::fs::write(&test_path, b"")
-                .map_err(|e| format!("Output folder '{}' is not writable: {e}", batch_settings.output_folder))?;
+            std::fs::write(&test_path, b"").map_err(|e| {
+                format!(
+                    "Output folder '{}' is not writable: {e}",
+                    batch_settings.output_folder
+                )
+            })?;
             let _ = std::fs::remove_file(&test_path);
         }
 
@@ -531,8 +561,7 @@ mod gui_commands {
             b.cancel_current = false;
             b.cancel_all = false;
             b.paused = false;
-            b.overwrite_always = settings["overwrite"]
-                .as_bool().unwrap_or(false);
+            b.overwrite_always = settings["overwrite"].as_bool().unwrap_or(false);
             b.hw_fallback_offered = false;
             b.overwrite_response = None;
             b.fallback_response = None;
@@ -544,7 +573,8 @@ mod gui_commands {
         // only those indices are synced back (#15).
         let (mut queue_items, pending_indices): (Vec<queue::QueueItem>, Vec<usize>) = {
             let q = state_arc.queue.lock().await;
-            let pending: Vec<usize> = q.iter()
+            let pending: Vec<usize> = q
+                .iter()
                 .enumerate()
                 .filter(|(_, item)| item.status == queue::QueueItemStatus::Pending)
                 .map(|(i, _)| i)
@@ -559,30 +589,43 @@ mod gui_commands {
         }
 
         // Create batch control wrapping the GUI's shared state
-        let batch_ctrl = Arc::new(
-            tauri_batch_control::GuiBatchControl::new(
-                state_arc.clone(),
-                app.clone(),
+        let batch_ctrl = Arc::new(tauri_batch_control::GuiBatchControl::new(
+            state_arc.clone(),
+            app.clone(),
+        ));
+
+        // Build wave plan for remote file staging
+        let wave_plan = {
+            let staging_dir = staging::resolve_staging_dir(None);
+            let mut mount_cache = remote::MountCache::new();
+            staging::WavePlanner::plan(
+                &queue_items,
+                &pending_indices,
+                &mut mount_cache,
+                &staging_dir,
+                batch_settings.force_local,
+                false, // remote_never: GUI always uses auto detection
             )
-        );
+        };
 
         // Spawn the encoding loop in the background
         let state_for_task = state_arc.clone();
         let sink_for_task = sink.clone();
         let app_for_task = app.clone();
-		let detected_encoders_for_task = {
+        let detected_encoders_for_task = {
             let ve = state_arc.detected_video_encoders.lock().await;
             ve.clone()
         };
         tokio::spawn(async move {
-            let (done, failed, skipped, _was_cancelled) =
-                encoder::run_encode_loop(
-                    sink_for_task.as_ref(),
-                    batch_ctrl.as_ref(),
-                    &mut queue_items,
-                    &batch_settings,
-					&detected_encoders_for_task,
-                ).await;
+            let (done, failed, skipped, _was_cancelled) = encoder::run_encode_loop(
+                sink_for_task.as_ref(),
+                batch_ctrl.as_ref(),
+                &mut queue_items,
+                &batch_settings,
+                &detected_encoders_for_task,
+                Some(wave_plan),
+            )
+            .await;
 
             // Sync only the items that were pending at batch start (#15).
             // Non-pending items were never touched by the encoder and don't
@@ -736,6 +779,25 @@ mod gui_commands {
     ) -> Result<(), String> {
         Err("Download feature not available in this build.".to_string())
     }
+
+    #[cfg(feature = "downloader")]
+    #[tauri::command]
+    pub async fn download_mp4box(app: tauri::AppHandle) -> Result<(), String> {
+        use tauri::Manager;
+        let sink = tauri_sink::TauriSink::new(app.clone());
+        dovi_tools::download_mp4box(&sink).await?;
+
+        // Re-resolve MP4Box path now that it's installed
+        let resource_dir = app.path().resource_dir().ok();
+        dovi_tools::reinit(resource_dir.as_deref(), &sink);
+        Ok(())
+    }
+
+    #[cfg(not(feature = "downloader"))]
+    #[tauri::command]
+    pub async fn download_mp4box(_app: tauri::AppHandle) -> Result<(), String> {
+        Err("Download feature not available in this build.".to_string())
+    }
 }
 
 // ── App entry ───────────────────────────────────────────────────
@@ -765,7 +827,7 @@ pub fn run() {
         .plugin(tauri_plugin_shell::init())
         .manage(app_state.clone())
         .invoke_handler(tauri::generate_handler![
-		    is_flatpak,
+            is_flatpak,
             get_themes,
             load_themes,
             get_config,
@@ -785,6 +847,7 @@ pub fn run() {
             probe_file,
             repair_tags,
             deep_repair_tags,
+            preflight_check,
             start_batch,
             cancel_current,
             cancel_all,
@@ -796,6 +859,7 @@ pub fn run() {
             check_ffmpeg_available,
             get_ffmpeg_dir,
             download_ffmpeg,
+            download_mp4box,
             reveal_file,
             open_file,
         ])
@@ -805,6 +869,9 @@ pub fn run() {
             // Resolve ffmpeg/ffprobe binary paths (sidecar or PATH)
             let resource_dir = app.path().resource_dir().ok();
             ffmpeg::init(resource_dir.as_deref(), None, &sink);
+
+            // Resolve DV tool paths (MP4Box)
+            dovi_tools::init(resource_dir.as_deref(), &sink);
 
             // Load config
             let loaded_config = config::load_config(&app.handle());
@@ -833,14 +900,17 @@ pub fn run() {
 
                 // Check if ffmpeg is reachable first
                 if !ffmpeg::is_available().await {
-                    state_for_detect.ffmpeg_missing.store(true, Ordering::Relaxed);
+                    state_for_detect
+                        .ffmpeg_missing
+                        .store(true, Ordering::Relaxed);
                     let _ = handle_for_detect.emit("ffmpeg-missing", ());
-                    detect_sink.log("[detect] ffmpeg not found - waiting for user to install or download it");
+                    detect_sink.log(
+                        "[detect] ffmpeg not found - waiting for user to install or download it",
+                    );
                     return;
                 }
 
-                let (video, audio) =
-                    encoder::detect_encoders(&detect_sink).await;
+                let (video, audio) = encoder::detect_encoders(&detect_sink).await;
                 {
                     let mut ve = state_for_detect.detected_video_encoders.lock().await;
                     *ve = video;
@@ -849,7 +919,9 @@ pub fn run() {
                     let mut ae = state_for_detect.detected_audio_encoders.lock().await;
                     *ae = audio;
                 }
-                state_for_detect.encoder_detection_done.store(true, Ordering::Relaxed);
+                state_for_detect
+                    .encoder_detection_done
+                    .store(true, Ordering::Relaxed);
                 let _ = handle_for_detect.emit("encoder-detection-done", ());
             });
 

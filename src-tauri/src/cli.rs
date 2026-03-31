@@ -20,7 +20,6 @@ pub struct CliArgs {
     pub inputs: Vec<PathBuf>,
 
     // ── Input ──────────────────────────────────────────────────
-
     /// Load settings and file list from a JSON job file
     #[arg(short = 'j', long = "job", value_name = "FILE")]
     pub job: Option<PathBuf>,
@@ -30,9 +29,13 @@ pub struct CliArgs {
     pub export_job: Option<PathBuf>,
 
     // ── Video ──────────────────────────────────────────────────
-
     /// Video codec family
-    #[arg(short = 'c', long = "codec", default_value = "auto", value_name = "CODEC")]
+    #[arg(
+        short = 'c',
+        long = "codec",
+        default_value = "auto",
+        value_name = "CODEC"
+    )]
     pub codec: CodecFamily,
 
     /// Force a specific encoder (e.g. hevc_nvenc, libx265).
@@ -41,7 +44,12 @@ pub struct CliArgs {
     pub encoder: Option<String>,
 
     /// Target bitrate in Mbps
-    #[arg(short = 'b', long = "bitrate", default_value = "4", value_name = "MBPS")]
+    #[arg(
+        short = 'b',
+        long = "bitrate",
+        default_value = "4",
+        value_name = "MBPS"
+    )]
     pub bitrate: f64,
 
     /// VBR peak ceiling as a multiplier of target bitrate (e.g. 1.5 = 150%)
@@ -52,16 +60,19 @@ pub struct CliArgs {
     #[arg(long = "rc", default_value = "qp", value_name = "MODE")]
     pub rc: RateControl,
 
-    /// QP I-frame value
-    #[arg(long = "qp-i", default_value = "20", value_name = "N")]
+    /// QP I-frame value (0–51)
+    #[arg(long = "qp-i", default_value = "20", value_name = "N",
+          value_parser = clap::value_parser!(u32).range(0..=51))]
     pub qp_i: u32,
 
-    /// QP P-frame value
-    #[arg(long = "qp-p", default_value = "22", value_name = "N")]
+    /// QP P-frame value (0–51)
+    #[arg(long = "qp-p", default_value = "22", value_name = "N",
+          value_parser = clap::value_parser!(u32).range(0..=51))]
     pub qp_p: u32,
 
-    /// CRF value (software encoders only)
-    #[arg(long = "crf", default_value = "20", value_name = "N")]
+    /// CRF value, software encoders only (0–51)
+    #[arg(long = "crf", default_value = "20", value_name = "N",
+          value_parser = clap::value_parser!(u32).range(0..=51))]
     pub crf: u32,
 
     /// Preserve 10-bit HDR (auto-detected per file if omitted)
@@ -72,8 +83,9 @@ pub struct CliArgs {
     #[arg(long = "no-hdr", conflicts_with = "hdr")]
     pub no_hdr: bool,
 
-    /// Limit the number of CPU threads ffmpeg may use (0 = auto)
-    #[arg(long = "threads", default_value = "0", value_name = "N")]
+    /// Limit the number of CPU threads ffmpeg may use (0 = auto, max 64)
+    #[arg(long = "threads", default_value = "0", value_name = "N",
+          value_parser = clap::value_parser!(u32).range(0..=64))]
     pub threads: u32,
 
     /// Run ffmpeg at below-normal process priority so other tasks are
@@ -87,8 +99,8 @@ pub struct CliArgs {
     /// CRF only.
     #[arg(long = "precision")]
     pub precision_mode: bool,
-	
-	/// Convert all files to H.264/MP4 with AC3 audio for maximum device
+
+    /// Convert all files to H.264/MP4 with AC3 audio for maximum device
     /// compatibility. Overrides --codec, --container, and --audio.
     #[arg(long = "compat", conflicts_with = "preserve_av1")]
     pub compat: bool,
@@ -98,9 +110,13 @@ pub struct CliArgs {
     pub preserve_av1: bool,
 
     // ── Audio ──────────────────────────────────────────────────
-
     /// Audio codec
-    #[arg(short = 'a', long = "audio", default_value = "auto", value_name = "CODEC")]
+    #[arg(
+        short = 'a',
+        long = "audio",
+        default_value = "auto",
+        value_name = "CODEC"
+    )]
     pub audio: AudioCodec,
 
     /// Audio bitrate cap in kbps
@@ -108,9 +124,13 @@ pub struct CliArgs {
     pub audio_cap: u32,
 
     // ── Output ─────────────────────────────────────────────────
-
     /// Output directory
-    #[arg(short = 'o', long = "output", default_value = "./output", value_name = "DIR")]
+    #[arg(
+        short = 'o',
+        long = "output",
+        default_value = "./output",
+        value_name = "DIR"
+    )]
     pub output: PathBuf,
 
     /// Output placement mode: folder (use --output dir), beside (create
@@ -132,7 +152,6 @@ pub struct CliArgs {
     pub delete_source: bool,
 
     // ── Behaviour ──────────────────────────────────────────────
-
     /// Probe all files and print the encoding plan, then exit
     #[arg(long = "dry-run")]
     pub dry_run: bool,
@@ -221,7 +240,7 @@ impl std::fmt::Display for RateControl {
 
 #[derive(Debug, Clone, ValueEnum, Serialize, Deserialize)]
 pub enum AudioCodec {
-	Auto,
+    Auto,
     Ac3,
     Eac3,
     Aac,
@@ -231,7 +250,7 @@ pub enum AudioCodec {
 impl std::fmt::Display for AudioCodec {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         match self {
-			Self::Auto => write!(f, "auto"),
+            Self::Auto => write!(f, "auto"),
             Self::Ac3 => write!(f, "ac3"),
             Self::Eac3 => write!(f, "eac3"),
             Self::Aac => write!(f, "aac"),
@@ -242,7 +261,7 @@ impl std::fmt::Display for AudioCodec {
 
 #[derive(Debug, Clone, ValueEnum, Serialize, Deserialize)]
 pub enum ContainerFormat {
-	Auto,
+    Auto,
     Mkv,
     Mp4,
 }
@@ -250,7 +269,7 @@ pub enum ContainerFormat {
 impl std::fmt::Display for ContainerFormat {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         match self {
-			Self::Auto => write!(f, "auto"),
+            Self::Auto => write!(f, "auto"),
             Self::Mkv => write!(f, "mkv"),
             Self::Mp4 => write!(f, "mp4"),
         }
@@ -376,7 +395,7 @@ pub struct JobFile {
     pub threads: Option<u32>,
     pub low_priority: Option<bool>,
     pub precision_mode: Option<bool>,
-	#[serde(default)]
+    #[serde(default)]
     pub compat: Option<bool>,
     #[serde(default)]
     pub preserve_av1: Option<bool>,
@@ -393,7 +412,11 @@ pub fn load_job_file(path: &std::path::Path) -> Result<JobFile, String> {
 /// Export current CLI args to a job file.
 pub fn export_job_file(args: &CliArgs, path: &std::path::Path) -> Result<(), String> {
     let job = JobFile {
-        files: args.inputs.iter().map(|p| p.to_string_lossy().to_string()).collect(),
+        files: args
+            .inputs
+            .iter()
+            .map(|p| p.to_string_lossy().to_string())
+            .collect(),
         codec: Some(args.codec.to_string()),
         bitrate: Some(args.bitrate),
         peak_multiplier: Some(args.peak_multiplier),
@@ -401,7 +424,13 @@ pub fn export_job_file(args: &CliArgs, path: &std::path::Path) -> Result<(), Str
         qp_i: Some(args.qp_i),
         qp_p: Some(args.qp_p),
         crf: Some(args.crf),
-        hdr: if args.hdr { Some(true) } else if args.no_hdr { Some(false) } else { None },
+        hdr: if args.hdr {
+            Some(true)
+        } else if args.no_hdr {
+            Some(false)
+        } else {
+            None
+        },
         audio_codec: Some(args.audio.to_string()),
         audio_bitrate_cap: Some(args.audio_cap),
         output: Some(args.output.to_string_lossy().to_string()),
@@ -411,7 +440,10 @@ pub fn export_job_file(args: &CliArgs, path: &std::path::Path) -> Result<(), Str
         delete_source: Some(args.delete_source),
         fallback: Some(args.fallback.to_string()),
         remote: Some(args.remote.to_string()),
-        local_tmp: args.local_tmp.as_ref().map(|p| p.to_string_lossy().to_string()),
+        local_tmp: args
+            .local_tmp
+            .as_ref()
+            .map(|p| p.to_string_lossy().to_string()),
         disk_limit: Some(args.disk_limit.clone()),
         disk_resume: args.disk_resume.map(|v| v.to_string()),
         post_command: args.post_command.clone(),
@@ -419,6 +451,8 @@ pub fn export_job_file(args: &CliArgs, path: &std::path::Path) -> Result<(), Str
         threads: Some(args.threads),
         low_priority: Some(args.low_priority),
         precision_mode: Some(args.precision_mode),
+        compat: Some(args.compat),
+        preserve_av1: Some(args.preserve_av1),
     };
 
     let json = serde_json::to_string_pretty(&job)
@@ -448,7 +482,7 @@ macro_rules! impl_fromstr_for_enum {
 impl_fromstr_for_enum!(CodecFamily, "hevc" => CodecFamily::Hevc, "h264" => CodecFamily::H264);
 impl_fromstr_for_enum!(RateControl, "qp" => RateControl::Qp, "crf" => RateControl::Crf);
 impl_fromstr_for_enum!(AudioCodec, "ac3" => AudioCodec::Ac3, "eac3" => AudioCodec::Eac3, "aac" => AudioCodec::Aac, "copy" => AudioCodec::Copy);
-impl_fromstr_for_enum!(ContainerFormat, "mkv" => ContainerFormat::Mkv, "mp4" => ContainerFormat::Mp4);
+impl_fromstr_for_enum!(ContainerFormat, "auto" => ContainerFormat::Auto, "mkv" => ContainerFormat::Mkv, "mp4" => ContainerFormat::Mp4);
 impl_fromstr_for_enum!(OutputMode, "folder" => OutputMode::Folder, "beside" => OutputMode::Beside, "replace" => OutputMode::Replace);
 impl_fromstr_for_enum!(OverwritePolicy, "ask" => OverwritePolicy::Ask, "yes" => OverwritePolicy::Yes, "skip" => OverwritePolicy::Skip);
 impl_fromstr_for_enum!(FallbackPolicy, "ask" => FallbackPolicy::Ask, "yes" => FallbackPolicy::Yes, "no" => FallbackPolicy::No);

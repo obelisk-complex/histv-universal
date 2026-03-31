@@ -22,6 +22,8 @@ pub struct CliSink {
     /// Cached pass label string (#17). Updated only when the pass value
     /// changes, instead of being formatted on every progress tick.
     cached_pass_label: Mutex<(Option<(u8, u8)>, String)>,
+    /// Last percentage printed in non-TTY simple mode, to avoid duplicates.
+    last_simple_pct: Mutex<u32>,
 }
 
 impl CliSink {
@@ -32,6 +34,7 @@ impl CliSink {
             is_tty,
             progress_bar: Mutex::new(None),
             cached_pass_label: Mutex::new((None, String::new())),
+            last_simple_pct: Mutex::new(u32::MAX),
         }
     }
 
@@ -116,11 +119,9 @@ impl EventSink for CliSink {
             if pb.is_none() {
                 let bar = ProgressBar::new(1000);
                 bar.set_style(
-                    ProgressStyle::with_template(
-                        "  {bar:40.cyan/dim} {percent:>3}%  {msg}"
-                    )
-                    .unwrap()
-                    .progress_chars("━░"),
+                    ProgressStyle::with_template("  {bar:40.cyan/dim} {percent:>3}%  {msg}")
+                        .unwrap()
+                        .progress_chars("━░"),
                 );
                 *pb = Some(bar);
             }
@@ -133,11 +134,14 @@ impl EventSink for CliSink {
                 bar.set_message(format!("{} / {}{}", elapsed, total, pass_label));
             }
         } else {
-            // Simple mode: print percentage milestones to avoid flooding
-            // Only print at 10% increments
+            // Simple mode: print at 10% increments, skip duplicates
             let pct = percent.round() as u32;
             if pct % 10 == 0 {
-                let _ = writeln!(std::io::stderr(), "  {}%{}", pct, pass_label);
+                let mut last = self.last_simple_pct.lock().unwrap();
+                if *last != pct {
+                    *last = pct;
+                    let _ = writeln!(std::io::stderr(), "  {}%{}", pct, pass_label);
+                }
             }
         }
     }
@@ -156,6 +160,7 @@ impl EventSink for CliSink {
         }
         // Clear any existing per-file progress bar before the new file header
         self.clear_progress();
+        *self.last_simple_pct.lock().unwrap() = u32::MAX; // reset for new file
         self.eprintln(message);
     }
 
@@ -215,6 +220,73 @@ impl EventSink for CliSink {
         if action != "None" && !action.is_empty() {
             self.eprintln(&format!("Running post-batch command: {}", action));
         }
+    }
+
+    // ── Wave-based staging events (Phase 3) ───────────────────
+
+    fn wave_progress(&self, wave: u32, total_waves: u32, file_in_wave: u32, wave_size: u32) {
+        if self.is_quiet() {
+            return;
+        }
+        if self.is_tty {
+            // Update status in-line
+            let pb = self.progress_bar.lock().unwrap();
+            if let Some(ref bar) = *pb {
+                bar.set_message(format!(
+                    "Wave {}/{} [{}/{}]",
+                    wave, total_waves, file_in_wave, wave_size
+                ));
+            }
+        } else {
+            let _ = writeln!(
+                std::io::stderr(),
+                "  Wave {}/{} [{}/{}]",
+                wave,
+                total_waves,
+                file_in_wave,
+                wave_size
+            );
+        }
+    }
+
+    fn wave_status(&self, message: &str) {
+        if self.is_quiet() {
+            return;
+        }
+        self.clear_progress();
+        self.eprintln(message);
+    }
+
+    fn batch_time_estimate(&self, elapsed_secs: f64, remaining_secs: f64) {
+        if self.is_quiet() || !self.is_tty {
+            return;
+        }
+        let elapsed = format_duration(elapsed_secs);
+        let remaining = if remaining_secs > 0.0 {
+            format_duration(remaining_secs)
+        } else {
+            "calculating...".to_string()
+        };
+        self.eprintln(&format!(
+            "  Batch: {} elapsed, ~{} remaining",
+            elapsed, remaining
+        ));
+    }
+
+    fn wave_time_estimate(&self, elapsed_secs: f64, remaining_secs: f64) {
+        if self.is_quiet() || !self.is_tty {
+            return;
+        }
+        let elapsed = format_duration(elapsed_secs);
+        let remaining = if remaining_secs > 0.0 {
+            format_duration(remaining_secs)
+        } else {
+            "calculating...".to_string()
+        };
+        self.eprintln(&format!(
+            "  Wave: {} elapsed, ~{} remaining",
+            elapsed, remaining
+        ));
     }
 }
 

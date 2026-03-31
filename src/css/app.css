@@ -208,17 +208,35 @@ html, body {
   text-overflow: ellipsis;
   text-transform: uppercase;
   letter-spacing: 0.3px;
+  position: relative;
 }
 
-/* Column widths - 8 columns */
-#queue-table th:nth-child(1), #queue-table td:nth-child(1) { width: 2%; text-align: center; padding: 0 0 0 4px; }
-#queue-table th:nth-child(2), #queue-table td:nth-child(2) { width: 26%; }
-#queue-table th:nth-child(3), #queue-table td:nth-child(3) { width: 8%; min-width: 65px; }
-#queue-table th:nth-child(4), #queue-table td:nth-child(4) { width: 11%; min-width: 90px; }
-#queue-table th:nth-child(5), #queue-table td:nth-child(5) { width: 10%; }
-#queue-table th:nth-child(6), #queue-table td:nth-child(6) { width: 12%; }
-#queue-table th:nth-child(7), #queue-table td:nth-child(7) { width: 13%; }
-#queue-table th:nth-child(8), #queue-table td:nth-child(8) { width: 14%; }
+/* Column resize handle */
+#queue-table th .col-resize-handle {
+  position: absolute;
+  right: 0;
+  top: 0;
+  bottom: 0;
+  width: 4px;
+  cursor: col-resize;
+  user-select: none;
+}
+#queue-table th .col-resize-handle:hover,
+#queue-table th .col-resize-handle.active {
+  background: var(--primary);
+  opacity: 0.5;
+}
+
+/* Column widths — min-widths fit header text, Filename takes remaining space */
+#queue-table th:nth-child(1), #queue-table td:nth-child(1) { width: 30px; min-width: 30px; text-align: center; padding: 0 0 0 4px; }
+#queue-table th:nth-child(2), #queue-table td:nth-child(2) { /* Filename: flexible */ }
+#queue-table th:nth-child(3), #queue-table td:nth-child(3) { width: 70px; min-width: 50px; }
+#queue-table th:nth-child(4), #queue-table td:nth-child(4) { width: 105px; min-width: 80px; }
+#queue-table th:nth-child(5), #queue-table td:nth-child(5) { width: 90px; min-width: 70px; }
+#queue-table th:nth-child(6), #queue-table td:nth-child(6) { width: 60px; min-width: 45px; }
+#queue-table th:nth-child(7), #queue-table td:nth-child(7) { width: 110px; min-width: 80px; }
+#queue-table th:nth-child(8), #queue-table td:nth-child(8) { width: 125px; min-width: 80px; }
+#queue-table th:nth-child(9), #queue-table td:nth-child(9) { width: 85px; min-width: 65px; }
 
 #queue-table td {
   padding: 4px 8px;

@@ -2,7 +2,7 @@
 
 Command-line batch video encoder - the headless companion to [Honey, I Shrunk The Vids](https://github.com/obelisk-complex/histv-universal).
 
-Same encoding engine as the desktop app: figures out what each file needs, picks the right codec and container per-file, uses your GPU if available, handles audio tracks individually, copies files from network drives before encoding, watches disk space, and checks output sizes. Built for servers and automation.
+Same encoding engine as the desktop app: figures out what each file needs, picks the right codec and container per-file, preserves Dolby Vision and HDR10+ dynamic metadata, uses your GPU if available, handles audio tracks individually, stages remote files in waves before encoding, watches disk space, and checks output sizes. Built for servers and automation.
 
 #### Can I use this with Sonarr/Radarr?
 
@@ -12,7 +12,7 @@ Yes! Please see the [Sonarr-Radarr Guide](https://github.com/obelisk-complex/his
 
 Download the binary from the [Releases page](https://github.com/obelisk-complex/histv-universal/releases). Place it on your PATH. On Linux/macOS: `chmod +x histv-cli-*`
 
-**Prerequisite:** ffmpeg and ffprobe must be on your PATH. The CLI does not download ffmpeg - install it via your package manager.
+**Prerequisites:** ffmpeg and ffprobe must be on your PATH. The CLI does not download ffmpeg - install it via your package manager. For Dolby Vision preservation, MP4Box (GPAC) is also required on your PATH (`apt install gpac`, `brew install gpac`, etc.). Without it, DV files fall back to HDR10. HDR10+ preservation works without any extra tools.
 
 <details>
 <summary><strong>Building from source</strong></summary>
@@ -80,6 +80,19 @@ Then the encoding decision:
 
 If an encode makes the file bigger than it was, the CLI throws away the encode and copies the original into the new container instead.
 
+### Dolby Vision and HDR10+
+
+When `--hdr` is active (the default for HDR sources), the CLI automatically preserves Dolby Vision and HDR10+ dynamic metadata through re-encoding:
+
+| Source | Tools needed | Result |
+|--------|-------------|--------|
+| Dolby Vision (any profile) | MP4Box on PATH | Full DV preservation. Output forced to MP4. |
+| HDR10+ | None | Full dynamic metadata preservation. |
+| DV without MP4Box | None | Falls back to HDR10 base layer. Warning logged. |
+| HDR10 / HLG | None | Preserved as-is. |
+
+The dry-run table shows the detected HDR type per file (DV8, HDR10+, HDR10, HLG, SDR). Warnings are logged before encoding starts if any files won't get their best-possible treatment.
+
 ## Options
 
 <details>
@@ -103,9 +116,9 @@ If an encode makes the file bigger than it was, the CLI throws away the encode a
 | `-b, --bitrate <MBPS>` | `4` | Target bitrate in Mbps - files above this get shrunk |
 | `--peak-multiplier <MULT>` | `1.5` | How much bitrate can spike on complex scenes (1.0-3.0) |
 | `--rc <MODE>` | `qp` | Quality mode for below-target files: `qp` (predictable size) or `crf` (better looking) |
-| `--qp-i <N>` | `20` | QP quality for key frames (lower = sharper, bigger) |
-| `--qp-p <N>` | `22` | QP quality for normal frames (lower = sharper, bigger) |
-| `--crf <N>` | `20` | CRF quality level (lower = sharper, bigger). Software encoders only. |
+| `--qp-i <N>` | `20` | QP quality for key frames, 0–51 (lower = sharper, bigger) |
+| `--qp-p <N>` | `22` | QP quality for normal frames, 0–51 (lower = sharper, bigger) |
+| `--crf <N>` | `20` | CRF quality level, 0–51 (lower = sharper, bigger). Software encoders only. |
 | `--hdr` | auto | Keep HDR as-is |
 | `--no-hdr` | | Convert HDR to SDR with proper tonemapping |
 | `--compat` | | Force H.264/MP4/AC3 for maximum device compatibility. Conflicts with `--preserve-av1`. |
@@ -142,7 +155,7 @@ If an encode makes the file bigger than it was, the CLI throws away the encode a
 | Flag | Default | Description |
 |------|---------|-------------|
 | `--precision` | | Best quality mode - tests clips first, adapts strategy to your RAM, caps bitrate. Software CRF only. |
-| `--threads <N>` | `0` | Limit CPU threads (0 = use all available) |
+| `--threads <N>` | `0` | Limit CPU threads, 0–64 (0 = use all available) |
 | `--low-priority` | | Don't slow down other apps while encoding |
 
 </details>
@@ -227,15 +240,15 @@ histv-cli --export-job my-batch.json --codec hevc --bitrate 8 /srv/media/
 <details>
 <summary><strong>Details</strong></summary>
 
-When your files are on a network share (NFS, SMB, sshfs, etc.), the CLI can copy them to local storage before encoding so the network doesn't slow things down.
+When your files are on a network share (NFS, SMB, sshfs, etc.), the CLI stages them locally in waves before encoding so the network doesn't bottleneck the encoder. The wave planner groups remote files to fit available staging space, stages an entire wave at once, encodes the wave, cleans up, and repeats. Local files between waves are encoded in place.
 
 | `--remote` value | Files on a network drive | Files on local disk |
 |------------------|-------------------------|---------------------|
-| `auto` (default) | Copied locally first | Encoded in place |
-| `always` | Copied locally first | Copied locally first |
+| `auto` (default) | Staged locally in waves | Encoded in place |
+| `always` | Staged locally in waves | Staged locally in waves |
 | `never` | Encoded in place | Encoded in place |
 
-Detection is automatic on all platforms. The temp folder defaults to your system temp directory. Override with `--local-tmp`.
+Detection is automatic on all platforms. The temp folder defaults to your system temp directory. Override with `--local-tmp`. The dry-run output shows the wave staging plan when remote files are present.
 
 </details>
 

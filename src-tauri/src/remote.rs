@@ -48,16 +48,29 @@ struct MountEntry {
 /// Known remote filesystem types on Linux.
 #[cfg(target_os = "linux")]
 const REMOTE_FS_TYPES: &[&str] = &[
-    "nfs", "nfs4", "cifs", "smb", "smb2", "smb3",
-    "fuse.sshfs", "fuse.rclone", "fuse.s3fs",
-    "9p", "afs",
+    "nfs",
+    "nfs4",
+    "cifs",
+    "smb",
+    "smb2",
+    "smb3",
+    "fuse.sshfs",
+    "fuse.rclone",
+    "fuse.s3fs",
+    "9p",
+    "afs",
 ];
 
 /// Known remote filesystem types on macOS.
 #[cfg(target_os = "macos")]
 const REMOTE_FS_TYPES: &[&str] = &[
-    "nfs", "smbfs", "afpfs", "webdav",
-    "fuse.sshfs", "fuse.rclone", "fuse.s3fs",
+    "nfs",
+    "smbfs",
+    "afpfs",
+    "webdav",
+    "fuse.sshfs",
+    "fuse.rclone",
+    "fuse.s3fs",
 ];
 
 impl MountCache {
@@ -116,8 +129,7 @@ impl MountCache {
         let canonical_dir = if let Some(cached) = self.dir_canon_cache.get(&dir) {
             cached.clone()
         } else {
-            let resolved = std::fs::canonicalize(&dir)
-                .unwrap_or_else(|_| dir.clone());
+            let resolved = std::fs::canonicalize(&dir).unwrap_or_else(|_| dir.clone());
             self.dir_canon_cache.insert(dir, resolved.clone());
             resolved
         };
@@ -175,7 +187,9 @@ impl MountCache {
         // UNC paths are always remote (\\server\share\...)
         if clean_str.starts_with("\\\\") {
             return Some(MountInfo {
-                mount_point: PathBuf::from(clean_str.split('\\').take(4).collect::<Vec<_>>().join("\\")),
+                mount_point: PathBuf::from(
+                    clean_str.split('\\').take(4).collect::<Vec<_>>().join("\\"),
+                ),
                 fs_type: "UNC".to_string(),
                 is_remote: true,
             });
@@ -187,13 +201,18 @@ impl MountCache {
             return None;
         }
 
-        let is_remote = self.drive_cache.entry(drive_letter.to_ascii_uppercase()).or_insert_with(|| {
-            check_drive_type_windows(drive_letter)
-        });
+        let is_remote = self
+            .drive_cache
+            .entry(drive_letter.to_ascii_uppercase())
+            .or_insert_with(|| check_drive_type_windows(drive_letter));
 
         Some(MountInfo {
             mount_point: PathBuf::from(format!("{}:\\", drive_letter.to_ascii_uppercase())),
-            fs_type: if *is_remote { "network".to_string() } else { "local".to_string() },
+            fs_type: if *is_remote {
+                "network".to_string()
+            } else {
+                "local".to_string()
+            },
             is_remote: *is_remote,
         })
     }
@@ -315,8 +334,8 @@ fn parse_mount_table() -> Vec<MountEntry> {
             let fs_type = opts_str.split(',').next().unwrap_or("").trim().to_string();
             // macOS: treat all FUSE mounts as remote (no way to distinguish
             // local FUSE like NTFS-3G from remote FUSE like sshfs reliably)
-            let is_remote = REMOTE_FS_TYPES.iter().any(|rt| *rt == fs_type)
-                || fs_type.starts_with("fuse.");
+            let is_remote =
+                REMOTE_FS_TYPES.iter().any(|rt| *rt == fs_type) || fs_type.starts_with("fuse.");
             Some(MountEntry {
                 mount_point: PathBuf::from(mount_point),
                 fs_type,

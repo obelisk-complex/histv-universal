@@ -39,10 +39,7 @@ pub fn scan_themes_folder(app: &AppHandle) -> Vec<Theme> {
                         match serde_json::from_str::<Theme>(&contents) {
                             Ok(theme) => themes.push(theme),
                             Err(e) => {
-                                eprintln!(
-                                    "Malformed theme file {}: {e}",
-                                    path.display()
-                                );
+                                eprintln!("Malformed theme file {}: {e}", path.display());
                             }
                         }
                     }
@@ -120,72 +117,70 @@ fn theme_from_core(
 fn default_dark_theme() -> Theme {
     theme_from_core(
         "Default Dark",
-        "#1E1E1E",  // background
-        "#373737",  // surface
-        "#DCDCDC",  // text
-        "#0078D7",  // primary
-        "#4ade80",  // success
-        "#f87171",  // error
+        "#1E1E1E", // background
+        "#373737", // surface
+        "#DCDCDC", // text
+        "#0078D7", // primary
+        "#4ade80", // success
+        "#f87171", // error
     )
 }
 
 fn default_light_theme() -> Theme {
     theme_from_core(
         "Default Light",
-        "#FFFFFF",  // background
-        "#E0E0E0",  // surface
-        "#1E1E1E",  // text
-        "#0078D7",  // primary
-        "#22c55e",  // success
-        "#ef4444",  // error
+        "#FFFFFF", // background
+        "#E0E0E0", // surface
+        "#1E1E1E", // text
+        "#0078D7", // primary
+        "#22c55e", // success
+        "#ef4444", // error
     )
 }
 
 fn jessica_dark_theme() -> Theme {
     theme_from_core(
         "Jessica Dark",
-        "#1E1E1E",  // background
-        "#373737",  // surface
-        "#DCDCDC",  // text
-        "#6F2D86",  // primary
-        "#4ade80",  // success
-        "#f87171",  // error
+        "#1E1E1E", // background
+        "#373737", // surface
+        "#DCDCDC", // text
+        "#6F2D86", // primary
+        "#4ade80", // success
+        "#f87171", // error
     )
 }
 
 fn solarised_dark_theme() -> Theme {
     theme_from_core(
         "Solarised Dark",
-        "#002B36",  // background
-        "#0A4050",  // surface
-        "#93A1A1",  // text
-        "#268BD2",  // primary
-        "#4ade80",  // success
-        "#f87171",  // error
+        "#002B36", // background
+        "#0A4050", // surface
+        "#93A1A1", // text
+        "#268BD2", // primary
+        "#4ade80", // success
+        "#f87171", // error
     )
 }
 
 fn nord_theme() -> Theme {
     theme_from_core(
-        "Nord",
-        "#2E3440",  // background
-        "#434C5E",  // surface
-        "#ECEFF4",  // text
-        "#88C0D0",  // primary
-        "#4ade80",  // success
-        "#f87171",  // error
+        "Nord", "#2E3440", // background
+        "#434C5E", // surface
+        "#ECEFF4", // text
+        "#88C0D0", // primary
+        "#4ade80", // success
+        "#f87171", // error
     )
 }
 
 fn vempire_theme() -> Theme {
     let mut t = theme_from_core(
-        "Vempire",
-        "#282A36",  // background
-        "#44475A",  // surface
-        "#F8F8F2",  // text
-        "#BD93F9",  // primary
-        "#4ade80",  // success
-        "#f87171",  // error
+        "Vempire", "#282A36", // background
+        "#44475A", // surface
+        "#F8F8F2", // text
+        "#BD93F9", // primary
+        "#4ade80", // success
+        "#f87171", // error
     );
     // Vempire uses a distinct accent colour
     t.colors.insert("accent".into(), "#FF79C6".into());

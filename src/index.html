@@ -24,11 +24,12 @@
               <tr>
                 <th class="col-check"><input type="checkbox" id="select-all" title="Select / deselect all"></th>
                 <th>Filename</th>
-                <th>Size</th>
-                <th class="has-tooltip">Compressed (est.)<span class="tooltip-icon">?</span><span class="tooltip-text">Estimated output size based on current bitrate target. Tilde (~) means exact size can't be predicted for quality-based encoding.</span></th>
+                <th>From Size</th>
+                <th class="has-tooltip">To Size (est.)<span class="tooltip-icon">?</span><span class="tooltip-text">Estimated output size based on current bitrate target. Tilde (~) means exact size can't be predicted for quality-based encoding.</span></th>
                 <th>Resolution</th>
-                <th>Source Bitrate</th>
-                <th>Target Bitrate</th>
+                <th>HDR</th>
+                <th>From B/R</th>
+                <th>To B/R</th>
                 <th>Status</th>
               </tr>
             <tbody id="queue-body"></tbody>
@@ -133,13 +134,25 @@
             </div>
           </div>
 
+          <div class="form-row has-tooltip">
+            <label for="sel-container" class="has-tooltip">Container
+              <span class="tooltip-icon">?</span>
+              <span class="tooltip-text">Keeps the original container format where possible. Files in formats that don't support modern codecs (AVI, WMV, etc.) default to MKV. Dolby Vision files always output as MP4 regardless of this setting.</span>
+            </label>
+            <select id="sel-container">
+              <option value="auto" selected>Auto</option>
+              <option value="mkv">MKV</option>
+              <option value="mp4">MP4</option>
+            </select>
+          </div>
+
           <div class="section-header">Behaviour</div>
 
           <div class="checkbox-row has-tooltip">
             <input type="checkbox" id="chk-hdr" />
             <label for="chk-hdr">Preserve HDR</label>
             <span class="tooltip-icon">?</span>
-            <span class="tooltip-text">When unticked, HDR files are converted to 8-bit SDR, with industry-standard colour mapping. Leave ticked to leave HDR files as HDR.</span>
+            <span class="tooltip-text">When ticked, HDR files stay HDR. Dolby Vision and HDR10+ dynamic metadata are preserved when tools are available. When unticked, all HDR content is converted to SDR with industry-standard tonemapping.</span>
           </div>
 		  
 		  <div class="checkbox-row has-tooltip">
@@ -182,6 +195,13 @@
             <label for="chk-auto-clear">Auto-clear completed items</label>
             <span class="tooltip-icon">?</span>
             <span class="tooltip-text">Clears finished items from the queue when the batch ends. Failed, skipped, and cancelled items are kept.</span>
+          </div>
+
+          <div class="checkbox-row has-tooltip">
+            <input type="checkbox" id="chk-force-local" />
+            <label for="chk-force-local">Transcode over network</label>
+            <span class="tooltip-icon">?</span>
+            <span class="tooltip-text">Skip local staging and read/write directly over the network. Fast on a wired LAN, slow or unreliable over Wi-Fi or WAN.</span>
           </div>
 
           <div class="section-header">Performance</div>
@@ -350,6 +370,31 @@
       </div>
     </div>
 
+    <!-- ═══ Modal: Pre-flight DV/HDR10+ warnings ═══ -->
+    <div class="modal-overlay" id="modal-preflight" role="dialog" aria-modal="true" aria-labelledby="modal-preflight-title">
+      <div class="modal-box" style="max-width:640px;">
+        <div class="modal-title" id="modal-preflight-title">Some files need additional tools for best results</div>
+        <div class="modal-body" id="preflight-body">
+          <table class="preflight-table" style="width:100%;font-size:0.85em;border-collapse:collapse;">
+            <thead>
+              <tr style="text-align:left;border-bottom:1px solid var(--border);">
+                <th style="padding:4px;">File</th>
+                <th style="padding:4px;">Source</th>
+                <th style="padding:4px;">Outcome</th>
+                <th style="padding:4px;">Missing</th>
+              </tr>
+            </thead>
+            <tbody id="preflight-table-body"></tbody>
+          </table>
+        </div>
+        <div class="modal-buttons">
+          <button class="btn btn-primary" id="pf-download">Download tools</button>
+          <button class="btn" id="pf-continue">Encode anyway</button>
+          <button class="btn" id="pf-cancel">Cancel</button>
+        </div>
+      </div>
+    </div>
+
     <!-- ═══ Modal: Post-batch countdown (§7.6) ═══ -->
     <div class="modal-overlay" id="modal-countdown" role="dialog" aria-modal="true" aria-labelledby="modal-countdown-title">
       <div class="modal-box">
@@ -454,11 +499,13 @@
     const selTheme        = $('#sel-theme');
     const txtOutputFolder = $('#txt-output-folder');
     const radioOutputMode = document.querySelectorAll('input[name="output-mode"]');
+    const selContainer    = $('#sel-container');
     const chkOverwrite    = $('#chk-overwrite');
     const chkDeleteSource = $('#chk-delete-source');
     const chkSaveLog      = $('#chk-save-log');
     const chkToast        = $('#chk-toast');
     const chkAutoClear    = $('#chk-auto-clear');
+    const chkForceLocal   = $('#chk-force-local');
     const selPostAction   = $('#sel-post-action');
     const txtCustomCmd    = $('#txt-custom-command');
     const numCountdown    = $('#num-countdown');
@@ -558,6 +605,7 @@
       setupClipboardPaste();
       setupKeyboardShortcuts();
       setupDragReorder();
+      setupColumnResize();
       setupTooltips();
       setupModalButtons();
       setupBottomButtons();
@@ -626,11 +674,13 @@
         chkLowPriority.checked = cfg.lowPriority || false;
         txtOutputFolder.value = cfg.outputFolder || 'output';
         setOutputMode(cfg.outputMode || 'folder');
+        selContainer.value = cfg.outputContainer || 'auto';
         chkOverwrite.checked = cfg.overwrite || false;
         chkDeleteSource.checked = cfg.deleteSource || false;
         chkSaveLog.checked = cfg.saveLog || false;
         chkToast.checked = cfg.showToast || false;
         chkAutoClear.checked = cfg.autoClearCompleted || false;
+        chkForceLocal.checked = cfg.forceLocal || false;
         selPostAction.value = cfg.postAction || 'None';
         toggleCustomCommand();
         txtCustomCmd.value = cfg.customCommand || '';
@@ -659,11 +709,13 @@
               theme: selTheme.value || 'Default Dark',
               outputFolder: txtOutputFolder.value,
               outputMode: getOutputMode(),
+              outputContainer: selContainer.value,
               overwrite: chkOverwrite.checked,
               deleteSource: chkDeleteSource.checked,
               saveLog: chkSaveLog.checked,
               showToast: chkToast.checked,
               autoClearCompleted: chkAutoClear.checked,
+              forceLocal: chkForceLocal.checked,
               postAction: selPostAction.value,
               postCountdown: parseInt(numCountdown.value, 10) || 0,
               customCommand: txtCustomCmd.value,
@@ -812,10 +864,12 @@
         root.style.setProperty('--glass-overlay-bg', 'rgba(40, 40, 40, 0.92)');
       }
 
-      // Update SVG status icons with themed colours
-      STATUS_ICONS.done = `<svg aria-hidden="true" viewBox="0 0 24 24" fill="none" stroke="${derived['icon-done']}" stroke-width="2.5"><path d="M5 13l4 4L19 7"/></svg>`;
-      STATUS_ICONS.failed = `<svg aria-hidden="true" viewBox="0 0 24 24" fill="none" stroke="${derived['icon-failed']}" stroke-width="2.5"><path d="M6 6l12 12M18 6L6 18"/></svg>`;
-      STATUS_ICONS.cancelled = `<svg aria-hidden="true" viewBox="0 0 24 24" fill="none" stroke="${derived['icon-cancelled']}" stroke-width="2.5"><circle cx="12" cy="12" r="9"/><line x1="9" y1="9" x2="15" y2="15"/></svg>`;
+      // Update SVG status icons with themed colours.
+      // Sanitise colour values to prevent attribute injection from malicious themes.
+      const safeColour = (c) => String(c).replace(/[^a-zA-Z0-9#(),.\s%]/g, '');
+      STATUS_ICONS.done = `<svg aria-hidden="true" viewBox="0 0 24 24" fill="none" stroke="${safeColour(derived['icon-done'])}" stroke-width="2.5"><path d="M5 13l4 4L19 7"/></svg>`;
+      STATUS_ICONS.failed = `<svg aria-hidden="true" viewBox="0 0 24 24" fill="none" stroke="${safeColour(derived['icon-failed'])}" stroke-width="2.5"><path d="M6 6l12 12M18 6L6 18"/></svg>`;
+      STATUS_ICONS.cancelled = `<svg aria-hidden="true" viewBox="0 0 24 24" fill="none" stroke="${safeColour(derived['icon-cancelled'])}" stroke-width="2.5"><circle cx="12" cy="12" r="9"/><line x1="9" y1="9" x2="15" y2="15"/></svg>`;
     }
 
     // ── Colour helper functions ──────────────────────────────────
@@ -957,19 +1011,21 @@
       });
 
       // ── Window resize - clamp left panel so right panel stays within min/max ──
+      let resizeDebounce;
       window.addEventListener('resize', () => {
-        if (settingsPanelCollapsed) return;
-        if (!leftPanel.style.width) return;
-        const mainRect = mainArea.getBoundingClientRect();
-        let currentLeft = parseInt(leftPanel.style.width, 10);
-        // Don't let the right panel shrink below min-width
-        const maxLeft = mainRect.width - rightMinW - 5;
-        // Don't let the right panel grow beyond max-width
-        const minLeft = mainRect.width - rightMaxW - 5;
-        const clamped = Math.max(220, Math.max(minLeft, Math.min(maxLeft, currentLeft)));
-        if (clamped !== currentLeft) {
-          leftPanel.style.width = clamped + 'px';
-        }
+        clearTimeout(resizeDebounce);
+        resizeDebounce = setTimeout(() => {
+          if (settingsPanelCollapsed) return;
+          if (!leftPanel.style.width) return;
+          const mainRect = mainArea.getBoundingClientRect();
+          let currentLeft = parseInt(leftPanel.style.width, 10);
+          const maxLeft = mainRect.width - rightMinW - 5;
+          const minLeft = mainRect.width - rightMaxW - 5;
+          const clamped = Math.max(220, Math.max(minLeft, Math.min(maxLeft, currentLeft)));
+          if (clamped !== currentLeft) {
+            leftPanel.style.width = clamped + 'px';
+          }
+        }, 100);
       });
     }
 
@@ -1036,20 +1092,25 @@
         const c4 = tr.children[4];
         if (c4.textContent !== resText) c4.textContent = resText;
 
-        // Cell 5: source bitrate
+        // Cell 5: HDR type
+        const hdrText = hdrTypeLabel(item);
+        const c5 = tr.children[5];
+        if (c5.textContent !== hdrText) c5.textContent = hdrText;
+
+        // Cell 6: source bitrate
         const srcText = item.videoBitrateMbps > 0
           ? `${item.videoBitrateMbps.toFixed(2)} Mbps` : '';
-        const c5 = tr.children[5];
-        if (c5.textContent !== srcText) c5.textContent = srcText;
-
-        // Cell 6: target bitrate
-        const tgtText = computeTargetBitrateLabel(item, settings);
         const c6 = tr.children[6];
-        if (c6.textContent !== tgtText) c6.textContent = tgtText;
+        if (c6.textContent !== srcText) c6.textContent = srcText;
 
-        // Cell 7: status badge
+        // Cell 7: target bitrate
+        const tgtText = computeTargetBitrateLabel(item, settings);
         const c7 = tr.children[7];
-        const badge = c7.firstChild;
+        if (c7.textContent !== tgtText) c7.textContent = tgtText;
+
+        // Cell 8: status badge
+        const c8 = tr.children[8];
+        const badge = c8.firstChild;
         if (badge) {
           const currentStatus = tr.dataset.status || '';
           if (currentStatus !== statusLower) {
@@ -1121,6 +1182,11 @@
         tdRes.textContent = (item.videoWidth && item.videoHeight)
           ? `${item.videoWidth}x${item.videoHeight}` : '';
         tr.appendChild(tdRes);
+
+        // HDR type
+        const tdHdr = document.createElement('td');
+        tdHdr.textContent = hdrTypeLabel(item);
+        tr.appendChild(tdHdr);
 
         // Source bitrate
         const tdSrc = document.createElement('td');
@@ -1281,6 +1347,20 @@
       };
     }
 	
+	// ── HDR type label from queue item ──
+    function hdrTypeLabel(item) {
+      if (item.doviProfile != null) {
+        return 'DV' + item.doviProfile;
+      }
+      if (item.hasHdr10plus) return 'HDR10+';
+      if (item.isHdr) {
+        const ct = (item.colorTransfer || '').toLowerCase();
+        if (ct === 'arib-std-b67') return 'HLG';
+        return 'HDR10';
+      }
+      return 'SDR';
+    }
+
 	// ── Human-readable file size ──
     function formatBytes(n) {
       if (!n || n <= 0) return '-';
@@ -1369,7 +1449,7 @@
       const rows = queueBody.children;
       const settings = getTargetBitrateSettings();
       for (let i = 0; i < rows.length && i < queueData.length; i++) {
-        const td = rows[i].children[6];
+        const td = rows[i].children[7];
         if (td) td.textContent = computeTargetBitrateLabel(queueData[i], settings);
       }
     }
@@ -1627,6 +1707,38 @@
     let reorderStartY = 0;
     let reorderLastIndicator = null; // { index, position: 'above'|'below' }
     const REORDER_THRESHOLD = 5; // pixels before drag activates
+
+    // ── Column resize handles (§5.9) ──
+    function setupColumnResize() {
+      const ths = document.querySelectorAll('#queue-table thead th');
+      ths.forEach((th, i) => {
+        // Skip checkbox column and filename column (flexible)
+        if (i === 0 || i === 1) return;
+        const handle = document.createElement('div');
+        handle.className = 'col-resize-handle';
+        th.appendChild(handle);
+
+        let startX, startW;
+        handle.addEventListener('mousedown', (e) => {
+          e.preventDefault();
+          e.stopPropagation();
+          startX = e.clientX;
+          startW = th.offsetWidth;
+          handle.classList.add('active');
+          // table-layout:fixed propagates th width to all td cells automatically
+          const onMove = (ev) => {
+            th.style.width = Math.max(30, startW + ev.clientX - startX) + 'px';
+          };
+          const onUp = () => {
+            handle.classList.remove('active');
+            document.removeEventListener('mousemove', onMove);
+            document.removeEventListener('mouseup', onUp);
+          };
+          document.addEventListener('mousemove', onMove);
+          document.addEventListener('mouseup', onUp);
+        });
+      });
+    }
 
     function setupDragReorder() {
       queueBody.addEventListener('mousedown', (e) => {
@@ -2417,10 +2529,39 @@
     }
 
     // ── Start batch (§10.1) ──
-    async function startBatch(skipDeleteConfirm = false) {
+    async function startBatch(skipDeleteConfirm = false, skipPreflight = false) {
       if (chkDeleteSource.checked && !skipDeleteConfirm) {
         const confirmed = await showDeleteConfirm();
         if (!confirmed) return;
+      }
+
+      // Pre-flight DV/HDR10+ check
+      if (!skipPreflight) {
+        try {
+          const warnings = await invoke('preflight_check');
+          if (warnings && warnings.length > 0) {
+            const action = await showPreflightModal(warnings);
+            if (action === 'cancel') return;
+            if (action === 'download') {
+              try {
+                appendLog('[preflight] Downloading MP4Box...');
+                await invoke('download_mp4box');
+                appendLog('[preflight] MP4Box installed - starting encode');
+                // Re-run preflight; if clear, fall through to start
+                const recheck = await invoke('preflight_check');
+                if (recheck && recheck.length > 0) {
+                  appendLog('[preflight] Warning: some files still affected after download');
+                }
+              } catch (e) {
+                appendLog('[preflight] MP4Box download failed: ' + e);
+                return;
+              }
+            }
+            // action === 'continue': fall through
+          }
+        } catch (e) {
+          console.error('Preflight check error:', e);
+        }
       }
 
       // Check for unknown/empty codecs in pending items
@@ -2454,6 +2595,7 @@
           settings: {
             outputFolder: txtOutputFolder.value,
             outputMode: getOutputMode(),
+            outputContainer: selContainer.value,
             targetBitrate: parseFloat(numBitrate.value) || 4,
             peakMultiplier: getCurrentPeakMultiplier(),
             qpI: parseInt(numQpI.value, 10) || 20,
@@ -2472,6 +2614,7 @@
             showToast: chkToast.checked,
             postAction: selPostAction.value,
             postCountdown: parseInt(numCountdown.value, 10) || 0,
+            forceLocal: chkForceLocal.checked,
           }
         });
       } catch (e) {
@@ -2557,6 +2700,43 @@
       });
     }
 
+    function showPreflightModal(warnings) {
+      return new Promise((resolve) => {
+        const modal = $('#modal-preflight');
+        const tbody = $('#preflight-table-body');
+        tbody.innerHTML = '';
+        const hasMissing = warnings.some(w => w.missingTool);
+
+        for (const w of warnings) {
+          const tr = document.createElement('tr');
+          for (const text of [w.fileName, w.sourceType, w.actualOutcome, w.missingTool || '-']) {
+            const td = document.createElement('td');
+            td.style.padding = '4px';
+            td.textContent = text;
+            tr.appendChild(td);
+          }
+          tbody.appendChild(tr);
+        }
+
+        const dlBtn = $('#pf-download');
+        dlBtn.style.display = hasMissing ? '' : 'none';
+
+        modal.classList.add('visible');
+        function cleanup() {
+          modal.classList.remove('visible');
+          dlBtn.removeEventListener('click', onDl);
+          $('#pf-continue').removeEventListener('click', onCont);
+          $('#pf-cancel').removeEventListener('click', onCancel);
+        }
+        function onDl()     { cleanup(); resolve('download'); }
+        function onCont()   { cleanup(); resolve('continue'); }
+        function onCancel() { cleanup(); resolve('cancel'); }
+        dlBtn.addEventListener('click', onDl);
+        $('#pf-continue').addEventListener('click', onCont);
+        $('#pf-cancel').addEventListener('click', onCancel);
+      });
+    }
+
     // ── Post-batch countdown (§7.6) ──
     let countdownInterval = null;
 
@@ -2569,7 +2749,13 @@
       const modal = $('#modal-countdown');
       const body = $('#countdown-body');
       const valueEl = $('#countdown-value');
-      body.innerHTML = `<strong>${action}</strong> in <strong id="countdown-value">${remaining}</strong> seconds...`;
+      body.textContent = '';
+      const s1 = document.createElement('strong');
+      s1.textContent = action;
+      const s2 = document.createElement('strong');
+      s2.id = 'countdown-value';
+      s2.textContent = remaining;
+      body.append(s1, ' in ', s2, ' seconds...');
       modal.classList.add('visible');
 
       countdownInterval = setInterval(() => {
@@ -2763,8 +2949,8 @@
             tr.className = wantClass;
             tr.style.removeProperty('--encode-progress');
           }
-          const c7 = tr.children[7];
-          const badge = c7 && c7.firstChild;
+          const c8 = tr.children[8];
+          const badge = c8 && c8.firstChild;
           if (badge) {
             const icon = STATUS_ICONS[statusLower] || '';
             badge.innerHTML = '';
@@ -2825,6 +3011,19 @@
         statusCmd.title = event.payload;
       });
 
+      // Wave progress (Phase 3)
+      listen('wave-progress', (event) => {
+        const { wave, totalWaves, fileInWave, waveSize } = event.payload;
+        if (totalWaves > 0) {
+          jobStatus.textContent = `Wave ${wave}/${totalWaves} [${fileInWave}/${waveSize} files] - Encoding file ${batchCurrentFile} of ${batchTotalFiles}`;
+        }
+      });
+
+      // Wave status (Phase 3)
+      listen('wave-status', (event) => {
+        jobStatus.textContent = event.payload;
+      });
+
       // Batch finished
       listen('batch-finished', async (event) => {
         batchRunning = false;
@@ -2858,7 +3057,7 @@
         if (!batchWasCancelled) {
           const hasPending = queueData.some(i => (i.status || '').toLowerCase() === 'pending');
           if (hasPending) {
-            startBatch(true);
+            startBatch(true, true);
           }
         }
         batchWasCancelled = false;

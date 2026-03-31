@@ -47,17 +47,18 @@ Available as a desktop app and a headless CLI for servers (see [CLI-README.md](C
 - **Precision mode** - one checkbox for the best possible quality. Uses software encoding with smart analysis that adapts to your system's RAM. Tests a few short clips first to make sure it won't make the file bigger. Slower, but produces the smallest file that still looks great.
 - **VBR peak ceiling** - controls how much the bitrate can spike on action-heavy scenes (1.5x to 3x). Higher values look better on complex content.
 - **Audio handling** - each audio track is handled separately. Tracks already below 640kbps are copied as-is. Tracks above the cap are re-encoded to the same codec at the cap. Codecs with no ffmpeg encoder (DTS, TrueHD) fall back to EAC3. Compatibility Mode forces AC3.
-- **HDR support** - HDR videos are detected automatically and encoded in 10-bit. Untick the HDR checkbox to convert HDR to SDR with industry-standard tonemapping so colours look right on a normal screen.
+- **HDR support** - HDR videos are detected automatically and encoded in 10-bit. Dolby Vision and HDR10+ dynamic metadata are preserved automatically when tools are available (the app downloads MP4Box if needed for DV packaging). When preservation isn't possible, the app falls back gracefully to HDR10 and tells you why. Untick the HDR checkbox to convert HDR to SDR with industry-standard tonemapping so colours look right on a normal screen.
+- **Pre-flight checks** - before encoding starts, the app scans your queue and warns you if any files won't get their best-possible encode (e.g. DV files without MP4Box). Offers to download missing tools, encode anyway, or cancel.
 - **Subtitles** - all subtitle tracks are kept.
 - **Output options** - save to a folder, next to the source file, or replace the source. Container is preserved per-file (MKV stays MKV, MP4 stays MP4, MOV stays MOV; other formats default to MKV).
-- **Queue size columns** - source file size and estimated compressed size shown in the queue table.
+- **Queue columns** - source file size, estimated compressed size, HDR type badge (DV8, HDR10+, HDR10, HLG, SDR), and resizable column headers.
 - **Size safety net** - if the encoded file ends up bigger than the original, the app throws it away and copies the original into the new container instead.
 - **MKV tag repair** - detects and corrects stale stream statistics tags left behind by ffmpeg and third-party muxing tools, so bitrate decisions use the real numbers. Runs automatically at import and after each encode, with optional manual deep repair for severely corrupted metadata.
 - **Performance controls** - limit CPU threads and/or run encoding at low priority so your PC stays usable.
 - **ETA** - shows estimated time remaining in the progress bar and the window title, so you can see it from the taskbar.
 - **Batch controls** - start, pause, cancel current file, cancel everything. Progress bars per file and overall. Files added mid-batch are picked up automatically.
 - **Dry run** - shows what the app would do without actually encoding anything.
-- **Network drive support** - detects files on network shares and copies them locally before encoding, so slow networks don't bottleneck the encoder.
+- **Network drive support** - detects files on network shares and stages them locally in waves before encoding, so slow networks don't bottleneck the encoder. Wave planning groups files to fit available staging space, stages an entire wave at once, encodes, cleans up, and repeats.
 - **Disk space monitoring** - pauses encoding if your drive gets too full, resumes when space frees up.
 - **Post-batch actions** - shut down, sleep, log out, or run a custom command when the batch finishes.
 - **Log console** - colour-coded log with filters, optional file export.
@@ -149,6 +150,19 @@ Files within 15% above the threshold that are already in the target codec are al
 
 If an encode makes the file bigger than it was, the app throws away the encode and copies the original into the new container instead.
 
+### Dolby Vision and HDR10+
+
+When "Preserve HDR" is ticked, the app automatically detects Dolby Vision and HDR10+ content and preserves the dynamic metadata through re-encoding. No extra settings needed — the app picks the best path for each file:
+
+| Source | Tools needed | Result |
+|--------|-------------|--------|
+| Dolby Vision (any profile) | MP4Box | Full DV preservation. Output forced to MP4. |
+| HDR10+ | None | Full dynamic metadata preservation. |
+| DV without tools | None | Falls back to HDR10 base layer. |
+| HDR10 / HLG | None | Preserved as-is (existing behaviour). |
+
+All bitstream processing uses streaming I/O so memory usage stays bounded regardless of file size. If a DV/HDR10+ pipeline step fails, the app falls back to the next best option and logs why.
+
 ### Precision mode
 
 One checkbox for the best quality the app can produce. It picks the smartest encoding strategy based on how much RAM your system has:
@@ -193,8 +207,12 @@ People with a pile of video files at different sizes and formats who want to shr
 │       ├── lib.rs              # Tauri commands, app setup, shared state
 │       ├── encoder.rs          # Encoder detection, flag mapping, batch loop
 │       ├── ffmpeg.rs           # Binary resolution, download, spawning
-│       ├── probe.rs            # Media probing via ffprobe
+│       ├── probe.rs            # Media probing via ffprobe (DV/HDR10+ detection)
 │       ├── queue.rs            # Queue data structures, file collection
+│       ├── dovi_pipeline.rs    # Dolby Vision RPU extract/inject pipeline
+│       ├── dovi_tools.rs       # MP4Box discovery, download, capabilities
+│       ├── hdr10plus_pipeline.rs  # HDR10+ metadata extract/inject pipeline
+│       ├── hevc_utils.rs       # Streaming HEVC NAL reader/writer
 │       ├── mkv_tags.rs         # MKV stream statistics tag repair (EBML)
 │       ├── webp_decode.rs      # Animated WebP RIFF parser + decode pipeline
 │       ├── events.rs           # EventSink + BatchControl traits
@@ -206,7 +224,7 @@ People with a pile of video files at different sizes and formats who want to shr
 │       ├── cli_sink.rs         # CLI EventSink (stderr + indicatif)
 │       ├── batch_control.rs    # CLI BatchControl (atomics + TTY prompts)
 │       ├── remote.rs           # Network mount detection + caching
-│       ├── staging.rs          # Local staging for remote files
+│       ├── staging.rs          # Wave-based local staging for remote files
 │       └── disk_monitor.rs     # Disk-space estimation + runtime monitoring
 ├── .github/workflows/          # CI: per-platform builds
 ├── THEMES.md                   # Theme creation guide
@@ -223,4 +241,8 @@ People with a pile of video files at different sizes and formats who want to shr
 
 ### Third-party software
 
-The **-full** builds bundle [FFmpeg](https://ffmpeg.org), which is licensed under the [GNU General Public Licence v2+](https://www.gnu.org/licenses/old-licenses/gpl-2.0.html). The bundled binaries are unmodified static GPL builds from [BtbN/FFmpeg-Builds](https://github.com/BtbN/FFmpeg-Builds) (Windows/Linux) and [evermeet.cx](https://evermeet.cx/ffmpeg/) (macOS). The corresponding source code is available from those repositories. We will provide the source on request for three years from the date of each release - file an issue on this repo. This software is based in part on the work of the Independent JPEG Group. See [THIRD-PARTY-LICENCES](THIRD-PARTY-LICENCES) for full details.
+The **-full** builds bundle [FFmpeg](https://ffmpeg.org) and [MP4Box](https://gpac.io) (GPAC). FFmpeg is licensed under the [GNU General Public Licence v2+](https://www.gnu.org/licenses/old-licenses/gpl-2.0.html). The bundled FFmpeg binaries are unmodified static GPL builds from [BtbN/FFmpeg-Builds](https://github.com/BtbN/FFmpeg-Builds) (Windows/Linux) and [evermeet.cx](https://evermeet.cx/ffmpeg/) (macOS). MP4Box is licensed under the [GNU Lesser General Public Licence v2.1+](https://www.gnu.org/licenses/old-licenses/lgpl-2.1.html). The corresponding source code is available from those repositories. We will provide the source on request for three years from the date of each release - file an issue on this repo.
+
+Dolby Vision processing uses the [dolby_vision](https://crates.io/crates/dolby_vision) crate by quietvoid (MIT). HDR10+ processing uses the [hdr10plus](https://crates.io/crates/hdr10plus) crate by quietvoid (MIT).
+
+This software is based in part on the work of the Independent JPEG Group. See [THIRD-PARTY-LICENCES](THIRD-PARTY-LICENCES) for full details.

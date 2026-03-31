@@ -19,7 +19,7 @@
 use std::io::{Read, Seek, SeekFrom};
 use std::path::Path;
 
-use crate::events::{EventSink, BatchControl};
+use crate::events::{BatchControl, EventSink};
 
 use tokio::io::AsyncWriteExt;
 
@@ -44,9 +44,9 @@ struct AnimFrame {
     width: u32,
     height: u32,
     duration_ms: u32,
-    dispose: bool,    // true = dispose to background after rendering
-    blend: bool,      // true = alpha-blend onto canvas; false = overwrite
-    data: Vec<u8>,    // raw WebP bitstream (VP8/VP8L, possibly with ALPH)
+    dispose: bool, // true = dispose to background after rendering
+    blend: bool,   // true = alpha-blend onto canvas; false = overwrite
+    data: Vec<u8>, // raw WebP bitstream (VP8/VP8L, possibly with ALPH)
 }
 
 // ── Container parsing ──────────────────────────────────────────
@@ -54,38 +54,43 @@ struct AnimFrame {
 /// Read a 4-byte ASCII chunk ID.
 fn read_fourcc(r: &mut impl Read) -> Result<[u8; 4], String> {
     let mut buf = [0u8; 4];
-    r.read_exact(&mut buf).map_err(|e| format!("read fourcc: {e}"))?;
+    r.read_exact(&mut buf)
+        .map_err(|e| format!("read fourcc: {e}"))?;
     Ok(buf)
 }
 
 /// Read a 32-bit little-endian unsigned integer.
 fn read_u32_le(r: &mut impl Read) -> Result<u32, String> {
     let mut buf = [0u8; 4];
-    r.read_exact(&mut buf).map_err(|e| format!("read u32: {e}"))?;
+    r.read_exact(&mut buf)
+        .map_err(|e| format!("read u32: {e}"))?;
     Ok(u32::from_le_bytes(buf))
 }
 
 /// Read a 24-bit little-endian unsigned integer (3 bytes).
 fn read_u24_le(r: &mut impl Read) -> Result<u32, String> {
     let mut buf = [0u8; 3];
-    r.read_exact(&mut buf).map_err(|e| format!("read u24: {e}"))?;
+    r.read_exact(&mut buf)
+        .map_err(|e| format!("read u24: {e}"))?;
     Ok(buf[0] as u32 | (buf[1] as u32) << 8 | (buf[2] as u32) << 16)
 }
 
 /// Read a 16-bit little-endian unsigned integer.
 fn read_u16_le(r: &mut impl Read) -> Result<u16, String> {
     let mut buf = [0u8; 2];
-    r.read_exact(&mut buf).map_err(|e| format!("read u16: {e}"))?;
+    r.read_exact(&mut buf)
+        .map_err(|e| format!("read u16: {e}"))?;
     Ok(u16::from_le_bytes(buf))
 }
 
 /// Probe an animated WebP for metadata only, without reading frame data.
 /// Returns None if the file is not an animated WebP (no ANIM chunk found).
 fn probe_metadata(path: &Path) -> Result<Option<WebpInfo>, String> {
-    let mut file = std::fs::File::open(path)
-        .map_err(|e| format!("open {}: {e}", path.display()))?;
+    let mut file =
+        std::fs::File::open(path).map_err(|e| format!("open {}: {e}", path.display()))?;
 
-    file.seek(SeekFrom::Start(12)).map_err(|e| format!("seek: {e}"))?;
+    file.seek(SeekFrom::Start(12))
+        .map_err(|e| format!("seek: {e}"))?;
 
     let mut width: u32 = 0;
     let mut height: u32 = 0;
@@ -109,7 +114,8 @@ fn probe_metadata(path: &Path) -> Result<Option<WebpInfo>, String> {
         match &chunk_id {
             b"VP8X" => {
                 let mut flags = [0u8; 4];
-                file.read_exact(&mut flags).map_err(|e| format!("VP8X: {e}"))?;
+                file.read_exact(&mut flags)
+                    .map_err(|e| format!("VP8X: {e}"))?;
                 has_alpha = (flags[0] & 0x10) != 0;
                 width = read_u24_le(&mut file)? + 1;
                 height = read_u24_le(&mut file)? + 1;
@@ -134,7 +140,8 @@ fn probe_metadata(path: &Path) -> Result<Option<WebpInfo>, String> {
 
         let padded_size = chunk_size + (chunk_size & 1);
         let next = chunk_start + padded_size as u64;
-        file.seek(SeekFrom::Start(next)).map_err(|e| format!("seek: {e}"))?;
+        file.seek(SeekFrom::Start(next))
+            .map_err(|e| format!("seek: {e}"))?;
     }
 
     if !found_anim || frame_count == 0 {
@@ -161,11 +168,12 @@ pub fn probe_webp(path: &Path) -> Result<Option<WebpInfo>, String> {
 /// Each frame's compressed data is wrapped as a minimal standalone WebP
 /// file so ffmpeg's static WebP decoder can handle it.
 fn extract_frames(path: &Path) -> Result<(WebpInfo, Vec<AnimFrame>), String> {
-    let mut file = std::fs::File::open(path)
-        .map_err(|e| format!("open {}: {e}", path.display()))?;
+    let mut file =
+        std::fs::File::open(path).map_err(|e| format!("open {}: {e}", path.display()))?;
 
     // Skip RIFF header (12 bytes: "RIFF" + size + "WEBP")
-    file.seek(SeekFrom::Start(12)).map_err(|e| format!("seek: {e}"))?;
+    file.seek(SeekFrom::Start(12))
+        .map_err(|e| format!("seek: {e}"))?;
 
     let mut width: u32 = 0;
     let mut height: u32 = 0;
@@ -188,7 +196,8 @@ fn extract_frames(path: &Path) -> Result<(WebpInfo, Vec<AnimFrame>), String> {
         match &chunk_id {
             b"VP8X" => {
                 let mut flags = [0u8; 4];
-                file.read_exact(&mut flags).map_err(|e| format!("VP8X: {e}"))?;
+                file.read_exact(&mut flags)
+                    .map_err(|e| format!("VP8X: {e}"))?;
                 has_alpha = (flags[0] & 0x10) != 0;
                 width = read_u24_le(&mut file)? + 1;
                 height = read_u24_le(&mut file)? + 1;
@@ -204,7 +213,8 @@ fn extract_frames(path: &Path) -> Result<(WebpInfo, Vec<AnimFrame>), String> {
                 let h = read_u24_le(&mut file)? + 1;
                 let dur = read_u24_le(&mut file)?;
                 let mut flags_byte = [0u8; 1];
-                file.read_exact(&mut flags_byte).map_err(|e| format!("ANMF flags: {e}"))?;
+                file.read_exact(&mut flags_byte)
+                    .map_err(|e| format!("ANMF flags: {e}"))?;
                 let dispose = (flags_byte[0] & 0x01) != 0;
                 let blend = (flags_byte[0] & 0x02) == 0; // 0 = blend, 1 = no blend
 
@@ -212,7 +222,8 @@ fn extract_frames(path: &Path) -> Result<(WebpInfo, Vec<AnimFrame>), String> {
                 let header_bytes = 3 + 3 + 3 + 3 + 3 + 1; // 16 bytes of ANMF header
                 let data_size = chunk_size as usize - header_bytes;
                 let mut data = vec![0u8; data_size];
-                file.read_exact(&mut data).map_err(|e| format!("ANMF data: {e}"))?;
+                file.read_exact(&mut data)
+                    .map_err(|e| format!("ANMF data: {e}"))?;
 
                 total_duration_ms += dur;
                 frames.push(AnimFrame {
@@ -231,7 +242,8 @@ fn extract_frames(path: &Path) -> Result<(WebpInfo, Vec<AnimFrame>), String> {
 
         let padded_size = chunk_size + (chunk_size & 1);
         let next = chunk_start + padded_size as u64;
-        file.seek(SeekFrom::Start(next)).map_err(|e| format!("seek: {e}"))?;
+        file.seek(SeekFrom::Start(next))
+            .map_err(|e| format!("seek: {e}"))?;
     }
 
     let info = WebpInfo {
@@ -349,8 +361,9 @@ impl Canvas {
                         for c in 0..3 {
                             let sc = frame_rgba[src_idx + c] as u32;
                             let dc = self.pixels[dst_idx + c] as u32;
-                            self.pixels[dst_idx + c] =
-                                ((sc * sa + dc * da * inv_sa / 255) / (sa + da * inv_sa / 255).max(1)) as u8;
+                            self.pixels[dst_idx + c] = ((sc * sa + dc * da * inv_sa / 255)
+                                / (sa + da * inv_sa / 255).max(1))
+                                as u8;
                         }
                         self.pixels[dst_idx + 3] = (sa + da * inv_sa / 255) as u8;
                     }
@@ -407,10 +420,16 @@ pub async fn transcode_animated_webp(
     } else {
         false
     };
-    let timing_label = if has_variable_timing { "variable timing" } else { "constant timing" };
+    let timing_label = if has_variable_timing {
+        "variable timing"
+    } else {
+        "constant timing"
+    };
     sink.log(&format!(
         "  Animated WebP: {}x{}, {} frames, {:.1}s ({})",
-        info.width, info.height, info.frame_count,
+        info.width,
+        info.height,
+        info.frame_count,
         info.total_duration_ms as f64 / 1000.0,
         timing_label,
     ));
@@ -433,12 +452,18 @@ pub async fn transcode_animated_webp(
     // ── Spawn the output encoder ──
     let mut enc_args: Vec<String> = vec![
         "-y".into(),
-        "-f".into(), "rawvideo".into(),
-        "-pix_fmt".into(), "rgba".into(),
-        "-s".into(), format!("{}x{}", padded_w, padded_h),
-        "-r".into(), format!("{:.0}", base_fps),
-        "-i".into(), "pipe:0".into(),
-        "-an".into(), "-sn".into(),
+        "-f".into(),
+        "rawvideo".into(),
+        "-pix_fmt".into(),
+        "rgba".into(),
+        "-s".into(),
+        format!("{}x{}", padded_w, padded_h),
+        "-r".into(),
+        format!("{:.0}", base_fps),
+        "-i".into(),
+        "pipe:0".into(),
+        "-an".into(),
+        "-sn".into(),
     ];
     if threads > 0 {
         enc_args.push("-threads".into());
@@ -454,7 +479,8 @@ pub async fn transcode_animated_webp(
     enc_args.push(output_path.to_string());
 
     let mut enc_cmd = crate::ffmpeg::ffmpeg_command();
-    enc_cmd.args(&enc_args)
+    enc_cmd
+        .args(&enc_args)
         .stdin(std::process::Stdio::piped())
         .stdout(std::process::Stdio::null())
         .stderr(std::process::Stdio::piped());
@@ -468,7 +494,8 @@ pub async fn transcode_animated_webp(
         }
     }
 
-    let mut encoder = enc_cmd.spawn()
+    let mut encoder = enc_cmd
+        .spawn()
         .map_err(|e| format!("Failed to launch encoder ffmpeg: {e}"))?;
 
     #[cfg(unix)]
@@ -482,9 +509,14 @@ pub async fn transcode_animated_webp(
         }
     }
 
-    sink.log(&format!("  Encoder ffmpeg PID: {}", encoder.id().unwrap_or(0)));
+    sink.log(&format!(
+        "  Encoder ffmpeg PID: {}",
+        encoder.id().unwrap_or(0)
+    ));
 
-    let mut enc_stdin = encoder.stdin.take()
+    let mut enc_stdin = encoder
+        .stdin
+        .take()
         .ok_or_else(|| "Could not open encoder stdin".to_string())?;
 
     // ── Compositing loop ──
@@ -520,8 +552,10 @@ pub async fn transcode_animated_webp(
         }
         canvas.composite(
             &decoded_rgba,
-            frame.x_offset, frame.y_offset,
-            frame.width, frame.height,
+            frame.x_offset,
+            frame.y_offset,
+            frame.width,
+            frame.height,
             frame.blend,
         );
 
@@ -539,7 +573,10 @@ pub async fn transcode_animated_webp(
         let mut pipe_broken = false;
         for _ in 0..repeat_count {
             if let Err(e) = enc_stdin.write_all(write_bytes).await {
-                sink.log(&format!("  WARNING: Encoder pipe closed at frame {}: {e}", i + 1));
+                sink.log(&format!(
+                    "  WARNING: Encoder pipe closed at frame {}: {e}",
+                    i + 1
+                ));
                 pipe_broken = true;
                 break;
             }
@@ -557,7 +594,8 @@ pub async fn transcode_animated_webp(
 
         // Report progress
         let pct = (decoded_count as f64 / total_frames as f64) * 100.0;
-        let elapsed_secs = (info.total_duration_ms as f64 / 1000.0) * (decoded_count as f64 / total_frames as f64);
+        let elapsed_secs =
+            (info.total_duration_ms as f64 / 1000.0) * (decoded_count as f64 / total_frames as f64);
         let total_secs = info.total_duration_ms as f64 / 1000.0;
         sink.file_progress(pct, elapsed_secs, total_secs, None);
     }
@@ -566,7 +604,9 @@ pub async fn transcode_animated_webp(
     drop(enc_stdin);
 
     // Wait for encoder to finish
-    let enc_status = encoder.wait().await
+    let enc_status = encoder
+        .wait()
+        .await
         .map_err(|e| format!("Encoder wait failed: {e}"))?;
 
     let exit_code = enc_status.code().unwrap_or(-1);
@@ -592,24 +632,32 @@ pub struct TranscodeResult {
 ///
 /// Spawns a short-lived ffmpeg process that reads from stdin and writes
 /// raw RGBA to stdout. This is fast for single frames (~10-50ms each).
-async fn decode_single_frame(webp_data: Vec<u8>, width: u32, height: u32) -> Result<Vec<u8>, String> {
+async fn decode_single_frame(
+    webp_data: Vec<u8>,
+    width: u32,
+    height: u32,
+) -> Result<Vec<u8>, String> {
     let expected_size = (width * height * 4) as usize;
 
     let mut cmd = crate::ffmpeg::ffmpeg_command();
     cmd.args([
-        "-f", "webp_pipe",
-        "-i", "pipe:0",
-        "-f", "rawvideo",
-        "-pix_fmt", "rgba",
-        "-v", "error",
+        "-f",
+        "webp_pipe",
+        "-i",
+        "pipe:0",
+        "-f",
+        "rawvideo",
+        "-pix_fmt",
+        "rgba",
+        "-v",
+        "error",
         "pipe:1",
     ])
     .stdin(std::process::Stdio::piped())
     .stdout(std::process::Stdio::piped())
     .stderr(std::process::Stdio::piped());
 
-    let mut child = cmd.spawn()
-        .map_err(|e| format!("decode spawn: {e}"))?;
+    let mut child = cmd.spawn().map_err(|e| format!("decode spawn: {e}"))?;
 
     // Write WebP data to stdin
     if let Some(mut stdin) = child.stdin.take() {
@@ -621,7 +669,9 @@ async fn decode_single_frame(webp_data: Vec<u8>, width: u32, height: u32) -> Res
         let _ = write_handle.await;
     }
 
-    let output = child.wait_with_output().await
+    let output = child
+        .wait_with_output()
+        .await
         .map_err(|e| format!("decode wait: {e}"))?;
 
     if !output.status.success() {

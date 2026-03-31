@@ -10,8 +10,17 @@ dist/
 
 # ── Tauri ──
 src-tauri/target/
+src-tauri/gen/schemas/
 binaries/ffmpeg*
 binaries/ffprobe*
+
+# ── Flatpak ──
+.flatpak-builder/
+flatpak-build/
+flatpak-build-sources/
+
+# ── Deb extraction (local tool installs) ──
+histv-deb-extract/
 
 # ── OS junk ──
 .DS_Store
@@ -25,6 +34,9 @@ ehthumbs.db
 *.swp
 *.swo
 *~
+
+# ── Claude Code ──
+.claude/
 
 # ── Build artefacts & installers ──
 *.exe
@@ -40,3 +52,6 @@ _ffmpeg_download*
 encode_log_*.txt
 patchnotes.md
 historical-patchnotes.md
+
+# ── Local working docs (not shipped) ──
+review-*.md

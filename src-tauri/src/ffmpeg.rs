@@ -63,7 +63,9 @@ pub fn hide_window_std(_cmd: &mut std::process::Command) {}
 pub fn app_data_bin_dir() -> Option<PathBuf> {
     #[cfg(target_os = "windows")]
     {
-        std::env::var("APPDATA").ok().map(|d| PathBuf::from(d).join("com.histv.encoder").join("bin"))
+        std::env::var("APPDATA")
+            .ok()
+            .map(|d| PathBuf::from(d).join("com.histv.encoder").join("bin"))
     }
     #[cfg(target_os = "macos")]
     {
@@ -74,7 +76,11 @@ pub fn app_data_bin_dir() -> Option<PathBuf> {
         std::env::var("XDG_DATA_HOME")
             .ok()
             .map(PathBuf::from)
-            .or_else(|| std::env::var("HOME").ok().map(|h| PathBuf::from(h).join(".local").join("share")))
+            .or_else(|| {
+                std::env::var("HOME")
+                    .ok()
+                    .map(|h| PathBuf::from(h).join(".local").join("share"))
+            })
             .map(|d| d.join("com.histv.encoder").join("bin"))
     }
     #[cfg(not(any(target_os = "windows", target_os = "macos", target_os = "linux")))]
@@ -96,11 +102,7 @@ fn dirs_next() -> Option<PathBuf> {
 /// `_app_data_dir` — reserved for future use; app-data bin dir is resolved
 ///                   internally via `app_data_bin_dir()`.
 /// `sink` — event output for logging which paths were resolved.
-pub fn init(
-    resource_dir: Option<&Path>,
-    _app_data_dir: Option<&Path>,
-    sink: &dyn EventSink,
-) {
+pub fn init(resource_dir: Option<&Path>, _app_data_dir: Option<&Path>, sink: &dyn EventSink) {
     let ffmpeg_name = format!("ffmpeg{EXE_EXT}");
     let ffprobe_name = format!("ffprobe{EXE_EXT}");
 
@@ -110,15 +112,16 @@ pub fn init(
     log_resolved_path(sink, "ffmpeg", &ffmpeg);
     log_resolved_path(sink, "ffprobe", &ffprobe);
 
-    if let Ok(mut w) = FFMPEG_PATH.write() { *w = Some(ffmpeg); }
-    if let Ok(mut w) = FFPROBE_PATH.write() { *w = Some(ffprobe); }
+    if let Ok(mut w) = FFMPEG_PATH.write() {
+        *w = Some(ffmpeg);
+    }
+    if let Ok(mut w) = FFPROBE_PATH.write() {
+        *w = Some(ffprobe);
+    }
 }
 
 /// Re-resolve the binary paths after a download.
-pub fn reinit(
-    resource_dir: Option<&Path>,
-    sink: &dyn EventSink,
-) {
+pub fn reinit(resource_dir: Option<&Path>, sink: &dyn EventSink) {
     let ffmpeg_name = format!("ffmpeg{EXE_EXT}");
     let ffprobe_name = format!("ffprobe{EXE_EXT}");
 
@@ -128,8 +131,12 @@ pub fn reinit(
     log_resolved_path(sink, "ffmpeg", &ffmpeg);
     log_resolved_path(sink, "ffprobe", &ffprobe);
 
-    if let Ok(mut w) = FFMPEG_PATH.write() { *w = Some(ffmpeg); }
-    if let Ok(mut w) = FFPROBE_PATH.write() { *w = Some(ffprobe); }
+    if let Ok(mut w) = FFMPEG_PATH.write() {
+        *w = Some(ffmpeg);
+    }
+    if let Ok(mut w) = FFPROBE_PATH.write() {
+        *w = Some(ffprobe);
+    }
 }
 
 /// Log which path was resolved for a binary (helps diagnose "not found" reports).
@@ -139,9 +146,13 @@ fn log_resolved_path(sink: &dyn EventSink, label: &str, path: &PathBuf) {
         sink.log(&format!("[ffmpeg] {label} resolved: {display}"));
     } else if path.components().count() == 1 {
         // Bare name — will rely on OS PATH lookup at spawn time
-        sink.log(&format!("[ffmpeg] {label} not found in known locations, will try PATH"));
+        sink.log(&format!(
+            "[ffmpeg] {label} not found in known locations, will try PATH"
+        ));
     } else {
-        sink.log(&format!("[ffmpeg] {label} resolved to {display} (does not exist yet)"));
+        sink.log(&format!(
+            "[ffmpeg] {label} resolved to {display} (does not exist yet)"
+        ));
     }
 }
 
@@ -186,7 +197,9 @@ pub async fn is_available() -> bool {
 
 /// Return the directory containing the running executable, if available.
 pub fn exe_dir() -> Option<PathBuf> {
-    std::env::current_exe().ok().and_then(|p| p.parent().map(|d| d.to_path_buf()))
+    std::env::current_exe()
+        .ok()
+        .and_then(|p| p.parent().map(|d| d.to_path_buf()))
 }
 
 // ── Download URLs ───────────────────────────────────────────────
@@ -211,17 +224,11 @@ fn download_url() -> Option<(&'static str, &'static str)> {
     }
     #[cfg(all(target_os = "macos", target_arch = "x86_64"))]
     {
-        Some((
-            "https://evermeet.cx/ffmpeg/get/zip",
-            "zip",
-        ))
+        Some(("https://evermeet.cx/ffmpeg/get/zip", "zip"))
     }
     #[cfg(all(target_os = "macos", target_arch = "aarch64"))]
     {
-        Some((
-            "https://evermeet.cx/ffmpeg/get/zip",
-            "zip",
-        ))
+        Some(("https://evermeet.cx/ffmpeg/get/zip", "zip"))
     }
     // Fallback for any other platform
     #[cfg(not(any(
@@ -274,7 +281,15 @@ pub async fn download_to_dir(
     // On macOS, ffprobe is a separate download from evermeet.cx
     if let Some((probe_url, probe_archive)) = ffprobe_download_url() {
         sink.ffmpeg_download_progress("Downloading ffprobe...");
-        download_file(&client, probe_url, target_dir, probe_archive, "ffprobe", sink).await?;
+        download_file(
+            &client,
+            probe_url,
+            target_dir,
+            probe_archive,
+            "ffprobe",
+            sink,
+        )
+        .await?;
     }
 
     // Verify the binaries exist
@@ -298,9 +313,15 @@ async fn download_file(
     label: &str,
     sink: &dyn EventSink,
 ) -> Result<(), String> {
-    let tmp_path = target_dir.join(format!("_histv_dl_{label}.{}", archive_type.replace('.', "_")));
+    let tmp_path = target_dir.join(format!(
+        "_histv_dl_{label}.{}",
+        archive_type.replace('.', "_")
+    ));
 
-    let response = client.get(url).send().await
+    let response = client
+        .get(url)
+        .send()
+        .await
         .map_err(|e| format!("Download request failed: {e}"))?;
 
     if !response.status().is_success() {
@@ -311,16 +332,18 @@ async fn download_file(
     let mut downloaded: u64 = 0;
     let mut last_pct: u64 = 0;
 
-    let mut file = tokio::fs::File::create(&tmp_path).await
+    let mut file = tokio::fs::File::create(&tmp_path)
+        .await
         .map_err(|e| format!("Failed to create temp file: {e}"))?;
 
     let mut stream = response.bytes_stream();
-    use tokio::io::AsyncWriteExt;
     use futures_util::StreamExt;
+    use tokio::io::AsyncWriteExt;
 
     while let Some(chunk) = stream.next().await {
         let chunk = chunk.map_err(|e| format!("Download interrupted: {e}"))?;
-        file.write_all(&chunk).await
+        file.write_all(&chunk)
+            .await
             .map_err(|e| format!("Failed to write to temp file: {e}"))?;
 
         downloaded += chunk.len() as u64;
@@ -331,24 +354,25 @@ async fn download_file(
                 last_pct = pct;
                 let mb_done = downloaded as f64 / 1_048_576.0;
                 let mb_total = total_size as f64 / 1_048_576.0;
-                sink.ffmpeg_download_progress(
-                    &format!("Downloading {label}... {pct}% ({mb_done:.1} / {mb_total:.1} MB)"),
-                );
+                sink.ffmpeg_download_progress(&format!(
+                    "Downloading {label}... {pct}% ({mb_done:.1} / {mb_total:.1} MB)"
+                ));
             }
         }
     }
 
-    file.flush().await
+    file.flush()
+        .await
         .map_err(|e| format!("Failed to flush temp file: {e}"))?;
     drop(file);
 
     // Verify download size
-    let file_size = std::fs::metadata(&tmp_path)
-        .map(|m| m.len())
-        .unwrap_or(0);
+    let file_size = std::fs::metadata(&tmp_path).map(|m| m.len()).unwrap_or(0);
     if file_size < 500_000 {
         let _ = std::fs::remove_file(&tmp_path);
-        return Err(format!("{label} download appears incomplete. Check your internet connection."));
+        return Err(format!(
+            "{label} download appears incomplete. Check your internet connection."
+        ));
     }
 
     sink.ffmpeg_download_progress(&format!("Extracting {label}..."));
@@ -376,7 +400,10 @@ async fn download_file(
 }
 
 #[cfg(all(feature = "downloader", target_os = "windows"))]
-fn extract_from_zip(zip_path: &std::path::Path, target_dir: &std::path::Path) -> Result<(), String> {
+fn extract_from_zip(
+    zip_path: &std::path::Path,
+    target_dir: &std::path::Path,
+) -> Result<(), String> {
     let script = format!(
         r#"
 Add-Type -AssemblyName System.IO.Compression.FileSystem
@@ -396,7 +423,8 @@ $zip.Dispose()
     let mut extract_cmd = std::process::Command::new("powershell");
     extract_cmd.args(["-NoProfile", "-Command", &script]);
     hide_window_std(&mut extract_cmd);
-    let output = extract_cmd.output()
+    let output = extract_cmd
+        .output()
         .map_err(|e| format!("Failed to run extraction: {e}"))?;
 
     if !output.status.success() {
@@ -408,25 +436,65 @@ $zip.Dispose()
 }
 
 #[cfg(all(feature = "downloader", target_os = "linux"))]
-fn extract_from_tar_xz(tar_path: &std::path::Path, target_dir: &std::path::Path) -> Result<(), String> {
+fn extract_from_tar_xz(
+    tar_path: &std::path::Path,
+    target_dir: &std::path::Path,
+) -> Result<(), String> {
+    // GNU tar's --wildcards + --strip-components silently drops files on
+    // some versions (observed on GNU tar 1.35 / Ubuntu 24.04). Instead,
+    // extract the full archive to a temp directory, then move just the
+    // binaries we need.
+    let tmp_extract = target_dir.join("_extract_tmp");
+    let _ = std::fs::create_dir_all(&tmp_extract);
+
     let mut extract_cmd = std::process::Command::new("tar");
     extract_cmd.args([
-            "xf",
-            &tar_path.to_string_lossy(),
-            "--wildcards",
-            "*/bin/ffmpeg",
-            "*/bin/ffprobe",
-            "--strip-components=2",
-            "-C",
-            &target_dir.to_string_lossy(),
-        ]);
+        "xf",
+        &tar_path.to_string_lossy().as_ref(),
+        "-C",
+        &tmp_extract.to_string_lossy().as_ref(),
+    ]);
     hide_window_std(&mut extract_cmd);
-    let output = extract_cmd.output()
+    let output = extract_cmd
+        .output()
         .map_err(|e| format!("Failed to run extraction: {e}"))?;
 
     if !output.status.success() {
         let stderr = String::from_utf8_lossy(&output.stderr);
+        let _ = std::fs::remove_dir_all(&tmp_extract);
         return Err(format!("Extraction failed: {stderr}"));
+    }
+
+    // Find and move ffmpeg/ffprobe from the extracted tree
+    let mut found = false;
+    if let Ok(entries) = std::fs::read_dir(&tmp_extract) {
+        for entry in entries.flatten() {
+            let bin_dir = entry.path().join("bin");
+            if bin_dir.is_dir() {
+                for name in &["ffmpeg", "ffprobe"] {
+                    let src = bin_dir.join(name);
+                    if src.exists() {
+                        let dst = target_dir.join(name);
+                        if let Err(e) = std::fs::rename(&src, &dst) {
+                            // rename may fail across filesystems; fall back to copy
+                            if let Err(e2) = std::fs::copy(&src, &dst) {
+                                let _ = std::fs::remove_dir_all(&tmp_extract);
+                                return Err(format!(
+                                    "Could not move {name} to target: rename={e}, copy={e2}"
+                                ));
+                            }
+                        }
+                        found = true;
+                    }
+                }
+            }
+        }
+    }
+
+    let _ = std::fs::remove_dir_all(&tmp_extract);
+
+    if !found {
+        return Err("Extracted archive but could not find bin/ffmpeg or bin/ffprobe".to_string());
     }
 
     set_executable(target_dir);
@@ -435,7 +503,10 @@ fn extract_from_tar_xz(tar_path: &std::path::Path, target_dir: &std::path::Path)
 }
 
 #[cfg(all(feature = "downloader", target_os = "macos"))]
-fn extract_from_zip_flat(zip_path: &std::path::Path, target_dir: &std::path::Path) -> Result<(), String> {
+fn extract_from_zip_flat(
+    zip_path: &std::path::Path,
+    target_dir: &std::path::Path,
+) -> Result<(), String> {
     let mut extract_cmd = std::process::Command::new("unzip");
     extract_cmd.args([
         "-o",
@@ -459,7 +530,8 @@ fn extract_from_zip_flat(zip_path: &std::path::Path, target_dir: &std::path::Pat
                 &target_dir.to_string_lossy(),
             ]);
             hide_window_std(&mut ditto_cmd);
-            let ditto_out = ditto_cmd.output()
+            let ditto_out = ditto_cmd
+                .output()
                 .map_err(|e| format!("Failed to run ditto extraction: {e}"))?;
             if !ditto_out.status.success() {
                 let stderr = String::from_utf8_lossy(&ditto_out.stderr);
@@ -472,7 +544,7 @@ fn extract_from_zip_flat(zip_path: &std::path::Path, target_dir: &std::path::Pat
 }
 
 /// Ensure ffmpeg/ffprobe binaries are executable after extraction.
-#[cfg(not(target_os = "windows"))]
+#[cfg(all(feature = "downloader", not(target_os = "windows")))]
 fn set_executable(dir: &std::path::Path) {
     use std::os::unix::fs::PermissionsExt;
     for name in &["ffmpeg", "ffprobe"] {
@@ -518,17 +590,32 @@ fn well_known_dirs_windows() -> Vec<PathBuf> {
     if let Ok(choco) = std::env::var("ChocolateyInstall") {
         dirs.push(PathBuf::from(&choco).join("bin"));
     } else if let Ok(sd) = std::env::var("SystemDrive") {
-        dirs.push(PathBuf::from(&sd).join("ProgramData").join("chocolatey").join("bin"));
+        dirs.push(
+            PathBuf::from(&sd)
+                .join("ProgramData")
+                .join("chocolatey")
+                .join("bin"),
+        );
     }
 
     if let Ok(home) = std::env::var("USERPROFILE") {
         dirs.push(PathBuf::from(&home).join("scoop").join("shims"));
         dirs.push(PathBuf::from(&home).join("ffmpeg").join("bin"));
-        dirs.push(PathBuf::from(&home).join("Downloads").join("ffmpeg").join("bin"));
+        dirs.push(
+            PathBuf::from(&home)
+                .join("Downloads")
+                .join("ffmpeg")
+                .join("bin"),
+        );
     }
 
     if let Ok(localappdata) = std::env::var("LOCALAPPDATA") {
-        dirs.push(PathBuf::from(&localappdata).join("Microsoft").join("WinGet").join("Links"));
+        dirs.push(
+            PathBuf::from(&localappdata)
+                .join("Microsoft")
+                .join("WinGet")
+                .join("Links"),
+        );
     }
 
     if let Ok(pf) = std::env::var("ProgramFiles") {

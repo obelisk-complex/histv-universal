@@ -25,15 +25,15 @@ use std::path::Path;
 
 // ── EBML element IDs ───────────────────────────────────────────
 
-const ID_SEGMENT: u32      = 0x18538067;
-const ID_TAGS: u32         = 0x1254C367;
-const ID_TAG: u32          = 0x7373;
-const ID_SIMPLE_TAG: u32   = 0x67C8;
-const ID_TAG_NAME: u32     = 0x45A3;
-const ID_TAG_STRING: u32   = 0x4487;
-const ID_SEEKHEAD: u32     = 0x114D9B74;
-const ID_SEEK: u32         = 0x4DBB;
-const ID_SEEKID: u32       = 0x53AB;
+const ID_SEGMENT: u32 = 0x18538067;
+const ID_TAGS: u32 = 0x1254C367;
+const ID_TAG: u32 = 0x7373;
+const ID_SIMPLE_TAG: u32 = 0x67C8;
+const ID_TAG_NAME: u32 = 0x45A3;
+const ID_TAG_STRING: u32 = 0x4487;
+const ID_SEEKHEAD: u32 = 0x114D9B74;
+const ID_SEEK: u32 = 0x4DBB;
+const ID_SEEKID: u32 = 0x53AB;
 const ID_SEEKPOSITION: u32 = 0x53AC;
 
 // ── EBML primitives ────────────────────────────────────────────
@@ -47,17 +47,23 @@ struct ElementHeader {
 
 fn read_element_id(r: &mut impl Read) -> Result<(u32, usize), String> {
     let mut first = [0u8; 1];
-    r.read_exact(&mut first).map_err(|e| format!("read ID: {e}"))?;
+    r.read_exact(&mut first)
+        .map_err(|e| format!("read ID: {e}"))?;
     let b = first[0];
-    if b == 0 { return Err("invalid EBML ID (zero byte)".into()); }
+    if b == 0 {
+        return Err("invalid EBML ID (zero byte)".into());
+    }
 
     let len = b.leading_zeros() as usize + 1;
-    if len > 4 { return Err("invalid EBML ID (>4 bytes)".into()); }
+    if len > 4 {
+        return Err("invalid EBML ID (>4 bytes)".into());
+    }
 
     let mut id = b as u32;
     if len > 1 {
         let mut rest = vec![0u8; len - 1];
-        r.read_exact(&mut rest).map_err(|e| format!("read ID: {e}"))?;
+        r.read_exact(&mut rest)
+            .map_err(|e| format!("read ID: {e}"))?;
         for &byte in &rest {
             id = (id << 8) | byte as u32;
         }
@@ -67,23 +73,31 @@ fn read_element_id(r: &mut impl Read) -> Result<(u32, usize), String> {
 
 fn read_vint(r: &mut impl Read) -> Result<(u64, usize, bool), String> {
     let mut first = [0u8; 1];
-    r.read_exact(&mut first).map_err(|e| format!("read VINT: {e}"))?;
+    r.read_exact(&mut first)
+        .map_err(|e| format!("read VINT: {e}"))?;
     let b = first[0];
-    if b == 0 { return Err("invalid VINT (zero byte)".into()); }
+    if b == 0 {
+        return Err("invalid VINT (zero byte)".into());
+    }
 
     let len = b.leading_zeros() as usize + 1;
-    if len > 8 { return Err("invalid VINT (>8 bytes)".into()); }
+    if len > 8 {
+        return Err("invalid VINT (>8 bytes)".into());
+    }
 
-    let mask = 0xFF >> len;
+    let mask = if len >= 8 { 0u8 } else { 0xFFu8 >> len };
     let mut value = (b & mask) as u64;
     let mut all_ones = (b & mask) == mask;
 
     if len > 1 {
         let mut rest = vec![0u8; len - 1];
-        r.read_exact(&mut rest).map_err(|e| format!("read VINT: {e}"))?;
+        r.read_exact(&mut rest)
+            .map_err(|e| format!("read VINT: {e}"))?;
         for &byte in &rest {
             value = (value << 8) | byte as u64;
-            if byte != 0xFF { all_ones = false; }
+            if byte != 0xFF {
+                all_ones = false;
+            }
         }
     }
 
@@ -103,7 +117,8 @@ fn read_element_header(r: &mut (impl Read + Seek)) -> Result<ElementHeader, Stri
 
 fn read_string(r: &mut impl Read, len: u64) -> Result<String, String> {
     let mut buf = vec![0u8; len as usize];
-    r.read_exact(&mut buf).map_err(|e| format!("read string: {e}"))?;
+    r.read_exact(&mut buf)
+        .map_err(|e| format!("read string: {e}"))?;
     if let Some(null_pos) = buf.iter().position(|&b| b == 0) {
         buf.truncate(null_pos);
     }
@@ -114,7 +129,8 @@ fn read_uint(r: &mut impl Read, len: u64) -> Result<u64, String> {
     let mut val: u64 = 0;
     for _ in 0..len {
         let mut b = [0u8; 1];
-        r.read_exact(&mut b).map_err(|e| format!("read uint: {e}"))?;
+        r.read_exact(&mut b)
+            .map_err(|e| format!("read uint: {e}"))?;
         val = (val << 8) | b[0] as u64;
     }
     Ok(val)
@@ -318,9 +334,7 @@ fn find_tags_via_seekhead(
 
 /// Open an MKV file and navigate to the Tags element via SeekHead.
 /// Returns the open file, the Tags data range, and the segment data start.
-fn open_and_find_tags(
-    path: &Path,
-) -> Result<Option<(std::fs::File, u64, u64)>, String> {
+fn open_and_find_tags(path: &Path) -> Result<Option<(std::fs::File, u64, u64)>, String> {
     let mut file = std::fs::OpenOptions::new()
         .read(true)
         .write(true)
@@ -345,7 +359,8 @@ fn open_and_find_tags(
     };
 
     // Use SeekHead to find Tags
-    let tags_offset = match find_tags_via_seekhead(&mut file, segment_data_start, segment_data_end)? {
+    let tags_offset = match find_tags_via_seekhead(&mut file, segment_data_start, segment_data_end)?
+    {
         Some(offset) => offset,
         None => return Ok(None),
     };
@@ -388,10 +403,7 @@ pub struct TagValues {
 /// Patch the first Tag element in an MKV file that contains statistics
 /// tags. Values are right-padded with spaces to preserve EBML sizes.
 /// Returns the number of individual tag values patched.
-fn patch_first_statistics_tag(
-    path: &Path,
-    values: &TagValues,
-) -> Result<u32, String> {
+fn patch_first_statistics_tag(path: &Path, values: &TagValues) -> Result<u32, String> {
     let (mut file, tags_data_start, tags_data_end) = match open_and_find_tags(path)? {
         Some(t) => t,
         None => return Ok(0),
@@ -496,14 +508,48 @@ pub fn lightweight_repair(
     let video_bytes = file_size.saturating_sub(audio_bytes);
     let video_bps = (video_bytes as f64 * 8.0 / duration_secs) as u64;
 
-    let patched = patch_first_statistics_tag(path, &TagValues {
-        bps: Some(video_bps),
-        number_of_bytes: Some(video_bytes),
-        duration_secs: Some(duration_secs),
-        number_of_frames: frame_count,
-    })?;
+    let patched = patch_first_statistics_tag(
+        path,
+        &TagValues {
+            bps: Some(video_bps),
+            number_of_bytes: Some(video_bytes),
+            duration_secs: Some(duration_secs),
+            number_of_frames: frame_count,
+        },
+    )?;
 
     Ok((patched, video_bps))
+}
+
+/// Probe-and-repair: checks if a file is MKV with valid duration, then runs
+/// `lightweight_repair` and returns the corrected video bitrate if any tags
+/// were updated. Encapsulates the pattern duplicated across lib.rs, cli_main.rs,
+/// and encoder.rs.
+///
+/// Returns `Some(corrected_video_bps)` if tags were patched, `None` otherwise.
+pub fn repair_after_probe(
+    file_path: &str,
+    duration_secs: f64,
+    audio_streams: &[crate::queue::AudioStreamInfo],
+) -> Option<u64> {
+    if !file_path.ends_with(".mkv") || duration_secs <= 0.0 {
+        return None;
+    }
+    let file_size = std::fs::metadata(file_path).map(|m| m.len()).ok()?;
+    let audio_total_bps: u64 = audio_streams
+        .iter()
+        .map(|s| s.bitrate_kbps as u64 * 1000)
+        .sum();
+    match lightweight_repair(
+        std::path::Path::new(file_path),
+        file_size,
+        duration_secs,
+        audio_total_bps,
+        None,
+    ) {
+        Ok((n, bps)) if n > 0 => Some(bps),
+        _ => None,
+    }
 }
 
 /// Post-encode tag update. Convenience wrapper around `lightweight_repair`
@@ -514,12 +560,15 @@ pub fn update_video_stream_tags(
     video_bps: u64,
     video_bytes: u64,
 ) -> Result<u32, String> {
-    patch_first_statistics_tag(path, &TagValues {
-        bps: Some(video_bps),
-        number_of_bytes: Some(video_bytes),
-        duration_secs: None,
-        number_of_frames: None,
-    })
+    patch_first_statistics_tag(
+        path,
+        &TagValues {
+            bps: Some(video_bps),
+            number_of_bytes: Some(video_bytes),
+            duration_secs: None,
+            number_of_frames: None,
+        },
+    )
 }
 
 /// Deep tag repair: computes exact per-stream byte counts by scanning
@@ -537,7 +586,8 @@ pub async fn deep_repair(
     path: &Path,
     sink: &dyn crate::events::EventSink,
 ) -> Result<(u32, u64), String> {
-    let ext = path.extension()
+    let ext = path
+        .extension()
         .map(|e| e.to_string_lossy().to_lowercase())
         .unwrap_or_default();
     if ext != "mkv" {
@@ -591,14 +641,23 @@ pub async fn deep_repair(
     let video_bps = (video_bytes as f64 * 8.0 / probe.duration_secs) as u64;
 
     // Frame count via ffmpeg -c copy -f null, with live progress.
-    let video_frames = count_frames_with_progress(path, probe.duration_secs, sink).await.unwrap_or(0);
+    let video_frames = count_frames_with_progress(path, probe.duration_secs, sink)
+        .await
+        .unwrap_or(0);
 
-    let patched = patch_first_statistics_tag(path, &TagValues {
-        bps: Some(video_bps),
-        number_of_bytes: Some(video_bytes),
-        duration_secs: Some(probe.duration_secs),
-        number_of_frames: if video_frames > 0 { Some(video_frames) } else { None },
-    })?;
+    let patched = patch_first_statistics_tag(
+        path,
+        &TagValues {
+            bps: Some(video_bps),
+            number_of_bytes: Some(video_bytes),
+            duration_secs: Some(probe.duration_secs),
+            number_of_frames: if video_frames > 0 {
+                Some(video_frames)
+            } else {
+                None
+            },
+        },
+    )?;
 
     let video_mbps = video_bps as f64 / 1_000_000.0;
     sink.log(&format!(
@@ -617,7 +676,8 @@ pub async fn repair_file_tags(
     path: &Path,
     sink: &dyn crate::events::EventSink,
 ) -> Result<(u32, u64), String> {
-    let ext = path.extension()
+    let ext = path
+        .extension()
         .map(|e| e.to_string_lossy().to_lowercase())
         .unwrap_or_default();
     if ext != "mkv" {
@@ -635,7 +695,9 @@ pub async fn repair_file_tags(
         .map(|m| m.len())
         .map_err(|e| format!("stat: {e}"))?;
 
-    let audio_total_bps: u64 = probe.audio_streams.iter()
+    let audio_total_bps: u64 = probe
+        .audio_streams
+        .iter()
         .map(|s| s.bitrate_kbps as u64 * 1000)
         .sum();
 
@@ -647,24 +709,25 @@ pub async fn repair_file_tags(
 /// Sum all packet sizes for a given stream selector (e.g. "v:0", "a:0").
 async fn packet_scan_stream_bytes(path: &Path, stream_selector: &str) -> Result<u64, String> {
     let raw = crate::probe::run_ffprobe_public(&[
-        "-v", "error",
-        "-select_streams", stream_selector,
-        "-show_entries", "packet=size",
-        "-of", "json",
+        "-v",
+        "error",
+        "-select_streams",
+        stream_selector,
+        "-show_entries",
+        "packet=size",
+        "-of",
+        "json",
         &path.to_string_lossy(),
-    ]).await?;
+    ])
+    .await?;
 
-    let json: serde_json::Value =
-        serde_json::from_str(&raw).unwrap_or(serde_json::Value::Null);
+    let json: serde_json::Value = serde_json::from_str(&raw).unwrap_or(serde_json::Value::Null);
 
     let total: u64 = json["packets"]
         .as_array()
         .map(|arr| {
             arr.iter()
-                .filter_map(|p| {
-                    p["size"].as_str()
-                        .and_then(|s| s.parse::<u64>().ok())
-                })
+                .filter_map(|p| p["size"].as_str().and_then(|s| s.parse::<u64>().ok()))
                 .sum()
         })
         .unwrap_or(0);
@@ -685,23 +748,19 @@ async fn count_frames_with_progress(
 
     let mut cmd = crate::ffmpeg::ffmpeg_command();
     cmd.args([
-        "-v", "error", "-stats",
-        "-i", &path_str,
-        "-map", "0:v:0",
-        "-c", "copy",
-        "-f", "null", "-",
+        "-v", "error", "-stats", "-i", &path_str, "-map", "0:v:0", "-c", "copy", "-f", "null", "-",
     ])
     .stdin(std::process::Stdio::null())
     .stdout(std::process::Stdio::null())
     .stderr(std::process::Stdio::piped());
 
-    let mut child = cmd.spawn()
+    let mut child = cmd
+        .spawn()
         .map_err(|e| format!("Failed to launch ffmpeg for frame count: {e}"))?;
 
     let stderr = child.stderr.take();
     let progress = crate::encoder::FfmpegProgress::new();
-    let stderr_thread = stderr
-        .map(|stderr| crate::encoder::spawn_stderr_reader(stderr, &progress));
+    let stderr_thread = stderr.map(|stderr| crate::encoder::spawn_stderr_reader(stderr, &progress));
 
     // Poll for progress updates
     let mut last_pct: i32 = -1;
@@ -712,13 +771,16 @@ async fn count_frames_with_progress(
             Err(_) => break,
         }
 
-            if duration_secs > 0.0 {
+        if duration_secs > 0.0 {
             let secs = progress.secs();
             let pct = ((secs / duration_secs) * 100.0).min(100.0) as i32;
             let pct_bucket = pct / 10 * 10; // Round down to nearest 10%
             if pct_bucket != last_pct && pct_bucket > 0 {
                 let fc = progress.frames();
-                sink.log(&format!("[repair] Counting frames: {}% ({} frames)", pct_bucket, fc));
+                sink.log(&format!(
+                    "[repair] Counting frames: {}% ({} frames)",
+                    pct_bucket, fc
+                ));
                 last_pct = pct_bucket;
             }
         }

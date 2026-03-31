@@ -4,9 +4,9 @@
 //! probes them, and either prints a dry-run plan or (in future phases)
 //! encodes them.
 
+mod batch_control;
 mod cli;
 mod cli_sink;
-mod batch_control;
 
 use clap::Parser;
 use std::path::PathBuf;
@@ -51,6 +51,7 @@ fn main() {
 
     // Resolve ffmpeg/ffprobe binary paths (no resource dir for CLI)
     histv_lib::ffmpeg::init(None, None, &sink);
+    histv_lib::dovi_tools::init(None, &sink);
 
     // Check ffmpeg availability
     let rt = tokio::runtime::Runtime::new().expect("Could not create tokio runtime");
@@ -64,7 +65,6 @@ fn main() {
     let (video_encoders, _audio_encoders) = rt.block_on(encoder::detect_encoders(&sink));
 
     // Resolve which video encoder to use
-    let target_codec = args.codec.to_string();
     let video_encoder = resolve_encoder(&args, &video_encoders);
     let is_hw_encoder = video_encoders
         .iter()
@@ -79,7 +79,9 @@ fn main() {
         std::process::exit(3);
     }
 
-    let input_paths: Vec<String> = args.inputs.iter()
+    let input_paths: Vec<String> = args
+        .inputs
+        .iter()
         .map(|p| p.to_string_lossy().to_string())
         .collect();
 
@@ -123,30 +125,28 @@ fn main() {
                 queue_items[i].color_transfer = pr.color_transfer;
                 queue_items[i].audio_streams = pr.audio_streams;
                 queue_items[i].duration_secs = pr.duration_secs;
+                queue_items[i].dovi_profile = pr.dovi_profile;
+                queue_items[i].dovi_bl_compat_id = pr.dovi_bl_compat_id;
+                queue_items[i].has_hdr10plus = pr.has_hdr10plus;
                 queue_items[i].status = QueueItemStatus::Pending;
 
                 // Lightweight MKV tag repair: fix stale statistics
                 // so the queue shows the real bitrate from import.
-                if file_path.ends_with(".mkv") && pr.duration_secs > 0.0 {
-                    if let Ok(file_size) = std::fs::metadata(&file_path).map(|m| m.len()) {
-                        let audio_total_bps: u64 = queue_items[i].audio_streams.iter()
-                            .map(|s| s.bitrate_kbps as u64 * 1000)
-                            .sum();
-                        if let Ok((n, bps)) = histv_lib::mkv_tags::lightweight_repair(
-                            std::path::Path::new(&file_path),
-                            file_size, pr.duration_secs, audio_total_bps, None,
-                        ) {
-                            if n > 0 {
-                                let corrected_mbps = bps as f64 / 1_000_000.0;
-                                queue_items[i].video_bitrate_bps = bps as f64;
-                                queue_items[i].video_bitrate_mbps = corrected_mbps;
-                            }
-                        }
-                    }
+                if let Some(bps) = histv_lib::mkv_tags::repair_after_probe(
+                    &file_path,
+                    pr.duration_secs,
+                    &queue_items[i].audio_streams,
+                ) {
+                    let corrected_mbps = bps as f64 / 1_000_000.0;
+                    queue_items[i].video_bitrate_bps = bps as f64;
+                    queue_items[i].video_bitrate_mbps = corrected_mbps;
                 }
             }
             Err(e) => {
-                sink.log(&format!("  WARNING: Probe failed for {}: {e}", queue_items[i].file_name));
+                sink.log(&format!(
+                    "  WARNING: Probe failed for {}: {e}",
+                    queue_items[i].file_name
+                ));
                 queue_items[i].status = QueueItemStatus::Failed;
             }
         }
@@ -160,7 +160,8 @@ fn main() {
     }
 
     // Filter to only successfully probed files
-    let probed_items: Vec<&QueueItem> = queue_items.iter()
+    let probed_items: Vec<&QueueItem> = queue_items
+        .iter()
         .filter(|item| item.status == QueueItemStatus::Pending)
         .collect();
 
@@ -182,7 +183,11 @@ fn main() {
 
     if args.repair_tags || args.deep_repair {
         let is_deep = args.deep_repair;
-        let mode_label = if is_deep { "Deep repairing" } else { "Repairing" };
+        let mode_label = if is_deep {
+            "Deep repairing"
+        } else {
+            "Repairing"
+        };
         eprintln!("");
         eprintln!("{} MKV stream statistics tags...", mode_label);
         eprintln!("");
@@ -193,12 +198,18 @@ fn main() {
 
         for (i, item) in probed_items.iter().enumerate() {
             let path = std::path::Path::new(&item.full_path);
-            let ext = path.extension()
+            let ext = path
+                .extension()
                 .map(|e| e.to_string_lossy().to_lowercase())
                 .unwrap_or_default();
 
             if ext != "mkv" {
-                eprintln!("  ({}/{}) {} - skipped (not MKV)", i + 1, total, item.file_name);
+                eprintln!(
+                    "  ({}/{}) {} - skipped (not MKV)",
+                    i + 1,
+                    total,
+                    item.file_name
+                );
                 skipped += 1;
                 continue;
             }
@@ -220,12 +231,24 @@ fn main() {
             match result {
                 Ok((n, bps)) if n > 0 => {
                     let mbps = bps as f64 / 1_000_000.0;
-                    eprintln!("  ({}/{}) {} - updated {} tag{} (video: {:.2}Mbps)",
-                        i + 1, total, item.file_name, n, if n == 1 { "" } else { "s" }, mbps);
+                    eprintln!(
+                        "  ({}/{}) {} - updated {} tag{} (video: {:.2}Mbps)",
+                        i + 1,
+                        total,
+                        item.file_name,
+                        n,
+                        if n == 1 { "" } else { "s" },
+                        mbps
+                    );
                     repaired += 1;
                 }
                 Ok(_) => {
-                    eprintln!("  ({}/{}) {} - no statistics tags to update", i + 1, total, item.file_name);
+                    eprintln!(
+                        "  ({}/{}) {} - no statistics tags to update",
+                        i + 1,
+                        total,
+                        item.file_name
+                    );
                     skipped += 1;
                 }
                 Err(e) => {
@@ -236,21 +259,61 @@ fn main() {
         }
 
         eprintln!("");
-        eprintln!("Repair complete. {} file{} updated, {} skipped.",
-            repaired, if repaired == 1 { "" } else { "s" }, skipped);
+        eprintln!(
+            "Repair complete. {} file{} updated, {} skipped.",
+            repaired,
+            if repaired == 1 { "" } else { "s" },
+            skipped
+        );
         std::process::exit(0);
     }
 
     // ── Compute encoding decisions (Phase 2.3) ─────────────────
 
     let rate_control_mode = args.rc.to_string().to_uppercase();
-    let decisions: Vec<EncodeDecision> = probed_items.iter()
+    let decisions: Vec<EncodeDecision> = probed_items
+        .iter()
         .map(|item| {
+            let source_ext = std::path::Path::new(&item.full_path)
+                .extension()
+                .map(|e| e.to_string_lossy().to_lowercase())
+                .unwrap_or_default();
+            let resolved = encoder::resolve_file_settings(
+                &item.video_codec,
+                &source_ext,
+                &encoder::BatchSettings {
+                    compatibility_mode: args.compat,
+                    preserve_av1: args.preserve_av1,
+                    precision_mode: args.precision_mode,
+                    // Fields below don't affect resolve_file_settings
+                    output_folder: String::new(),
+                    output_mode: String::new(),
+                    threshold: args.bitrate,
+                    qp_i: args.qp_i,
+                    qp_p: args.qp_p,
+                    crf_val: args.crf,
+                    rate_control_mode: rate_control_mode.clone(),
+                    pix_fmt: String::new(),
+                    delete_source: false,
+                    save_log: false,
+                    post_command: None,
+                    peak_multiplier: args.peak_multiplier,
+                    threads: 0,
+                    low_priority: false,
+                    force_local: false,
+                    video_encoder: String::new(),
+                    codec_family: String::new(),
+                    audio_encoder: String::new(),
+                    audio_cap: 0,
+                    output_container: String::new(),
+                },
+                &video_encoders,
+            );
             encoder::decide_encode_strategy(
                 item.video_bitrate_mbps,
                 args.bitrate,
                 &item.video_codec,
-                &target_codec,
+                &resolved.codec_family,
                 &rate_control_mode,
                 args.qp_i,
                 args.qp_p,
@@ -263,22 +326,21 @@ fn main() {
     // ── Remote mount detection (Phase 2.4) ─────────────────────
 
     let mut mount_cache = histv_lib::remote::MountCache::new();
-    let remote_annotations: Vec<Option<String>> = probed_items.iter()
-        .map(|item| {
-            match args.remote {
-                cli::RemotePolicy::Never => None,
-                cli::RemotePolicy::Always => Some("stage (--remote always)".to_string()),
-                cli::RemotePolicy::Auto => {
-                    let path = std::path::Path::new(&item.full_path);
-                    if let Some(info) = mount_cache.mount_info(path) {
-                        if info.is_remote {
-                            Some(format!("{} - stage", info.fs_type))
-                        } else {
-                            None
-                        }
+    let remote_annotations: Vec<Option<String>> = probed_items
+        .iter()
+        .map(|item| match args.remote {
+            cli::RemotePolicy::Never => None,
+            cli::RemotePolicy::Always => Some("stage (--remote always)".to_string()),
+            cli::RemotePolicy::Auto => {
+                let path = std::path::Path::new(&item.full_path);
+                if let Some(info) = mount_cache.mount_info(path) {
+                    if info.is_remote {
+                        Some(format!("{} - stage", info.fs_type))
                     } else {
                         None
                     }
+                } else {
+                    None
                 }
             }
         })
@@ -291,7 +353,8 @@ fn main() {
     let output_path = match args.output_mode {
         cli::OutputMode::Beside | cli::OutputMode::Replace => {
             // Use the first input's parent as a representative
-            probed_items.first()
+            probed_items
+                .first()
                 .and_then(|item| std::path::Path::new(&item.full_path).parent())
                 .unwrap_or(std::path::Path::new("."))
                 .to_path_buf()
@@ -311,16 +374,24 @@ fn main() {
     };
 
     // Count decisions by type
-    let copy_count = decisions.iter().filter(|d| matches!(d, EncodeDecision::Copy)).count();
-    let vbr_count = decisions.iter().filter(|d| matches!(d, EncodeDecision::Vbr { .. })).count();
-    let quality_count = decisions.iter().filter(|d| {
-        matches!(d, EncodeDecision::Cqp { .. } | EncodeDecision::Crf { .. })
-    }).count();
+    let copy_count = decisions
+        .iter()
+        .filter(|d| matches!(d, EncodeDecision::Copy))
+        .count();
+    let vbr_count = decisions
+        .iter()
+        .filter(|d| matches!(d, EncodeDecision::Vbr { .. }))
+        .count();
+    let quality_count = decisions
+        .iter()
+        .filter(|d| matches!(d, EncodeDecision::Cqp { .. } | EncodeDecision::Crf { .. }))
+        .count();
     let remote_count = remote_annotations.iter().filter(|a| a.is_some()).count();
 
     let codec_display = match args.codec {
         cli::CodecFamily::Hevc => "HEVC",
         cli::CodecFamily::H264 => "H.264",
+        cli::CodecFamily::Auto => "auto",
     };
 
     // ANSI colour helpers — no-ops when not a TTY
@@ -334,29 +405,37 @@ fn main() {
     eprintln!("");
     eprintln!(
         "{}Encoding plan{} ({} files, target {}Mbps {} via {}):",
-        bold, reset,
-        probed_items.len(), args.bitrate, codec_display, encoder_label,
+        bold,
+        reset,
+        probed_items.len(),
+        args.bitrate,
+        codec_display,
+        encoder_label,
     );
     eprintln!("");
 
     // Column headers
     eprintln!(
-        "  {dim}{:<34} {:>10}  {:<10}  {:>11}  {:<16}  {}{reset}",
-        "File", "Bitrate", "Codec", "Resolution", "Action", "Mount",
+        "  {dim}{:<34} {:>10}  {:<10}  {:>11}  {:<7}  {:<16}  {}{reset}",
+        "File", "Bitrate", "Codec", "Resolution", "HDR", "Action", "Mount",
     );
-    eprintln!(
-        "  {dim}{}{reset}",
-        "-".repeat(97),
-    );
+    eprintln!("  {dim}{}{reset}", "-".repeat(106),);
 
     // Print per-file plan
     for (i, (item, decision)) in probed_items.iter().zip(decisions.iter()).enumerate() {
-        let hdr_tag = if item.is_hdr { " HDR" } else { "" };
-        let resolution = format!("{}x{}{}", item.video_width, item.video_height, hdr_tag);
+        let resolution = format!("{}x{}", item.video_width, item.video_height);
+
+        let hdr_label = hdr_type_label(item);
 
         let remote_tag = match &remote_annotations[i] {
             Some(annotation) => annotation.clone(),
-            None => if is_tty { format!("{dim}local{reset}") } else { "local".to_string() },
+            None => {
+                if is_tty {
+                    format!("{dim}local{reset}")
+                } else {
+                    "local".to_string()
+                }
+            }
         };
 
         // Colour the action based on decision type
@@ -364,18 +443,21 @@ fn main() {
         let coloured_action = match decision {
             EncodeDecision::Copy => format!("{green}{:<16}{reset}", action),
             EncodeDecision::Vbr { .. } => format!("{cyan}{:<16}{reset}", action),
-            EncodeDecision::Cqp { .. } | EncodeDecision::Crf { .. } => format!("{magenta}{:<16}{reset}", action),
+            EncodeDecision::Cqp { .. } | EncodeDecision::Crf { .. } => {
+                format!("{magenta}{:<16}{reset}", action)
+            }
         };
 
         // Truncate codec to 10 chars for consistent spacing
         let codec_str = truncate_filename(&item.video_codec, 10);
 
         eprintln!(
-            "  {:<34} {:>8.2}Mbps  {:<10}  {:>11}  {}  {}",
+            "  {:<34} {:>8.2}Mbps  {:<10}  {:>11}  {:<7}  {}  {}",
             truncate_filename(&item.file_name, 34),
             item.video_bitrate_mbps,
             codec_str,
             resolution,
+            hdr_label,
             coloured_action,
             remote_tag,
         );
@@ -388,7 +470,10 @@ fn main() {
         summary_parts.push(format!("{cyan}{} to encode (VBR){reset}", vbr_count));
     }
     if quality_count > 0 {
-        summary_parts.push(format!("{magenta}{} to transcode (quality){reset}", quality_count));
+        summary_parts.push(format!(
+            "{magenta}{} to transcode (quality){reset}",
+            quality_count
+        ));
     }
     if copy_count > 0 {
         summary_parts.push(format!("{green}{} to copy{reset}", copy_count));
@@ -399,6 +484,44 @@ fn main() {
             "         {} on remote mount (will stage locally)",
             remote_count
         );
+    }
+
+    // DV/HDR10+ pre-flight warnings
+    {
+        let caps = histv_lib::dovi_tools::capabilities();
+        let dv_count = probed_items
+            .iter()
+            .filter(|item| item.dovi_profile.is_some())
+            .count();
+        let dv5_count = probed_items
+            .iter()
+            .filter(|item| item.dovi_profile == Some(5))
+            .count();
+        let hdr10plus_count = probed_items
+            .iter()
+            .filter(|item| item.has_hdr10plus)
+            .count();
+
+        let yellow = if is_tty { "\x1b[33m" } else { "" };
+
+        if dv_count > 0 && !caps.can_package_dovi_mp4 {
+            eprintln!(
+                "  {yellow}{}WARNING:{reset} {} Dolby Vision file{} will fall back to HDR10 (MP4Box not found)",
+                bold, dv_count, if dv_count == 1 { "" } else { "s" },
+            );
+        }
+        if dv5_count > 0 {
+            eprintln!(
+                "  {yellow}{}WARNING:{reset} {} DV Profile 5 file{} will be encoded as HDR10 without mastering metadata",
+                bold, dv5_count, if dv5_count == 1 { "" } else { "s" },
+            );
+        }
+        if hdr10plus_count > 0 && !caps.can_process_hdr10plus {
+            eprintln!(
+                "  {yellow}{}WARNING:{reset} {} HDR10+ file{} will lose dynamic metadata (hdr10plus support not available)",
+                bold, hdr10plus_count, if hdr10plus_count == 1 { "" } else { "s" },
+            );
+        }
     }
 
     // Disk-space estimate
@@ -433,9 +556,15 @@ fn main() {
         if args.delete_source {
             let net = batch_estimate.net_change_with_delete;
             let net_desc = if net < 0 {
-                format!("{} freed after batch", histv_lib::disk_monitor::format_bytes(net.unsigned_abs()))
+                format!(
+                    "{} freed after batch",
+                    histv_lib::disk_monitor::format_bytes(net.unsigned_abs())
+                )
             } else {
-                format!("{} additional after batch", histv_lib::disk_monitor::format_bytes(net as u64))
+                format!(
+                    "{} additional after batch",
+                    histv_lib::disk_monitor::format_bytes(net as u64)
+                )
             };
             eprintln!(
                 "  With --delete-source:  up to {} needed during encoding, {}",
@@ -457,15 +586,133 @@ fn main() {
             // Also show what it would look like with --delete-source
             let net_delete = batch_estimate.net_change_with_delete;
             let net_desc = if net_delete < 0 {
-                format!("{} freed after batch", histv_lib::disk_monitor::format_bytes(net_delete.unsigned_abs()))
+                format!(
+                    "{} freed after batch",
+                    histv_lib::disk_monitor::format_bytes(net_delete.unsigned_abs())
+                )
             } else {
-                format!("{} additional after batch", histv_lib::disk_monitor::format_bytes(net_delete as u64))
+                format!(
+                    "{} additional after batch",
+                    histv_lib::disk_monitor::format_bytes(net_delete as u64)
+                )
             };
             eprintln!(
                 "  With --delete-source:  up to {} needed during encoding, {}",
                 histv_lib::disk_monitor::format_bytes(peak_with_delete),
                 net_desc,
             );
+        }
+    }
+
+    // ── Dry-run staging plan (Phase 3) ──────────────────────────
+
+    if remote_count > 0 {
+        // Build a dry-run wave plan to show grouping
+        let dry_pending: Vec<usize> = probed_items.iter().enumerate().map(|(i, _)| i).collect();
+        let staging_dir = histv_lib::staging::resolve_staging_dir(None);
+        let remote_never = matches!(args.remote, cli::RemotePolicy::Never);
+
+        let dry_plan = if matches!(args.remote, cli::RemotePolicy::Always) {
+            // All files as one big set of waves
+            use histv_lib::staging::WaveItem;
+            let budget: u64 = histv_lib::disk_monitor::partition_free_space(&staging_dir)
+                .map(|(_, free)| (free as f64 * 0.9) as u64)
+                .unwrap_or(u64::MAX);
+            let mut plan: Vec<WaveItem> = Vec::new();
+            let mut wave_indices: Vec<usize> = Vec::new();
+            let mut wave_bytes: u64 = 0;
+            for &idx in &dry_pending {
+                let file_bytes = queue_items[idx].source_bytes;
+                if file_bytes >= budget {
+                    if !wave_indices.is_empty() {
+                        plan.push(WaveItem::Wave {
+                            indices: std::mem::take(&mut wave_indices),
+                            total_stage_bytes: wave_bytes,
+                        });
+                        wave_bytes = 0;
+                    }
+                    plan.push(WaveItem::Wave {
+                        indices: vec![idx],
+                        total_stage_bytes: file_bytes,
+                    });
+                    continue;
+                }
+                if wave_bytes + file_bytes > budget && !wave_indices.is_empty() {
+                    plan.push(WaveItem::Wave {
+                        indices: std::mem::take(&mut wave_indices),
+                        total_stage_bytes: wave_bytes,
+                    });
+                    wave_bytes = 0;
+                }
+                wave_indices.push(idx);
+                wave_bytes += file_bytes;
+            }
+            if !wave_indices.is_empty() {
+                plan.push(WaveItem::Wave {
+                    indices: wave_indices,
+                    total_stage_bytes: wave_bytes,
+                });
+            }
+            plan
+        } else {
+            histv_lib::staging::WavePlanner::plan(
+                &queue_items,
+                &dry_pending,
+                &mut mount_cache,
+                &staging_dir,
+                false,
+                remote_never,
+            )
+        };
+
+        let wave_count = dry_plan
+            .iter()
+            .filter(|item| matches!(item, histv_lib::staging::WaveItem::Wave { .. }))
+            .count();
+        let local_count = dry_plan
+            .iter()
+            .filter(|item| matches!(item, histv_lib::staging::WaveItem::Local { .. }))
+            .count();
+
+        if wave_count > 0 {
+            eprintln!("");
+            eprintln!(
+                "{}Staging plan:{} {} wave{} ({} remote file{}, {} local file{})",
+                bold,
+                reset,
+                wave_count,
+                if wave_count == 1 { "" } else { "s" },
+                remote_count,
+                if remote_count == 1 { "" } else { "s" },
+                local_count,
+                if local_count == 1 { "" } else { "s" },
+            );
+            let mut wave_num = 0u32;
+            for item in &dry_plan {
+                match item {
+                    histv_lib::staging::WaveItem::Wave {
+                        indices,
+                        total_stage_bytes,
+                    } => {
+                        wave_num += 1;
+                        eprintln!(
+                            "  Wave {}: {} file{}, {} staged",
+                            wave_num,
+                            indices.len(),
+                            if indices.len() == 1 { "" } else { "s" },
+                            histv_lib::disk_monitor::format_bytes(*total_stage_bytes),
+                        );
+                    }
+                    histv_lib::staging::WaveItem::Local { .. } => {}
+                }
+            }
+            if local_count > 0 {
+                eprintln!(
+                    "  Local:  {} file{} (no staging)",
+                    local_count,
+                    if local_count == 1 { "" } else { "s" },
+                );
+            }
         }
     }
 
@@ -482,14 +729,20 @@ fn main() {
         let out_path = std::path::Path::new(&args.output);
         if !out_path.exists() {
             if let Err(e) = std::fs::create_dir_all(out_path) {
-                eprintln!("ERROR: Could not create output folder '{}': {e}", args.output.display());
+                eprintln!(
+                    "ERROR: Could not create output folder '{}': {e}",
+                    args.output.display()
+                );
                 std::process::exit(4);
             }
         }
         // Verify writable
         let test_path = out_path.join(".histv_write_test");
         if let Err(e) = std::fs::write(&test_path, b"") {
-            eprintln!("ERROR: Output folder '{}' is not writable: {e}", args.output.display());
+            eprintln!(
+                "ERROR: Output folder '{}' is not writable: {e}",
+                args.output.display()
+            );
             std::process::exit(4);
         }
         let _ = std::fs::remove_file(&test_path);
@@ -527,10 +780,8 @@ fn main() {
     }
 
     // Create batch control with signal handling
-    let batch_control = batch_control::CliBatchControl::new(
-        args.overwrite.clone(),
-        args.fallback.clone(),
-    );
+    let batch_control =
+        batch_control::CliBatchControl::new(args.overwrite.clone(), args.fallback.clone());
 
     // Build settings struct
     let output_folder_str = args.output.to_string_lossy().to_string();
@@ -547,7 +798,11 @@ fn main() {
         codec_family: codec_display.to_string(),
         audio_encoder: args.audio.to_string(),
         audio_cap: args.audio_cap,
-        pix_fmt: if args.no_hdr { "yuv420p".to_string() } else { "p010le".to_string() },
+        pix_fmt: if args.no_hdr {
+            "yuv420p".to_string()
+        } else {
+            "p010le".to_string()
+        },
         delete_source,
         save_log: args.save_log,
         post_command: args.post_command.clone(),
@@ -555,231 +810,94 @@ fn main() {
         threads: args.threads,
         low_priority: args.low_priority,
         precision_mode: args.precision_mode,
-		compatibility_mode: args.compat,
+        compatibility_mode: args.compat,
         preserve_av1: args.preserve_av1,
         force_local: false,
     };
 
-    // ── Remote staging + encoding loop ─────────────────────────
+    // ── Wave-based remote staging + encoding loop ──────────────
 
-    // For each file, decide whether to stage it locally before encoding.
-    // We do this by modifying the input paths in the queue items before
-    // passing them to the encoding loop.
-    //
-    // For replace mode on remote mounts, we also need to remember the
-    // original remote paths so we can move the encoded output back after
-    // the encode loop finishes. Without this, the encoder would write
-    // its output into the local staging directory (since the input path
-    // was rewritten) and the remote original would never be touched.
-    let mut staging_contexts: Vec<Option<histv_lib::staging::StagingContext>> = Vec::new();
-    let mut original_remote_paths: Vec<Option<String>> = Vec::new();
-    let output_derives_from_input = matches!(
-        args.output_mode, cli::OutputMode::Replace | cli::OutputMode::Beside
-    );
+    // Build wave plan: groups consecutive remote files into staging waves.
+    // The encode loop handles staging/cleanup per-wave internally.
+    let pending_indices: Vec<usize> = queue_items
+        .iter()
+        .enumerate()
+        .filter(|(_, item)| item.status == QueueItemStatus::Pending)
+        .map(|(i, _)| i)
+        .collect();
 
-    let should_stage = !matches!(args.remote, cli::RemotePolicy::Never);
-    if should_stage {
-        for (i, item) in queue_items.iter_mut().enumerate() {
-            if item.status != QueueItemStatus::Pending {
-                staging_contexts.push(None);
-                original_remote_paths.push(None);
+    let remote_never = matches!(args.remote, cli::RemotePolicy::Never);
+    let force_local = batch_settings.force_local;
+
+    // For --remote always, mark all files as remote in mount_cache
+    // by checking each file. The WavePlanner uses mount_cache.is_remote().
+    // For --remote always, we need to override detection:
+    let wave_plan = if matches!(args.remote, cli::RemotePolicy::Always) {
+        // All files treated as remote - put them all in waves
+        use histv_lib::staging::WaveItem;
+        let budget: u64 = histv_lib::disk_monitor::partition_free_space(&staging_dir)
+            .map(|(_, free)| (free as f64 * 0.9) as u64)
+            .unwrap_or(u64::MAX);
+
+        let mut plan: Vec<WaveItem> = Vec::new();
+        let mut wave_indices: Vec<usize> = Vec::new();
+        let mut wave_bytes: u64 = 0;
+
+        for &idx in &pending_indices {
+            let file_bytes = queue_items[idx].source_bytes;
+            if file_bytes >= budget {
+                if !wave_indices.is_empty() {
+                    plan.push(WaveItem::Wave {
+                        indices: std::mem::take(&mut wave_indices),
+                        total_stage_bytes: wave_bytes,
+                    });
+                    wave_bytes = 0;
+                }
+                plan.push(WaveItem::Wave {
+                    indices: vec![idx],
+                    total_stage_bytes: file_bytes,
+                });
                 continue;
             }
-
-            let needs_staging = match args.remote {
-                cli::RemotePolicy::Always => true,
-                cli::RemotePolicy::Auto => {
-                    mount_cache.is_remote(std::path::Path::new(&item.full_path))
-                }
-                cli::RemotePolicy::Never => false,
-            };
-
-            if needs_staging {
-                if let Some(info) = mount_cache.mount_info(std::path::Path::new(&item.full_path)) {
-                    sink.log(&format!(
-                        "  Remote source detected ({} mount at {})",
-                        info.fs_type, info.mount_point.display()
-                    ));
-                }
-
-                // Save the original remote path before rewriting
-                let remote_path = item.full_path.clone();
-
-                if let Some(ctx) = histv_lib::staging::StagingContext::stage_file(
-                    std::path::Path::new(&item.full_path),
-                    &staging_dir,
-                    i,
-                    &sink,
-                ) {
-                    // Rewrite the queue item's path to the local staged copy
-                    item.full_path = ctx.local_path().to_string_lossy().to_string();
-                    staging_contexts.push(Some(ctx));
-                    original_remote_paths.push(if output_derives_from_input { Some(remote_path) } else { None });
-                } else {
-                    // Staging failed, encode in-place
-                    staging_contexts.push(None);
-                    original_remote_paths.push(None);
-                }
-            } else {
-                staging_contexts.push(None);
-                original_remote_paths.push(None);
+            if wave_bytes + file_bytes > budget && !wave_indices.is_empty() {
+                plan.push(WaveItem::Wave {
+                    indices: std::mem::take(&mut wave_indices),
+                    total_stage_bytes: wave_bytes,
+                });
+                wave_bytes = 0;
             }
+            wave_indices.push(idx);
+            wave_bytes += file_bytes;
         }
-    }
+        if !wave_indices.is_empty() {
+            plan.push(WaveItem::Wave {
+                indices: wave_indices,
+                total_stage_bytes: wave_bytes,
+            });
+        }
+        plan
+    } else {
+        histv_lib::staging::WavePlanner::plan(
+            &queue_items,
+            &pending_indices,
+            &mut mount_cache,
+            &staging_dir,
+            force_local,
+            remote_never,
+        )
+    };
 
     eprintln!("");
 
-    // Run the encoding loop
-    let (done, failed, _skipped, was_cancelled) = rt.block_on(
-        encoder::run_encode_loop(&sink, batch_control.as_ref(), &mut queue_items, &batch_settings, &video_encoders)
-    );
-
-    // ── Post-encode: move staged outputs back to remote mount ──
-    //
-    // In replace or beside mode with remote staging, the encoder wrote its
-    // output into the local staging directory (since the input path was
-    // rewritten). Now we need to move that local output to the correct
-    // location on the remote mount.
-    //
-    // Replace mode: the encoder deleted the staged input and renamed the
-    //   temp to {staging_dir}/{base_name}.{ext}. We move it to the original
-    //   remote location, replacing the remote original.
-    //
-    // Beside mode: the encoder created {staging_dir}/output/{base_name}.{ext}.
-    //   We move it to {original_remote_dir}/output/{base_name}.{ext}.
-    if output_derives_from_input {
-        let ext = batch_settings.output_container.as_str();
-        let is_replace = matches!(args.output_mode, cli::OutputMode::Replace);
-
-        for (i, remote_path_opt) in original_remote_paths.iter().enumerate() {
-            if let Some(ref remote_path) = remote_path_opt {
-                if i >= queue_items.len() { continue; }
-                if queue_items[i].status != QueueItemStatus::Done { continue; }
-
-                let remote = std::path::Path::new(remote_path);
-                let base_name = remote.file_stem()
-                    .unwrap_or_default()
-                    .to_string_lossy();
-                let remote_dir = remote.parent().unwrap_or(std::path::Path::new("."));
-
-                // Locate the local output and determine the remote destination
-                let (local_output, final_remote) = if is_replace {
-                    // Replace: output is {staging_dir}/{base_name}.{ext}
-                    let local = staging_dir.join(format!("{}.{}", base_name, ext));
-                    let remote_dest = remote_dir.join(format!("{}.{}", base_name, ext));
-                    (local, remote_dest)
-                } else {
-                    // Beside: output is {staging_dir}/output/{base_name}.{ext}
-                    let local = staging_dir.join("output").join(format!("{}.{}", base_name, ext));
-                    let remote_dest_dir = remote_dir.join("output");
-                    let remote_dest = remote_dest_dir.join(format!("{}.{}", base_name, ext));
-                    // Ensure the output subfolder exists on the remote mount
-                    let _ = std::fs::create_dir_all(&remote_dest_dir);
-                    (local, remote_dest)
-                };
-
-                if !local_output.exists() {
-                    sink.log(&format!(
-                        "  WARNING: Expected staged output not found: {}",
-                        local_output.display()
-                    ));
-                    continue;
-                }
-
-                sink.log(&format!(
-                    "  Moving staged output to remote: {} → {}",
-                    local_output.display(), final_remote.display()
-                ));
-
-                if is_replace {
-                    // Safe replace: copy to a temp name on the remote mount first,
-                    // then delete the original, then rename. This way the original
-                    // survives until the copy is fully confirmed.
-                    let temp_remote = remote_dir.join(format!("{}.histv-tmp.{}", base_name, ext));
-
-                    match std::fs::copy(&local_output, &temp_remote) {
-                        Ok(_) => {
-                            // Copy succeeded - now safe to delete the original
-                            if remote.exists() {
-                                if let Err(e) = std::fs::remove_file(remote) {
-                                    sink.log(&format!(
-                                        "  WARNING: Could not delete remote original: {e}"
-                                    ));
-                                    // Original still exists, temp also exists - clean up temp
-                                    let _ = std::fs::remove_file(&temp_remote);
-                                    sink.log(&format!(
-                                        "  Encoded file preserved at: {}",
-                                        local_output.display()
-                                    ));
-                                    continue;
-                                }
-                            }
-                            // Rename temp to final
-                            if let Err(e) = std::fs::rename(&temp_remote, &final_remote) {
-                                sink.log(&format!(
-                                    "  WARNING: Could not rename temp to final on remote: {e}"
-                                ));
-                                // Temp file is on the remote mount with the data intact
-                                sink.log(&format!(
-                                    "  Encoded file on remote at: {}",
-                                    temp_remote.display()
-                                ));
-                            } else {
-                                sink.log(&format!(
-                                    "  Replaced remote source → {}",
-                                    final_remote.display()
-                                ));
-                            }
-                            // Clean up local copy
-                            let _ = std::fs::remove_file(&local_output);
-                        }
-                        Err(e) => {
-                            // Copy failed - original is untouched, nothing lost
-                            sink.log(&format!(
-                                "  ERROR: Could not copy output to remote mount: {e}"
-                            ));
-                            let _ = std::fs::remove_file(&temp_remote);
-                            sink.log(&format!(
-                                "  Encoded file preserved at: {}",
-                                local_output.display()
-                            ));
-                        }
-                    }
-                } else {
-                    // Beside mode: no original to protect, just copy across
-                    match std::fs::copy(&local_output, &final_remote) {
-                        Ok(_) => {
-                            let _ = std::fs::remove_file(&local_output);
-                            sink.log(&format!(
-                                "  Copied output to remote → {}",
-                                final_remote.display()
-                            ));
-                        }
-                        Err(e) => {
-                            sink.log(&format!(
-                                "  ERROR: Could not copy output to remote mount: {e}"
-                            ));
-                            sink.log(&format!(
-                                "  Encoded file preserved at: {}",
-                                local_output.display()
-                            ));
-                        }
-                    }
-                }
-            }
-        }
-    }
-
-    // Clean up any remaining staging contexts
-    for ctx in staging_contexts.iter_mut().flatten() {
-        ctx.cleanup(&sink);
-    }
-
-    // Disk monitor: check after batch (informational)
-    if let Some(ref dm) = disk_monitor {
-        // Final space check is informational only, no waiting
-        let _ = dm;
-    }
+    // Run the encoding loop with the wave plan
+    let (done, failed, _skipped, was_cancelled) = rt.block_on(encoder::run_encode_loop(
+        &sink,
+        batch_control.as_ref(),
+        &mut queue_items,
+        &batch_settings,
+        &video_encoders,
+        Some(wave_plan),
+    ));
 
     // ── Exit code ──────────────────────────────────────────────
 
@@ -797,10 +915,7 @@ fn main() {
 // ── Helper functions ───────────────────────────────────────────
 
 /// Resolve which video encoder to use based on args and detected encoders.
-fn resolve_encoder(
-    args: &cli::CliArgs,
-    video_encoders: &[encoder::EncoderInfo],
-) -> String {
+fn resolve_encoder(args: &cli::CliArgs, video_encoders: &[encoder::EncoderInfo]) -> String {
     // If the user forced a specific encoder, use it
     if let Some(ref forced) = args.encoder {
         return forced.clone();
@@ -815,7 +930,7 @@ fn resolve_encoder(
         match args.codec {
             cli::CodecFamily::H264 => "h264",
             cli::CodecFamily::Hevc => "hevc",
-            cli::CodecFamily::Auto => "hevc", // default
+            cli::CodecFamily::Auto => "hevc", // Auto defaults to HEVC for encoder lookup
         }
     };
 
@@ -823,9 +938,7 @@ fn resolve_encoder(
         .iter()
         .find(|e| e.codec_family == target_family)
         .map(|e| e.name.clone())
-        .unwrap_or_else(|| {
-            encoder::software_fallback(target_family).to_string()
-        })
+        .unwrap_or_else(|| encoder::software_fallback(target_family).to_string())
 }
 
 /// Merge job file settings into CLI args. CLI flags take precedence —
@@ -858,13 +971,13 @@ fn merge_job_into_args(args: &mut cli::CliArgs, job: &cli::JobFile) {
         }
     }
     if let Some(qi) = job.qp_i {
-        args.qp_i = qi;
+        args.qp_i = qi.min(51);
     }
     if let Some(qp) = job.qp_p {
-        args.qp_p = qp;
+        args.qp_p = qp.min(51);
     }
     if let Some(crf) = job.crf {
-        args.crf = crf;
+        args.crf = crf.min(51);
     }
     if let Some(hdr) = job.hdr {
         args.hdr = hdr;
@@ -926,13 +1039,35 @@ fn merge_job_into_args(args: &mut cli::CliArgs, job: &cli::JobFile) {
         args.save_log = sl;
     }
     if let Some(t) = job.threads {
-        args.threads = t;
+        args.threads = t.min(64);
     }
     if let Some(lp) = job.low_priority {
         args.low_priority = lp;
     }
     if let Some(pm) = job.precision_mode {
         args.precision_mode = pm;
+    }
+}
+
+/// HDR type label for a queue item.
+fn hdr_type_label(item: &QueueItem) -> &'static str {
+    if let Some(p) = item.dovi_profile {
+        match p {
+            5 => "DV5",
+            7 => "DV7",
+            8 => "DV8",
+            _ => "DV",
+        }
+    } else if item.has_hdr10plus {
+        "HDR10+"
+    } else if item.is_hdr {
+        if item.color_transfer == "arib-std-b67" {
+            "HLG"
+        } else {
+            "HDR10"
+        }
+    } else {
+        "SDR"
     }
 }
 

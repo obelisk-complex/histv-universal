@@ -1,0 +1,25 @@
+id: com.histv.encoder
+runtime: org.gnome.Platform
+runtime-version: '46'
+sdk: org.gnome.Sdk
+command: histv
+finish-args:
+  - --socket=wayland
+  - --socket=fallback-x11
+  - --share=ipc
+  - --device=dri
+  - --share=network
+  - --filesystem=host
+modules:
+  - name: histv
+    buildsystem: simple
+    sources:
+      - type: dir
+        path: flatpak-build-sources
+    build-commands:
+      - install -Dm755 histv /app/bin/histv
+      - install -Dm755 ffmpeg /app/bin/ffmpeg
+      - install -Dm755 ffprobe /app/bin/ffprobe
+      - install -Dm644 com.histv.encoder.desktop /app/share/applications/com.histv.encoder.desktop
+      - install -Dm644 com.histv.encoder.metainfo.xml /app/share/metainfo/com.histv.encoder.metainfo.xml
+      - install -Dm644 128x128.png /app/share/icons/hicolor/128x128/apps/com.histv.encoder.png

@@ -5,9 +5,8 @@ use std::path::Path;
 
 /// Supported video file extensions (§5.2).
 const SUPPORTED_EXTENSIONS: &[&str] = &[
-    "mkv", "mp4", "avi", "ts", "m2ts", "mts", "wmv", "mov", "webm", "m4v",
-    "mpg", "mpeg", "vob", "flv", "3gp", "3g2", "ogv", "rmvb", "rm", "asf",
-    "f4v", "y4m", "gif", "apng", "webp",
+    "mkv", "mp4", "avi", "ts", "m2ts", "mts", "wmv", "mov", "webm", "m4v", "mpg", "mpeg", "vob",
+    "flv", "3gp", "3g2", "ogv", "rmvb", "rm", "asf", "f4v", "y4m", "gif", "apng", "webp",
 ];
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -52,7 +51,10 @@ pub struct QueueItem {
     pub color_transfer: String,
     pub audio_streams: Vec<AudioStreamInfo>,
     pub duration_secs: f64,
-	pub source_bytes: u64,
+    pub source_bytes: u64,
+    pub dovi_profile: Option<u8>,
+    pub dovi_bl_compat_id: Option<u8>,
+    pub has_hdr10plus: bool,
 }
 
 /// Per-stream audio metadata collected during probing.
@@ -93,7 +95,9 @@ fn is_supported_extension(path: &str) -> bool {
     let p = Path::new(path);
     if let Some(ext) = p.extension() {
         let ext_os = ext.to_string_lossy();
-        SUPPORTED_EXTENSIONS.iter().any(|&supported| ext_os.eq_ignore_ascii_case(supported))
+        SUPPORTED_EXTENSIONS
+            .iter()
+            .any(|&supported| ext_os.eq_ignore_ascii_case(supported))
     } else {
         false
     }
@@ -103,7 +107,8 @@ fn is_supported_extension(path: &str) -> bool {
 /// Uses a VecDeque work queue instead of recursive allocation (#13).
 fn collect_files(paths: &[String]) -> Vec<String> {
     let mut result = Vec::new();
-    let mut work: VecDeque<std::path::PathBuf> = paths.iter().map(std::path::PathBuf::from).collect();
+    let mut work: VecDeque<std::path::PathBuf> =
+        paths.iter().map(std::path::PathBuf::from).collect();
 
     while let Some(path) = work.pop_front() {
         if path.is_dir() {
@@ -162,9 +167,7 @@ pub fn add_paths_to_queue(queue: &mut Vec<QueueItem>, paths: &[String]) -> AddRe
             .to_string_lossy()
             .to_string();
 
-        let source_bytes = std::fs::metadata(&file_path)
-            .map(|m| m.len())
-            .unwrap_or(0);
+        let source_bytes = std::fs::metadata(&file_path).map(|m| m.len()).unwrap_or(0);
 
         let item = QueueItem {
             full_path: file_path,
@@ -181,6 +184,9 @@ pub fn add_paths_to_queue(queue: &mut Vec<QueueItem>, paths: &[String]) -> AddRe
             audio_streams: Vec::new(),
             duration_secs: 0.0,
             source_bytes,
+            dovi_profile: None,
+            dovi_bl_compat_id: None,
+            has_hdr10plus: false,
         };
         queue.push(item);
     }
@@ -242,9 +248,11 @@ pub fn requeue_all(queue: &mut Vec<QueueItem>) {
 
 /// Clear all non-pending items (Done, Failed, Skipped, Cancelled).
 pub fn clear_non_pending(queue: &mut Vec<QueueItem>) {
-    queue.retain(|item| item.status == QueueItemStatus::Pending
-        || item.status == QueueItemStatus::Probing
-        || item.status == QueueItemStatus::Encoding);
+    queue.retain(|item| {
+        item.status == QueueItemStatus::Pending
+            || item.status == QueueItemStatus::Probing
+            || item.status == QueueItemStatus::Encoding
+    });
 }
 
 /// Move a queue item from one index to another.

@@ -27,9 +27,7 @@ impl GuiBatchControl {
     where
         F: std::future::Future<Output = T>,
     {
-        tokio::task::block_in_place(|| {
-            tokio::runtime::Handle::current().block_on(f)
-        })
+        tokio::task::block_in_place(|| tokio::runtime::Handle::current().block_on(f))
     }
 }
 
