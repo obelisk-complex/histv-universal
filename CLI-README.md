@@ -2,7 +2,7 @@
 
 Command-line batch video encoder - the headless companion to [Honey, I Shrunk The Vids](https://github.com/obelisk-complex/histv-universal).
 
-Same encoding engine as the desktop app: figures out what each file needs, uses your GPU if available, handles audio tracks individually, copies files from network drives before encoding, watches disk space, and checks output sizes. Built for servers and automation.
+Same encoding engine as the desktop app: figures out what each file needs, picks the right codec and container per-file, uses your GPU if available, handles audio tracks individually, copies files from network drives before encoding, watches disk space, and checks output sizes. Built for servers and automation.
 
 #### Can I use this with Sonarr/Radarr?
 
@@ -28,7 +28,7 @@ No dependency on Tauri, GTK, WebKit, or any GUI framework.
 ## Quick start
 
 ```bash
-# Encode a folder with defaults (HEVC, 5Mbps)
+# Encode a folder with defaults (auto codec, 4Mbps)
 histv-cli /path/to/videos/
 
 # See what it would do without encoding anything
@@ -43,6 +43,12 @@ histv-cli --bitrate 3 file1.mkv file2.mp4 /folder/
 # Best quality mode (adapts to your system's RAM)
 histv-cli --precision --bitrate 3 /path/to/videos/
 
+# Maximum device compatibility (H.264/MP4/AC3)
+histv-cli --compat /path/to/videos/
+
+# Keep AV1 sources as AV1
+histv-cli --preserve-av1 /path/to/videos/
+
 # From a saved job file
 histv-cli --job batch.json
 
@@ -52,12 +58,25 @@ histv-cli --overwrite skip --fallback yes /path/to/videos/ 2>&1 | tee encode.log
 
 ## What it does with each file
 
+The target codec is resolved per-file from the source:
+
+| Source codec | Target codec |
+|-------------|-------------|
+| H.264 | H.264 |
+| HEVC | HEVC |
+| AV1 (with `--preserve-av1`) | AV1 |
+| AV1 (without `--preserve-av1`) | HEVC |
+| Anything else (MPEG-2, VP9, etc.) | HEVC |
+| With `--compat` | H.264 (all sources) |
+
+Then the encoding decision:
+
 | Situation | What happens |
 |-----------|-------------|
 | Already small enough, same codec | **Copied as-is** - no re-encoding |
 | Already small enough, different codec | **Re-encoded for quality** using QP or CRF |
 | Too big | **Shrunk** to hit the target bitrate |
-| GIF or APNG | **Always re-encoded** into a proper video |
+| GIF, APNG, or animated WebP | **Always re-encoded** into a proper video |
 
 If an encode makes the file bigger than it was, the CLI throws away the encode and copies the original into the new container instead.
 
@@ -79,9 +98,9 @@ If an encode makes the file bigger than it was, the CLI throws away the encode a
 
 | Flag | Default | Description |
 |------|---------|-------------|
-| `-c, --codec <CODEC>` | `hevc` | `hevc` (smaller files) or `h264` (more compatible) |
-| `-e, --encoder <n>` | auto | Force a specific encoder (e.g. `hevc_nvenc`, `libx265`) |
-| `-b, --bitrate <MBPS>` | `5` | Target bitrate in Mbps - files above this get shrunk |
+| `-c, --codec <CODEC>` | `auto` | `auto` (preserve source family), `hevc`, or `h264` |
+| `-e, --encoder <n>` | auto | Force a specific encoder (e.g. `hevc_nvenc`, `libx265`, `libsvtav1`) |
+| `-b, --bitrate <MBPS>` | `4` | Target bitrate in Mbps - files above this get shrunk |
 | `--peak-multiplier <MULT>` | `1.5` | How much bitrate can spike on complex scenes (1.0-3.0) |
 | `--rc <MODE>` | `qp` | Quality mode for below-target files: `qp` (predictable size) or `crf` (better looking) |
 | `--qp-i <N>` | `20` | QP quality for key frames (lower = sharper, bigger) |
@@ -89,6 +108,8 @@ If an encode makes the file bigger than it was, the CLI throws away the encode a
 | `--crf <N>` | `20` | CRF quality level (lower = sharper, bigger). Software encoders only. |
 | `--hdr` | auto | Keep HDR as-is |
 | `--no-hdr` | | Convert HDR to SDR with proper tonemapping |
+| `--compat` | | Force H.264/MP4/AC3 for maximum device compatibility. Conflicts with `--preserve-av1`. |
+| `--preserve-av1` | | Keep AV1 sources as AV1 instead of converting to HEVC. Conflicts with `--compat`. |
 
 </details>
 
@@ -97,8 +118,8 @@ If an encode makes the file bigger than it was, the CLI throws away the encode a
 
 | Flag | Default | Description |
 |------|---------|-------------|
-| `-a, --audio <CODEC>` | `ac3` | Audio format: `ac3` (universal), `eac3` (smaller), `aac` (smallest), `copy` (leave alone) |
-| `--audio-cap <KBPS>` | `640` | Audio tracks already below this bitrate are left alone |
+| `-a, --audio <CODEC>` | `auto` | `auto` (copy below cap, re-encode above), `ac3`, `eac3`, `aac`, `copy` |
+| `--audio-cap <KBPS>` | `640` | Audio tracks below this bitrate are copied as-is. Tracks above are re-encoded to the same codec at the cap. Codecs with no ffmpeg encoder (DTS, TrueHD) fall back to EAC3. |
 
 </details>
 
@@ -109,7 +130,7 @@ If an encode makes the file bigger than it was, the CLI throws away the encode a
 |------|---------|-------------|
 | `-o, --output <DIR>` | `./output` | Where to save encoded files |
 | `--output-mode <MODE>` | `folder` | `folder` (use --output), `beside` (subfolder next to each input), `replace` (swap the original) |
-| `--container <FMT>` | `mkv` | `mkv` (holds everything) or `mp4` (plays on more devices) |
+| `--container <FMT>` | `auto` | `auto` (preserve source: MKV/MP4/MOV kept, others become MKV), `mkv`, `mp4` |
 | `--overwrite <POLICY>` | `ask` | What to do when output already exists: `ask`, `yes`, `skip` |
 | `--delete-source` | | Delete the original after a successful encode |
 
@@ -132,6 +153,8 @@ If an encode makes the file bigger than it was, the CLI throws away the encode a
 | Flag | Default | Description |
 |------|---------|-------------|
 | `--dry-run` | | Show the plan without encoding anything |
+| `--repair-tags` | | Fix stale MKV stream statistics tags on the input files, then exit. No encoding. |
+| `--deep-repair` | | Like `--repair-tags` but scans every packet for exact byte and frame counts. Slower, more accurate. |
 | `--fallback <POLICY>` | `ask` | If GPU encoding fails: `ask`, `yes` (auto-retry with software), `no` |
 | `--remote <POLICY>` | `auto` | Network files: `auto` (copy locally if needed), `always`, `never` |
 | `--local-tmp <DIR>` | system temp | Where to put local copies of network files |
@@ -167,19 +190,21 @@ A JSON file with the same settings as CLI flags, plus a `files` array. All field
 ```json
 {
   "files": ["/srv/media/movies/", "/srv/media/clips/holiday.mkv"],
-  "codec": "hevc",
-  "bitrate": 5,
+  "codec": "auto",
+  "bitrate": 4,
   "peakMultiplier": 1.5,
   "rateControl": "qp",
   "qpI": 20,
   "qpP": 22,
-  "audioCodec": "ac3",
+  "audioCodec": "auto",
   "audioBitrateCap": 640,
   "output": "/srv/media/encoded/",
   "outputMode": "folder",
-  "container": "mkv",
+  "container": "auto",
   "overwrite": "ask",
   "deleteSource": false,
+  "compatibilityMode": false,
+  "preserveAv1": false,
   "fallback": "ask",
   "remote": "auto",
   "precisionMode": false,
@@ -192,7 +217,7 @@ A JSON file with the same settings as CLI flags, plus a `files` array. All field
 Generate a starter job file from your current flags:
 
 ```bash
-histv-cli --export-job my-batch.json --codec h264 --bitrate 8 /srv/media/
+histv-cli --export-job my-batch.json --codec hevc --bitrate 8 /srv/media/
 ```
 
 </details>

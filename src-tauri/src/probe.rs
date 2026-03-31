@@ -181,7 +181,7 @@ pub async fn probe_file(file_path: &str, sink: &dyn EventSink) -> Result<ProbeRe
                     .as_str()
                     .and_then(|v| v.parse::<u64>().ok())
                     .map(|v| (v / 1000) as u32)
-                    .unwrap_or(999);
+                    .unwrap_or(0);
 
                 audio_streams.push(AudioStreamInfo {
                     index: audio_index,
@@ -193,25 +193,18 @@ pub async fn probe_file(file_path: &str, sink: &dyn EventSink) -> Result<ProbeRe
         }
     }
 
-    // ── Resolve bitrate using the tier waterfall ──
-    let video_bitrate_bps = if let Some(bps) = stream_bitrate {
-        // Tier 1: stream header
-        bps
-    } else if let (Some(bytes), Some(dur)) = (tag_bytes, tag_duration) {
-        // Tier 2: MKV stream tags
-        if dur > 0.0 { (bytes * 8.0) / dur } else { 0.0 }
-    } else if let Some(bps) = format["bit_rate"]
-        .as_str()
-        .and_then(parse_numeric)
-    {
-        // Tier 3: format-level (container) bitrate
-        bps
-    } else {
-        // Tier 4: packet counting fallback - requires a second ffprobe call
-        packet_count_bitrate(file_path, sink).await
-    };
+    // ── Resolve video bitrate ──
+    // Compute from file size and duration rather than trusting stream/format
+    // metadata, which can report nominal or max rates instead of actual
+    // averages (e.g. MPEG1 streams report the sequence header's declared
+    // rate, not the real average).
+    let file_size = std::fs::metadata(file_path).map(|m| m.len()).unwrap_or(0);
+    let audio_total_bps: f64 = audio_streams.iter()
+        .map(|s| s.bitrate_kbps as f64 * 1000.0)
+        .sum();
 
-    let video_bitrate_mbps = video_bitrate_bps / 1_000_000.0;
+    // Duration: resolve early so we can use it for bitrate computation.
+    // Reuses the same six-tier waterfall that was previously below.
 
     // ── Extract duration ──
     // Six-tier waterfall: format duration → video stream duration →
@@ -274,6 +267,24 @@ pub async fn probe_file(file_path: &str, sink: &dyn EventSink) -> Result<ProbeRe
     } else {
         packet_scan_duration(file_path, sink).await
     };
+	
+	let video_bitrate_bps = if file_size > 0 && duration_secs > 0.0 {
+        let total_bps = (file_size as f64 * 8.0) / duration_secs;
+        (total_bps - audio_total_bps).max(0.0)
+    } else if let Some(bps) = stream_bitrate {
+        bps
+    } else if let (Some(bytes), Some(dur)) = (tag_bytes, tag_duration) {
+        if dur > 0.0 { (bytes * 8.0) / dur } else { 0.0 }
+    } else if let Some(bps) = format["bit_rate"]
+        .as_str()
+        .and_then(parse_numeric)
+    {
+        bps
+    } else {
+        packet_count_bitrate(file_path, sink).await
+    };
+
+    let video_bitrate_mbps = video_bitrate_bps / 1_000_000.0;
 
     Ok(ProbeResult {
         video_codec,

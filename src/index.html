@@ -3,7 +3,7 @@
 <head>
   <meta charset="UTF-8" />
   <meta name="viewport" content="width=device-width, initial-scale=1.0" />
-  <title>Honey, I Shrunk The Vids v2.3.6</title>
+  <title>Honey, I Shrunk The Vids v2.4.0</title>
   <link rel="stylesheet" href="css/app.css" />
 </head>
 <body>
@@ -24,12 +24,13 @@
               <tr>
                 <th class="col-check"><input type="checkbox" id="select-all" title="Select / deselect all"></th>
                 <th>Filename</th>
+                <th>Size</th>
+                <th class="has-tooltip">Compressed (est.)<span class="tooltip-icon">?</span><span class="tooltip-text">Estimated output size based on current bitrate target. Tilde (~) means exact size can't be predicted for quality-based encoding.</span></th>
                 <th>Resolution</th>
                 <th>Source Bitrate</th>
                 <th>Target Bitrate</th>
                 <th>Status</th>
               </tr>
-            </thead>
             <tbody id="queue-body"></tbody>
           </table>
         </div>
@@ -58,18 +59,7 @@
 
           <div class="section-header">Video</div>
 
-          <div class="form-row form-row-wrap">
-            <label for="sel-codec" class="has-tooltip">Codec
-              <span class="tooltip-icon">?</span>
-              <span class="tooltip-text">HEVC gives you smaller files for the same quality; safe on devices from 2014 and later. H.264 is safest for pre-2014 devices.</span>
-            </label>
-            <select id="sel-codec" style="width:75px; flex:0 0 auto;">
-              <option value="HEVC">HEVC</option>
-              <option value="H.264">H.264</option>
-            </select>
-            <select id="sel-encoder"></select>
-          </div>
-          <div class="status-text" id="encoder-status">Detecting encoders…</div>
+          <div class="status-text" id="encoder-summary">Detecting encoders...</div>
 
           <div class="form-row">
             <label for="num-bitrate" class="has-tooltip">Bitrate (Mbps)
@@ -120,23 +110,6 @@
             <input type="number" id="num-crf" min="0" max="51" value="20" style="width:55px;" />
           </div>
 
-          <div class="section-header">Audio</div>
-
-          <div class="form-row">
-            <label for="sel-audio-codec" class="has-tooltip">Audio
-              <span class="tooltip-icon">?</span>
-              <span class="tooltip-text">AC3 plays everywhere. EAC3 sounds the same but takes less space. AAC is the smallest. Copy leaves the audio exactly as it was. Cap (kbps): audio already below this is left alone.</span>
-            </label>
-            <select id="sel-audio-codec" style="width:70px; flex:0 0 auto;">
-              <option value="AC3">AC3</option>
-              <option value="EAC3">EAC3</option>
-              <option value="AAC">AAC</option>
-              <option value="Copy">Copy</option>
-            </select>
-            <input type="number" id="num-audio-cap" min="128" max="1536" step="32" value="640" style="width:62px;" />
-            <span class="form-hint">kbps</span>
-          </div>
-
           <div class="section-header">Output</div>
 
           <div class="form-row">
@@ -160,17 +133,6 @@
             </div>
           </div>
 
-          <div class="form-row">
-            <label for="sel-container" class="has-tooltip">Container
-              <span class="tooltip-icon">?</span>
-              <span class="tooltip-text">MKV can hold anything and is great for archiving. MP4 is better if you need to play files on TVs, phones, or game consoles.</span>
-            </label>
-            <select id="sel-container" style="width:75px; flex:0 0 auto;">
-              <option value="mkv">MKV</option>
-              <option value="mp4">MP4</option>
-            </select>
-          </div>
-
           <div class="section-header">Behaviour</div>
 
           <div class="checkbox-row has-tooltip">
@@ -179,12 +141,26 @@
             <span class="tooltip-icon">?</span>
             <span class="tooltip-text">When unticked, HDR files are converted to 8-bit SDR, with industry-standard colour mapping. Leave ticked to leave HDR files as HDR.</span>
           </div>
+		  
+		  <div class="checkbox-row has-tooltip">
+            <input type="checkbox" id="chk-preserve-av1" />
+            <label for="chk-preserve-av1">Preserve AV1</label>
+            <span class="tooltip-icon">?</span>
+            <span class="tooltip-text">Keep AV1 files as AV1 instead of converting to HEVC. AV1 offers better compression than HEVC but requires a recent device or player for playback.</span>
+          </div>
+
+          <div class="checkbox-row has-tooltip">
+            <input type="checkbox" id="chk-compat" />
+            <label for="chk-compat">Compatibility mode</label>
+            <span class="tooltip-icon">?</span>
+            <span class="tooltip-text">Convert all files to H.264/MP4 for maximum device support back to 2010.</span>
+          </div>
 
           <div class="checkbox-row has-tooltip">
             <input type="checkbox" id="chk-precision" />
             <label for="chk-precision">Precision mode</label>
             <span class="tooltip-icon">?</span>
-            <span class="tooltip-text">Takes longer but gives you the smallest file that still looks great. Tests a few clips first to make sure it won't backfire and make the file bigger.</span>
+            <span class="tooltip-text">Uses software encoding for the best possible compression. Tests sample clips first and automatically adjusts if the result would be larger than the source. Takes a lot longer than hardware encoding.</span>
           </div>
 
           <div class="checkbox-row has-tooltip">
@@ -399,6 +375,18 @@
         </div>
       </div>
     </div>
+	
+	<!-- ═══ Modal: Unknown codec warning (§2.4.0) ═══ -->
+    <div class="modal-overlay" id="modal-unknown-codec" role="dialog" aria-modal="true" aria-labelledby="modal-unknown-codec-title">
+      <div class="modal-box">
+        <div class="modal-title" id="modal-unknown-codec-title">Some files have unreadable video codecs</div>
+        <div class="modal-body" id="unknown-codec-body"></div>
+        <div class="modal-buttons">
+          <button class="btn btn-primary" id="uc-continue">Continue</button>
+          <button class="btn" id="uc-cancel">Cancel</button>
+        </div>
+      </div>
+    </div>
 
   </div><!-- /app -->
 
@@ -450,9 +438,6 @@
 
     const queueBody       = $('#queue-body');
     const dropOverlay     = $('#drop-overlay');
-    const selCodec        = $('#sel-codec');
-    const selEncoder      = $('#sel-encoder');
-    const encoderStatus   = $('#encoder-status');
     const numBitrate      = $('#num-bitrate');
     const peakToggle      = $('#peak-toggle');
     const numQpI          = $('#num-qp-i');
@@ -466,12 +451,9 @@
     const chkPrecision    = $('#chk-precision');
     const numThreads      = $('#num-threads');
     const chkLowPriority  = $('#chk-low-priority');
-    const selAudioCodec   = $('#sel-audio-codec');
-    const numAudioCap     = $('#num-audio-cap');
     const selTheme        = $('#sel-theme');
     const txtOutputFolder = $('#txt-output-folder');
     const radioOutputMode = document.querySelectorAll('input[name="output-mode"]');
-    const selContainer    = $('#sel-container');
     const chkOverwrite    = $('#chk-overwrite');
     const chkDeleteSource = $('#chk-delete-source');
     const chkSaveLog      = $('#chk-save-log');
@@ -499,6 +481,9 @@
     const jobFile         = $('#job-file');
     const jobProgressText = $('#job-progress-text');
     const contextMenu     = $('#context-menu');
+	const encoderSummary  = $('#encoder-summary');
+    const chkPreserveAv1  = $('#chk-preserve-av1');
+    const chkCompat       = $('#chk-compat');
 
     // Status icons - done/failed/cancelled colours are updated by applyTheme
     let STATUS_ICONS = {
@@ -509,7 +494,7 @@
       failed: '<svg aria-hidden="true" viewBox="0 0 24 24" fill="none" stroke="#f87171" stroke-width="2.5"><path d="M6 6l12 12M18 6L6 18"/></svg>',
       skipped: '<svg aria-hidden="true" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M5 5l14 7-14 7V5z"/><line x1="19" y1="5" x2="19" y2="19"/></svg>',
       cancelled: '<svg aria-hidden="true" viewBox="0 0 24 24" fill="none" stroke="#fb923c" stroke-width="2.5"><circle cx="12" cy="12" r="9"/><line x1="9" y1="9" x2="15" y2="15"/></svg>',
-    };
+	};
 	
 	function applyFlatpakMode() {
       // Hide the output folder row (text field + Browse button)
@@ -585,10 +570,7 @@
           const [ve, ae] = await invoke('get_detected_encoders');
           videoEncoders = ve;
           audioEncoders = ae;
-          populateEncoderDropdown();
-          const total = ve.length + ae.length;
-          encoderStatus.textContent = `${total} encoders available (${ve.length} video, ${ae.length} audio)`;
-          fadeEncoderStatus();
+          updateEncoderSummary();
           encoderDetectionDone = true;
           if (chkPrecision.checked) applyPrecisionMode();
           updateBatchButtons();
@@ -599,17 +581,17 @@
         // In case ffmpeg-missing fired before listeners were ready
         const ffmpegMissing = await invoke('get_ffmpeg_missing_status');
         if (ffmpegMissing) {
-          encoderStatus.textContent = 'ffmpeg not found';
+          encoderSummary.textContent = 'ffmpeg not found';
           const modal = document.querySelector('#modal-ffmpeg-missing');
           modal.classList.add('visible');
 
           document.querySelector('#ffmpeg-dl-yes').onclick = async () => {
             modal.classList.remove('visible');
-            encoderStatus.textContent = 'Downloading ffmpeg...';
+            encoderSummary.textContent = 'Downloading ffmpeg...';
             try {
               await invoke('download_ffmpeg');
             } catch (e) {
-              encoderStatus.textContent = 'Download failed: ' + e;
+              encoderSummary.textContent = 'Download failed: ' + e;
               const body = document.querySelector('#ffmpeg-missing-body');
               body.textContent = 'Download failed: ' + e + '. You can install ffmpeg manually and restart the app.';
               modal.classList.add('visible');
@@ -618,7 +600,7 @@
 
           document.querySelector('#ffmpeg-dl-no').onclick = () => {
             modal.classList.remove('visible');
-            encoderStatus.textContent = 'ffmpeg not found - install ffmpeg and restart';
+            encoderSummary.textContent = 'ffmpeg not found - install ffmpeg and restart';
           };
         }
       }
@@ -628,7 +610,6 @@
     async function loadConfig() {
       try {
         const cfg = await invoke('get_config');
-        selCodec.value = cfg.videoCodec || 'HEVC';
         numBitrate.value = cfg.targetBitrate || 4;
         setPeakMultiplier(cfg.peakMultiplier || 1.5);
         numQpI.value = cfg.qpI ?? 20;
@@ -636,13 +617,15 @@
         numCrf.value = cfg.crf ?? 20;
         chkHdr.checked = cfg.hdr || false;
         chkPrecision.checked = cfg.precisionMode || false;
+		chkPreserveAv1.checked = cfg.preserveAv1 || false;
+        chkCompat.checked = cfg.compatibilityMode || false;
+        // Re-apply mutual exclusion
+        if (chkCompat.checked) chkPreserveAv1.disabled = true;
+        if (chkPreserveAv1.checked) chkCompat.disabled = true;
         numThreads.value = cfg.threads ?? 0;
         chkLowPriority.checked = cfg.lowPriority || false;
-        selAudioCodec.value = cfg.audioCodec || 'AC3';
-        numAudioCap.value = cfg.audioBitrateCap || 640;
         txtOutputFolder.value = cfg.outputFolder || 'output';
         setOutputMode(cfg.outputMode || 'folder');
-        selContainer.value = cfg.outputContainer || 'mkv';
         chkOverwrite.checked = cfg.overwrite || false;
         chkDeleteSource.checked = cfg.deleteSource || false;
         chkSaveLog.checked = cfg.saveLog || false;
@@ -675,7 +658,6 @@
             config: {
               theme: selTheme.value || 'Default Dark',
               outputFolder: txtOutputFolder.value,
-              outputContainer: selContainer.value,
               outputMode: getOutputMode(),
               overwrite: chkOverwrite.checked,
               deleteSource: chkDeleteSource.checked,
@@ -685,7 +667,6 @@
               postAction: selPostAction.value,
               postCountdown: parseInt(numCountdown.value, 10) || 0,
               customCommand: txtCustomCmd.value,
-              videoCodec: selCodec.value,
               targetBitrate: parseInt(numBitrate.value, 10) || 4,
               peakMultiplier: getCurrentPeakMultiplier(),
               qpI: parseInt(numQpI.value, 10) || 20,
@@ -694,10 +675,10 @@
               rateControlMode: getCurrentRcMode(),
               hdr: chkHdr.checked,
               precisionMode: chkPrecision.checked,
+			  compatibilityMode: chkCompat.checked,
+              preserveAv1: chkPreserveAv1.checked,
               threads: parseInt(numThreads.value, 10) || 0,
               lowPriority: chkLowPriority.checked,
-              audioCodec: selAudioCodec.value,
-              audioBitrateCap: parseInt(numAudioCap.value, 10) || 640,
               logDrawerOpen: bottomPanelBody.classList.contains('open'),
             }
           });
@@ -1039,26 +1020,36 @@
           c1.title = item.fullPath || item.fileName;
         }
 
-        // Cell 2: resolution
+        // Cell 2: size
+        const sizeText = formatBytes(item.sourceBytes);
+        const c2 = tr.children[2];
+        if (c2.textContent !== sizeText) c2.textContent = sizeText;
+
+        // Cell 3: compressed (est.)
+        const estText = formatEstimatedSize(item, settings);
+        const c3 = tr.children[3];
+        if (c3.textContent !== estText) c3.textContent = estText;
+
+        // Cell 4: resolution
         const resText = (item.videoWidth && item.videoHeight)
           ? `${item.videoWidth}x${item.videoHeight}` : '';
-        const c2 = tr.children[2];
-        if (c2.textContent !== resText) c2.textContent = resText;
+        const c4 = tr.children[4];
+        if (c4.textContent !== resText) c4.textContent = resText;
 
-        // Cell 3: source bitrate
+        // Cell 5: source bitrate
         const srcText = item.videoBitrateMbps > 0
           ? `${item.videoBitrateMbps.toFixed(2)} Mbps` : '';
-        const c3 = tr.children[3];
-        if (c3.textContent !== srcText) c3.textContent = srcText;
-
-        // Cell 4: target bitrate
-        const tgtText = computeTargetBitrateLabel(item, settings);
-        const c4 = tr.children[4];
-        if (c4.textContent !== tgtText) c4.textContent = tgtText;
-
-        // Cell 5: status badge
         const c5 = tr.children[5];
-        const badge = c5.firstChild;
+        if (c5.textContent !== srcText) c5.textContent = srcText;
+
+        // Cell 6: target bitrate
+        const tgtText = computeTargetBitrateLabel(item, settings);
+        const c6 = tr.children[6];
+        if (c6.textContent !== tgtText) c6.textContent = tgtText;
+
+        // Cell 7: status badge
+        const c7 = tr.children[7];
+        const badge = c7.firstChild;
         if (badge) {
           const currentStatus = tr.dataset.status || '';
           if (currentStatus !== statusLower) {
@@ -1114,6 +1105,16 @@
         tdName.title = item.fullPath || item.fileName;
         tdName.textContent = item.fileName;
         tr.appendChild(tdName);
+		
+		// Size
+        const tdSize = document.createElement('td');
+        tdSize.textContent = formatBytes(item.sourceBytes);
+        tr.appendChild(tdSize);
+
+        // Compressed (est.)
+        const tdEst = document.createElement('td');
+        tdEst.textContent = formatEstimatedSize(item, settings);
+        tr.appendChild(tdEst);
 
         // Resolution
         const tdRes = document.createElement('td');
@@ -1276,8 +1277,15 @@
         qpP: parseInt(numQpP.value, 10) || 22,
         crf: parseInt(numCrf.value, 10) || 20,
         rcMode: getCurrentRcMode(),
-        targetCodecFamily: selCodec.value === 'H.264' ? 'h264' : 'hevc',
+        targetCodecFamily: chkCompat.checked ? 'h264' : 'hevc',
       };
+    }
+	
+	// ── Human-readable file size ──
+    function formatBytes(n) {
+      if (!n || n <= 0) return '-';
+      if (n >= 1000000000) return (n / 1000000000).toFixed(2) + ' GB';
+      return (n / 1000000).toFixed(1) + ' MB';
     }
 
     // ── Target bitrate label (§5.7) ──
@@ -1314,20 +1322,75 @@
       }
     }
 
+// ── Estimated output size (§2.4.0 Phase 1) ──
+    // Returns { bytes: number, approx: boolean } or null if not estimable.
+    // approx=true means CQP/CRF: prefix display with "~".
+    function computeEstimatedSize(item, settings) {
+      if (!item.sourceBytes || item.sourceBytes <= 0) return null;
+
+      const mbps = item.videoBitrateMbps;
+      const sourceCodec = (item.videoCodec || '').toLowerCase();
+      const isNonCopyable = ['gif', 'apng', 'mjpeg', 'webp'].includes(sourceCodec);
+
+      // Have file size but no probe data yet
+      if (!mbps || mbps <= 0) {
+        if (!item.videoCodec) return null;
+        // Probed but zero bitrate (image sequence) - quality-based encode
+        return { bytes: item.sourceBytes, approx: true };
+      }
+
+      const isSameCodec = sourceCodec === settings.targetCodecFamily;
+
+      if (mbps > settings.target * 1.15 || (mbps > settings.target && !isSameCodec)) {
+        // VBR decision
+        const estimatedBytes = (settings.target * 1000000 * item.durationSecs) / 8;
+        return { bytes: Math.round(estimatedBytes), approx: false };
+      } else if (isNonCopyable) {
+        // CQP/CRF for non-copyable codecs
+        return { bytes: item.sourceBytes, approx: true };
+      } else if (mbps > 0) {
+        // Copy decision
+        return { bytes: item.sourceBytes, approx: false };
+      }
+
+      return null;
+    }
+
+    // ── Format estimated size for display ──
+    function formatEstimatedSize(item, settings) {
+      const est = computeEstimatedSize(item, settings);
+      if (!est) return '-';
+      const formatted = formatBytes(est.bytes);
+      return est.approx ? '~' + formatted : formatted;
+    }
+
     // ── Update all target bitrate labels (#11: uses .children not querySelectorAll) ──
     function refreshTargetBitrates() {
       const rows = queueBody.children;
       const settings = getTargetBitrateSettings();
       for (let i = 0; i < rows.length && i < queueData.length; i++) {
-        const td = rows[i].children[4];
+        const td = rows[i].children[6];
         if (td) td.textContent = computeTargetBitrateLabel(queueData[i], settings);
+      }
+    }
+
+// ── Update all estimated size labels (same trigger path as target bitrates) ──
+    function refreshEstimatedSizes() {
+      const rows = queueBody.children;
+      const settings = getTargetBitrateSettings();
+      for (let i = 0; i < rows.length && i < queueData.length; i++) {
+        const td = rows[i].children[3];
+        if (td) td.textContent = formatEstimatedSize(queueData[i], settings);
       }
     }
 
     // ── Debounced variant - coalesces rapid settings changes into one DOM walk ──
     function scheduleRefreshTargetBitrates() {
       if (targetBitrateDebounce) clearTimeout(targetBitrateDebounce);
-      targetBitrateDebounce = setTimeout(refreshTargetBitrates, 50);
+      targetBitrateDebounce = setTimeout(() => {
+        refreshTargetBitrates();
+        refreshEstimatedSizes();
+      }, 50);
     }
 
     // ── Debounced queue refresh - coalesces rapid fetch+render cycles ──
@@ -1340,6 +1403,7 @@
         await fetchQueue();
         renderQueue();
         checkHdrAuto();
+		checkAv1Auto();
       }, 80);
 	}
 	  
@@ -1394,7 +1458,18 @@
         scheduleConfigSave();
       }
     }
-
+	
+	// ── Auto-check Preserve AV1 if any file is AV1 ──
+    function checkAv1Auto() {
+      const anyAv1 = queueData.some(item => (item.videoCodec || '').toLowerCase() === 'av1');
+      if (anyAv1 && !chkPreserveAv1.checked && !chkCompat.checked) {
+        chkPreserveAv1.checked = true;
+        chkCompat.disabled = true;
+        updateEncoderSummary();
+        scheduleConfigSave();
+      }
+    }
+	
     // ── Queue buttons ──
     function setupQueueButtons() {
       $('#btn-add-files').addEventListener('click', async () => {
@@ -1689,17 +1764,34 @@
     // ═══════════════════════════════════════════════════════════════
     function setupSettingsListeners() {
       // Codec change → repopulate encoder dropdown, refresh target bitrates, update RC visibility
-      selCodec.addEventListener('change', () => {
-        populateEncoderDropdown();
-        if (chkPrecision.checked) {
-          applyPrecisionMode();
+	  
+      // Preserve AV1 / Compatibility mode - mutually exclusive
+      chkPreserveAv1.addEventListener('change', () => {
+        if (chkPreserveAv1.checked) {
+          chkCompat.checked = false;
+          chkCompat.disabled = true;
         } else {
-          updateRcModeVisibility();
+          chkCompat.disabled = false;
         }
+        updateEncoderSummary();
+        updateRcModeVisibility();
         scheduleRefreshTargetBitrates();
         scheduleConfigSave();
       });
 
+      chkCompat.addEventListener('change', () => {
+        if (chkCompat.checked) {
+          chkPreserveAv1.checked = false;
+          chkPreserveAv1.disabled = true;
+        } else {
+          chkPreserveAv1.disabled = false;
+        }
+        updateEncoderSummary();
+        updateRcModeVisibility();
+        scheduleRefreshTargetBitrates();
+        scheduleConfigSave();
+      });
+	  
       numBitrate.addEventListener('change', () => {
         scheduleRefreshTargetBitrates();
         scheduleConfigSave();
@@ -1753,7 +1845,7 @@
 
       // Simple save-on-change for remaining controls
       const simpleSaveControls = [
-        selAudioCodec, numAudioCap, txtOutputFolder, selContainer,
+        txtOutputFolder,
         chkOverwrite, chkDeleteSource, chkSaveLog, chkToast, chkAutoClear,
         chkPrecision, numThreads, chkLowPriority, selPostAction, txtCustomCmd, numCountdown
       ];
@@ -1812,7 +1904,7 @@
     }
 
     function isSoftwareEncoder(name) {
-      return name === 'libx265' || name === 'libx264';
+      return name === 'libx265' || name === 'libx264' || name === 'libsvtav1';
     }
 
     // ── Peak multiplier toggle helpers ──
@@ -1829,12 +1921,22 @@
     }
 
     function updateRcModeVisibility() {
-      const encoder = selEncoder.value || '';
+      // Determine if the active encoder is software
+      let family = 'hevc';
+      if (chkCompat.checked) family = 'h264';
+      else if (chkPreserveAv1.checked) family = 'av1';
+
+      let encoder;
+      if (chkPrecision.checked) {
+        encoder = family === 'h264' ? 'libx264' : family === 'av1' ? 'libsvtav1' : 'libx265';
+      } else {
+        const match = videoEncoders.find(e => e.codecFamily === family);
+        encoder = match ? match.name : 'libx265';
+      }
+
       if (isSoftwareEncoder(encoder)) {
         rowRcMode.style.display = 'flex';
       } else {
-        // HW encoders only support QP - force QP and hide the toggle
-        // (unless precision mode is overriding the encoder choice)
         if (!chkPrecision.checked) {
           rowRcMode.style.display = 'none';
           setRateControlMode('QP');
@@ -1844,49 +1946,28 @@
 
     /// When precision mode is toggled, force software encoder + CRF, or
     /// restore the previous selection when untoggled.
-    let prePrecisionEncoder = '';
     let prePrecisionRcMode = '';
     function applyPrecisionMode() {
       if (chkPrecision.checked) {
-        // Save current selections before overriding
-        prePrecisionEncoder = selEncoder.value;
         prePrecisionRcMode = getCurrentRcMode();
-        // Force software encoder for the current codec family
-        const family = selCodec.value === 'H.264' ? 'h264' : 'hevc';
-        const swEncoder = family === 'h264' ? 'libx264' : 'libx265';
-        if (selEncoder.value !== swEncoder) {
-          selEncoder.value = swEncoder;
-        }
         // Force CRF mode
         rowRcMode.style.display = 'flex';
         setRateControlMode('CRF');
-        // Disable encoder and RC mode controls while precision is active
-        selEncoder.disabled = true;
-        selEncoder.style.opacity = '0.4';
         for (const btn of rcToggle.querySelectorAll('button')) {
           btn.disabled = true;
           btn.style.opacity = '0.4';
         }
       } else {
-        // Restore previous selections
-        selEncoder.disabled = false;
-        selEncoder.style.opacity = '1';
         for (const btn of rcToggle.querySelectorAll('button')) {
           btn.disabled = false;
           btn.style.opacity = '1';
-        }
-        // Restore encoder if the previous one is still in the dropdown
-        if (prePrecisionEncoder) {
-          const opts = [...selEncoder.options].map(o => o.value);
-          if (opts.includes(prePrecisionEncoder)) {
-            selEncoder.value = prePrecisionEncoder;
-          }
         }
         if (prePrecisionRcMode) {
           setRateControlMode(prePrecisionRcMode);
         }
         updateRcModeVisibility();
       }
+      updateEncoderSummary();
       scheduleRefreshTargetBitrates();
       scheduleConfigSave();
     }
@@ -1894,22 +1975,24 @@
     // ═══════════════════════════════════════════════════════════════
     //  ENCODER DETECTION (§8)
     // ═══════════════════════════════════════════════════════════════
-    function populateEncoderDropdown() {
-      const family = selCodec.value === 'H.264' ? 'h264' : 'hevc';
-      const matching = videoEncoders.filter(e => e.codecFamily === family);
-      const prevValue = selEncoder.value;
-      selEncoder.innerHTML = '';
-      for (const enc of matching) {
-        const opt = document.createElement('option');
-        opt.value = enc.name;
-        opt.textContent = enc.name + (enc.isHardware ? ' (HW)' : ' (SW)');
-        selEncoder.appendChild(opt);
+    // ── Encoder summary line (§2.4.0) ──
+    function updateEncoderSummary() {
+      let family = 'hevc'; // default
+      if (chkCompat.checked) family = 'h264';
+      else if (chkPreserveAv1.checked) family = 'av1';
+
+      let encoder;
+      if (chkPrecision.checked) {
+        // Software fallback
+        encoder = family === 'h264' ? 'libx264' : family === 'av1' ? 'libsvtav1' : 'libx265';
+      } else {
+        const match = videoEncoders.find(e => e.codecFamily === family);
+        encoder = match ? match.name : (family === 'h264' ? 'libx264' : family === 'av1' ? 'libsvtav1' : 'libx265');
       }
-      // Restore previous selection if still valid, otherwise keep first
-      if (matching.find(e => e.name === prevValue)) {
-        selEncoder.value = prevValue;
-      }
-      updateRcModeVisibility();
+
+      const isHw = !encoder.startsWith('lib');
+      const familyLabel = family === 'h264' ? 'H.264' : family === 'av1' ? 'AV1' : 'HEVC';
+      encoderSummary.textContent = `Encoder: ${encoder} (${isHw ? 'HW' : 'SW'}) - ${familyLabel}`;
     }
 
     // ═══════════════════════════════════════════════════════════════
@@ -2335,17 +2418,41 @@
 
     // ── Start batch (§10.1) ──
     async function startBatch(skipDeleteConfirm = false) {
-      // Delete-source confirmation (§7.4)
       if (chkDeleteSource.checked && !skipDeleteConfirm) {
         const confirmed = await showDeleteConfirm();
         if (!confirmed) return;
       }
 
+      // Check for unknown/empty codecs in pending items
+      const knownCodecs = ['h264', 'hevc', 'h265', 'av1', 'mpeg2video', 'mpeg4', 'vc1',
+        'vp8', 'vp9', 'prores', 'theora', 'gif', 'apng', 'mjpeg', 'webp',
+        'msmpeg4v3', 'msmpeg4v2', 'wmv3', 'wmv2', 'wmv1', 'flv1', 'rv40', 'rv30'];
+      const unknownFiles = queueData.filter(item => {
+        if ((item.status || '').toLowerCase() !== 'pending') return false;
+        const codec = (item.videoCodec || '').toLowerCase();
+        return !codec || !knownCodecs.includes(codec);
+      });
+
+      if (unknownFiles.length > 0) {
+        const names = unknownFiles.slice(0, 10).map(f => f.fileName);
+        let body = names.join('\n');
+        if (unknownFiles.length > 10) body += `\n...and ${unknownFiles.length - 10} more`;
+        const target = chkCompat.checked ? 'H.264/MP4' : 'HEVC/MKV';
+        body += `\n\nThese files will be converted to ${target}.`;
+        $('#unknown-codec-body').textContent = body;
+        $('#unknown-codec-body').style.whiteSpace = 'pre-line';
+        $('#modal-unknown-codec').classList.add('visible');
+        return;
+      }
+
+      doStartBatch();
+    }
+
+    async function doStartBatch() {
       try {
         await invoke('start_batch', {
           settings: {
             outputFolder: txtOutputFolder.value,
-            outputContainer: selContainer.value,
             outputMode: getOutputMode(),
             targetBitrate: parseFloat(numBitrate.value) || 4,
             peakMultiplier: getCurrentPeakMultiplier(),
@@ -2353,12 +2460,10 @@
             qpP: parseInt(numQpP.value, 10) || 22,
             crf: parseInt(numCrf.value, 10) || 20,
             rateControlMode: getCurrentRcMode(),
-            videoEncoder: selEncoder.value,
-            codecFamily: selCodec.value,
-            audioEncoder: selAudioCodec.value.toLowerCase(),
-            audioBitrateCap: parseInt(numAudioCap.value, 10) || 640,
             pixFmt: chkHdr.checked ? 'p010le' : 'yuv420p',
             precisionMode: chkPrecision.checked,
+            compatibilityMode: chkCompat.checked,
+            preserveAv1: chkPreserveAv1.checked,
             threads: parseInt(numThreads.value, 10) || 0,
             lowPriority: chkLowPriority.checked,
             overwrite: chkOverwrite.checked,
@@ -2402,6 +2507,15 @@
       $('#ow-always').addEventListener('click', () => {
         invoke('respond_overwrite', { response: 'always' });
         $('#modal-overwrite').classList.remove('visible');
+      });
+	  
+	  // Unknown codec modal
+      $('#uc-continue').addEventListener('click', () => {
+        $('#modal-unknown-codec').classList.remove('visible');
+        doStartBatch();
+      });
+      $('#uc-cancel').addEventListener('click', () => {
+        $('#modal-unknown-codec').classList.remove('visible');
       });
 
       // Fallback prompt (§10.6)
@@ -2532,32 +2646,30 @@
           const [ve, ae] = await invoke('get_detected_encoders');
           videoEncoders = ve;
           audioEncoders = ae;
-          populateEncoderDropdown();
-          const total = ve.length + ae.length;
-          encoderStatus.textContent = `${total} encoders available (${ve.length} video, ${ae.length} audio)`;
-          fadeEncoderStatus();
+          updateEncoderSummary();
         } catch (e) {
-          encoderStatus.textContent = 'Encoder detection failed';
+          encoderSummary.textContent = 'Encoder detection failed';
         }
         if (chkPrecision.checked) applyPrecisionMode();
+        updateRcModeVisibility();
         updateBatchButtons();
       });
 
       // ffmpeg not found - prompt to download
       listen('ffmpeg-missing', () => {
-        encoderStatus.textContent = 'ffmpeg not found';
+        encoderSummary.textContent = 'ffmpeg not found';
         const modal = document.querySelector('#modal-ffmpeg-missing');
         const body = document.querySelector('#ffmpeg-missing-body');
         modal.classList.add('visible');
 
         document.querySelector('#ffmpeg-dl-yes').onclick = async () => {
           modal.classList.remove('visible');
-          encoderStatus.textContent = 'Downloading ffmpeg...';
+          encoderSummary.textContent = 'Downloading ffmpeg...';
           try {
             await invoke('download_ffmpeg');
             // encoder-detection-done event will fire automatically after download
           } catch (e) {
-            encoderStatus.textContent = 'Download failed: ' + e;
+            encoderSummary.textContent = 'Download failed: ' + e;
             body.textContent = 'Download failed: ' + e + '. You can install ffmpeg manually and restart the app.';
             modal.classList.add('visible');
           }
@@ -2565,13 +2677,13 @@
 
         document.querySelector('#ffmpeg-dl-no').onclick = () => {
           modal.classList.remove('visible');
-          encoderStatus.textContent = 'ffmpeg not found - install ffmpeg and restart';
+          encoderSummary.textContent = 'ffmpeg not found - install ffmpeg and restart';
         };
       });
 
       // Download progress updates
       listen('ffmpeg-download-progress', (event) => {
-        encoderStatus.textContent = event.payload;
+        encoderSummary.textContent = event.payload;
       });
 
       // Log messages
@@ -2651,8 +2763,8 @@
             tr.className = wantClass;
             tr.style.removeProperty('--encode-progress');
           }
-          const c5 = tr.children[5];
-          const badge = c5 && c5.firstChild;
+          const c7 = tr.children[7];
+          const badge = c7 && c7.firstChild;
           if (badge) {
             const icon = STATUS_ICONS[statusLower] || '';
             badge.innerHTML = '';
@@ -2796,20 +2908,6 @@
         const { action, countdown } = event.payload;
         startCountdown(action, countdown);
       });
-    }
-
-    // ═══════════════════════════════════════════════════════════════
-    //  ENCODER STATUS FADE
-    // ═══════════════════════════════════════════════════════════════
-    function fadeEncoderStatus() {
-      // Collapse the encoder status line after a few seconds
-      setTimeout(() => {
-        encoderStatus.style.transition = 'opacity 0.6s, max-height 0.6s, margin 0.6s';
-        encoderStatus.style.opacity = '0';
-        encoderStatus.style.maxHeight = '0';
-        encoderStatus.style.marginBottom = '0';
-        encoderStatus.style.overflow = 'hidden';
-      }, 4000);
     }
 
   </script>

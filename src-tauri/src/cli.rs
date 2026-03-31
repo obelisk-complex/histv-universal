@@ -32,7 +32,7 @@ pub struct CliArgs {
     // ── Video ──────────────────────────────────────────────────
 
     /// Video codec family
-    #[arg(short = 'c', long = "codec", default_value = "hevc", value_name = "CODEC")]
+    #[arg(short = 'c', long = "codec", default_value = "auto", value_name = "CODEC")]
     pub codec: CodecFamily,
 
     /// Force a specific encoder (e.g. hevc_nvenc, libx265).
@@ -87,11 +87,20 @@ pub struct CliArgs {
     /// CRF only.
     #[arg(long = "precision")]
     pub precision_mode: bool,
+	
+	/// Convert all files to H.264/MP4 with AC3 audio for maximum device
+    /// compatibility. Overrides --codec, --container, and --audio.
+    #[arg(long = "compat", conflicts_with = "preserve_av1")]
+    pub compat: bool,
+
+    /// Keep AV1 sources as AV1 instead of converting to HEVC.
+    #[arg(long = "preserve-av1", conflicts_with = "compat")]
+    pub preserve_av1: bool,
 
     // ── Audio ──────────────────────────────────────────────────
 
     /// Audio codec
-    #[arg(short = 'a', long = "audio", default_value = "ac3", value_name = "CODEC")]
+    #[arg(short = 'a', long = "audio", default_value = "auto", value_name = "CODEC")]
     pub audio: AudioCodec,
 
     /// Audio bitrate cap in kbps
@@ -111,7 +120,7 @@ pub struct CliArgs {
     pub output_mode: OutputMode,
 
     /// Output container format
-    #[arg(long = "container", default_value = "mkv", value_name = "FMT")]
+    #[arg(long = "container", default_value = "auto", value_name = "FMT")]
     pub container: ContainerFormat,
 
     /// Overwrite policy when output file already exists
@@ -180,6 +189,7 @@ pub struct CliArgs {
 
 #[derive(Debug, Clone, ValueEnum, Serialize, Deserialize)]
 pub enum CodecFamily {
+    Auto,
     Hevc,
     H264,
 }
@@ -187,6 +197,7 @@ pub enum CodecFamily {
 impl std::fmt::Display for CodecFamily {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         match self {
+            Self::Auto => write!(f, "auto"),
             Self::Hevc => write!(f, "hevc"),
             Self::H264 => write!(f, "h264"),
         }
@@ -210,6 +221,7 @@ impl std::fmt::Display for RateControl {
 
 #[derive(Debug, Clone, ValueEnum, Serialize, Deserialize)]
 pub enum AudioCodec {
+	Auto,
     Ac3,
     Eac3,
     Aac,
@@ -219,6 +231,7 @@ pub enum AudioCodec {
 impl std::fmt::Display for AudioCodec {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         match self {
+			Self::Auto => write!(f, "auto"),
             Self::Ac3 => write!(f, "ac3"),
             Self::Eac3 => write!(f, "eac3"),
             Self::Aac => write!(f, "aac"),
@@ -229,6 +242,7 @@ impl std::fmt::Display for AudioCodec {
 
 #[derive(Debug, Clone, ValueEnum, Serialize, Deserialize)]
 pub enum ContainerFormat {
+	Auto,
     Mkv,
     Mp4,
 }
@@ -236,6 +250,7 @@ pub enum ContainerFormat {
 impl std::fmt::Display for ContainerFormat {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         match self {
+			Self::Auto => write!(f, "auto"),
             Self::Mkv => write!(f, "mkv"),
             Self::Mp4 => write!(f, "mp4"),
         }
@@ -361,6 +376,10 @@ pub struct JobFile {
     pub threads: Option<u32>,
     pub low_priority: Option<bool>,
     pub precision_mode: Option<bool>,
+	#[serde(default)]
+    pub compat: Option<bool>,
+    #[serde(default)]
+    pub preserve_av1: Option<bool>,
 }
 
 /// Load a job file from disk.

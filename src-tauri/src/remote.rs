@@ -218,7 +218,7 @@ fn parse_mount_table() -> Vec<MountEntry> {
             let mount_point = unescape_mount_path(parts[1]);
             let fs_type = parts[2].to_string();
             let is_remote = REMOTE_FS_TYPES.iter().any(|rt| *rt == fs_type)
-                || fs_type.starts_with("fuse.") && is_remote_fuse(&fs_type);
+                || (fs_type.starts_with("fuse.") && is_remote_fuse(&fs_type));
             Some(MountEntry {
                 mount_point: PathBuf::from(mount_point),
                 fs_type,
@@ -313,6 +313,8 @@ fn parse_mount_table() -> Vec<MountEntry> {
             let mount_point = &line[on_idx + 4..paren_idx];
             let opts_str = &line[paren_idx + 2..line.len().saturating_sub(1)];
             let fs_type = opts_str.split(',').next().unwrap_or("").trim().to_string();
+            // macOS: treat all FUSE mounts as remote (no way to distinguish
+            // local FUSE like NTFS-3G from remote FUSE like sshfs reliably)
             let is_remote = REMOTE_FS_TYPES.iter().any(|rt| *rt == fs_type)
                 || fs_type.starts_with("fuse.");
             Some(MountEntry {

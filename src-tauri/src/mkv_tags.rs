@@ -699,78 +699,9 @@ async fn count_frames_with_progress(
         .map_err(|e| format!("Failed to launch ffmpeg for frame count: {e}"))?;
 
     let stderr = child.stderr.take();
-    let frame_count = std::sync::Arc::new(std::sync::atomic::AtomicU64::new(0));
-    let progress_secs = std::sync::Arc::new(std::sync::atomic::AtomicU64::new(0));
-
-    let stderr_thread = stderr.map(|tokio_stderr| {
-        let std_stderr = {
-            #[cfg(windows)]
-            {
-                let owned = tokio_stderr.into_owned_handle().unwrap();
-                std::process::ChildStderr::from(owned)
-            }
-            #[cfg(unix)]
-            {
-                let owned = tokio_stderr.into_owned_fd().unwrap();
-                std::process::ChildStderr::from(owned)
-            }
-        };
-        let frames = std::sync::Arc::clone(&frame_count);
-        let progress = std::sync::Arc::clone(&progress_secs);
-        std::thread::spawn(move || {
-            use std::io::Read;
-            let mut reader = std::io::BufReader::new(std_stderr);
-            let mut buf = [0u8; 4096];
-            let mut line_buf = Vec::<u8>::with_capacity(256);
-
-            loop {
-                match reader.read(&mut buf) {
-                    Ok(0) => break,
-                    Ok(n) => {
-                        for &byte in &buf[..n] {
-                            if byte == b'\r' || byte == b'\n' {
-                                if !line_buf.is_empty() {
-                                    // Parse frame=
-                                    if let Some(pos) = line_buf.windows(6).position(|w| w == b"frame=") {
-                                        let f_start = pos + 6;
-                                        let f_end = line_buf[f_start..].iter()
-                                            .position(|&b| b == b' ' || b == b'\t')
-                                            .map(|p| f_start + p)
-                                            .unwrap_or(line_buf.len());
-                                        if let Ok(f_str) = std::str::from_utf8(&line_buf[f_start..f_end]) {
-                                            if let Ok(fc) = f_str.trim().parse::<u64>() {
-                                                frames.store(fc, std::sync::atomic::Ordering::Relaxed);
-                                            }
-                                        }
-                                    }
-                                    // Parse time=
-                                    if let Some(pos) = line_buf.windows(5).position(|w| w == b"time=") {
-                                        let ts_start = pos + 5;
-                                        let ts_end = line_buf[ts_start..].iter()
-                                            .position(|&b| b == b' ' || b == b'\t')
-                                            .map(|p| ts_start + p)
-                                            .unwrap_or(line_buf.len());
-                                        if let Ok(ts_str) = std::str::from_utf8(&line_buf[ts_start..ts_end]) {
-                                            if let Some(secs) = crate::encoder::parse_ffmpeg_time(ts_str) {
-                                                progress.store(
-                                                    secs.to_bits(),
-                                                    std::sync::atomic::Ordering::Relaxed,
-                                                );
-                                            }
-                                        }
-                                    }
-                                    line_buf.clear();
-                                }
-                            } else {
-                                line_buf.push(byte);
-                            }
-                        }
-                    }
-                    Err(_) => break,
-                }
-            }
-        })
-    });
+    let progress = crate::encoder::FfmpegProgress::new();
+    let stderr_thread = stderr
+        .map(|stderr| crate::encoder::spawn_stderr_reader(stderr, &progress));
 
     // Poll for progress updates
     let mut last_pct: i32 = -1;
@@ -781,14 +712,12 @@ async fn count_frames_with_progress(
             Err(_) => break,
         }
 
-        if duration_secs > 0.0 {
-            let secs = f64::from_bits(
-                progress_secs.load(std::sync::atomic::Ordering::Relaxed)
-            );
+            if duration_secs > 0.0 {
+            let secs = progress.secs();
             let pct = ((secs / duration_secs) * 100.0).min(100.0) as i32;
             let pct_bucket = pct / 10 * 10; // Round down to nearest 10%
             if pct_bucket != last_pct && pct_bucket > 0 {
-                let fc = frame_count.load(std::sync::atomic::Ordering::Relaxed);
+                let fc = progress.frames();
                 sink.log(&format!("[repair] Counting frames: {}% ({} frames)", pct_bucket, fc));
                 last_pct = pct_bucket;
             }
@@ -801,6 +730,6 @@ async fn count_frames_with_progress(
         let _ = handle.join();
     }
 
-    let final_count = frame_count.load(std::sync::atomic::Ordering::Relaxed);
+    let final_count = progress.frames();
     Ok(final_count)
 }

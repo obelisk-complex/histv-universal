@@ -19,6 +19,10 @@ Available as a desktop app and a headless CLI for servers (see [CLI-README.md](C
 
 ![](/screenshots/gui-4.png)
 
+![](/screenshots/gui-5.png)
+
+![](/screenshots/gui-6.png)
+
 ![](/screenshots/cli-1.png)
 
 ![](/screenshots/cli-2.png)
@@ -34,15 +38,19 @@ Available as a desktop app and a headless CLI for servers (see [CLI-README.md](C
 
 - **Queue management** - drag-and-drop, clipboard paste (Ctrl+V), file/folder picker. Click, Shift+click, Ctrl+click, Ctrl+A, Delete. Right-click context menu. Drag to reorder.
 - **GIF/APNG/WebP support** - animated GIFs, APNGs, and WebPs are converted to proper video files automatically.
+- **Per-file codec resolution** - the app decides the codec, container, and audio handling for each file individually based on its source properties. H.264 stays H.264, HEVC stays HEVC, and everything else converts to HEVC. No manual codec selection needed.
+- **AV1 support** - first-class AV1 encoding via libsvtav1 and hardware AV1 encoders (AMF, NVENC, QSV, VideoToolbox, VAAPI). Enable Preserve AV1 to keep AV1 sources as AV1 instead of converting to HEVC.
+- **Compatibility Mode** - one checkbox to force H.264/MP4/AC3 output for maximum device compatibility.
 - **Smart decisions** - the app figures out what to do with each file before you start. Files that are already small enough get copied untouched. Files that are too big get shrunk. The queue shows the plan in real time as you change settings.
-- **GPU encoding** - tests your GPU at startup and picks the fastest working encoder. Falls back to software automatically if the GPU encoder fails mid-file.
+- **GPU encoding** - tests your GPU at startup and picks the fastest working encoder for each codec family (HEVC, H.264, AV1). Falls back to software automatically if the GPU encoder fails mid-file.
 - **QP / CRF quality modes** - two ways to control quality when files are below your target bitrate. QP gives predictable sizes; CRF gives better-looking results with less predictable sizes.
 - **Precision mode** - one checkbox for the best possible quality. Uses software encoding with smart analysis that adapts to your system's RAM. Tests a few short clips first to make sure it won't make the file bigger. Slower, but produces the smallest file that still looks great.
 - **VBR peak ceiling** - controls how much the bitrate can spike on action-heavy scenes (1.5x to 3x). Higher values look better on complex content.
-- **Audio handling** - each audio track is handled separately. Tracks already small enough are left alone. Unrecognised audio formats (like Apple Spatial Audio) are skipped with a warning instead of crashing.
+- **Audio handling** - each audio track is handled separately. Tracks already below 640kbps are copied as-is. Tracks above the cap are re-encoded to the same codec at the cap. Codecs with no ffmpeg encoder (DTS, TrueHD) fall back to EAC3. Compatibility Mode forces AC3.
 - **HDR support** - HDR videos are detected automatically and encoded in 10-bit. Untick the HDR checkbox to convert HDR to SDR with industry-standard tonemapping so colours look right on a normal screen.
 - **Subtitles** - all subtitle tracks are kept.
-- **Output options** - save to a folder, next to the source file, or replace the source. MKV or MP4 output.
+- **Output options** - save to a folder, next to the source file, or replace the source. Container is preserved per-file (MKV stays MKV, MP4 stays MP4, MOV stays MOV; other formats default to MKV).
+- **Queue size columns** - source file size and estimated compressed size shown in the queue table.
 - **Size safety net** - if the encoded file ends up bigger than the original, the app throws it away and copies the original into the new container instead.
 - **MKV tag repair** - detects and corrects stale stream statistics tags left behind by ffmpeg and third-party muxing tools, so bitrate decisions use the real numbers. Runs automatically at import and after each encode, with optional manual deep repair for severely corrupted metadata.
 - **Performance controls** - limit CPU threads and/or run encoding at low priority so your PC stays usable.
@@ -105,6 +113,8 @@ If you use a standard build, ffmpeg is required. The GUI offers to download it o
 | Linux | x86_64 | VAAPI, NVENC, QSV |
 | macOS | x86_64 / ARM64 | VideoToolbox |
 
+Hardware encoder detection covers HEVC, H.264, and AV1 codec families on all platforms. Each encoder is verified with a test encode at startup.
+
 <details>
 <summary><strong>Building from source</strong></summary>
 
@@ -127,10 +137,13 @@ You set a target bitrate and the app decides what to do with each file:
 
 | Situation | What happens |
 |-----------|-------------|
-| Already small enough | **Copied as-is** - no re-encoding, regardless of codec |
+| Already small enough, same codec family | **Copied as-is** - no re-encoding |
+| Already small enough, different codec | **Re-encoded for quality** using QP or CRF into the target codec |
 | Too big | **Shrunk** to hit the target bitrate using VBR encoding |
 | Zero bitrate / unreadable header | **Re-encoded for quality** using QP or CRF |
 | GIF, APNG, or animated WebP | **Always re-encoded** into a proper video |
+
+The target codec is determined per-file: H.264 sources stay H.264, HEVC sources stay HEVC, and everything else (MPEG-2, VP9, etc.) converts to HEVC. With Preserve AV1 enabled, AV1 sources stay AV1. With Compatibility Mode, everything becomes H.264/MP4.
 
 Files within 15% above the threshold that are already in the target codec are also copied rather than re-encoded, to avoid wasting time on marginal gains.
 
@@ -174,31 +187,31 @@ People with a pile of video files at different sizes and formats who want to shr
 │   ├── Cargo.toml
 │   ├── tauri.conf.json
 │   ├── build.rs
-│   ├── src/
-│   │   ├── main.rs             # GUI entry point
-│   │   ├── cli_main.rs         # CLI entry point
-│   │   ├── lib.rs              # Tauri commands, app setup, shared state
-│   │   ├── encoder.rs          # Encoder detection, flag mapping, batch loop
-│   │   ├── ffmpeg.rs           # Binary resolution, download, spawning
-│   │   ├── probe.rs            # Media probing via ffprobe
-│   │   ├── queue.rs            # Queue data structures, file collection
-│   │   ├── mkv_tags.rs         # MKV stream statistics tag repair (EBML)
-│   │   ├── config.rs           # GUI persistent settings
-│   │   ├── themes.rs           # Theme loading + built-in themes
-│   │   └── webp_decode.rs      # Animated WebP RIFF parser + decode pipeline
-│   │   ├── cli_sink.rs         # CLI EventSink (stderr + indicatif)
-│   │   ├── batch_control.rs    # CLI BatchControl (atomics + TTY prompts)
-│   │   ├── cli.rs              # CLI arg parsing (clap) + job files
-│   │   ├── remote.rs           # Network mount detection + caching
-│   │   ├── staging.rs          # Local staging for remote files
-│   │   ├── disk_monitor.rs     # Disk-space estimation + runtime monitoring
-│   │   ├── config.rs           # GUI persistent settings
-│   │   └── themes.rs           # Theme loading + built-in themes
-│   │   ├── webp_decode.rs      # Animated WebP RIFF parser + decode pipeline
-│   └── themes/                 # User-editable theme JSON files
+│   └── src/
+│       ├── main.rs             # GUI entry point
+│       ├── cli_main.rs         # CLI entry point
+│       ├── lib.rs              # Tauri commands, app setup, shared state
+│       ├── encoder.rs          # Encoder detection, flag mapping, batch loop
+│       ├── ffmpeg.rs           # Binary resolution, download, spawning
+│       ├── probe.rs            # Media probing via ffprobe
+│       ├── queue.rs            # Queue data structures, file collection
+│       ├── mkv_tags.rs         # MKV stream statistics tag repair (EBML)
+│       ├── webp_decode.rs      # Animated WebP RIFF parser + decode pipeline
+│       ├── events.rs           # EventSink + BatchControl traits
+│       ├── config.rs           # GUI persistent settings
+│       ├── themes.rs           # Theme loading + built-in themes
+│       ├── tauri_sink.rs       # GUI EventSink (Tauri emit)
+│       ├── tauri_batch_control.rs  # GUI BatchControl (Mutex + emit)
+│       ├── cli.rs              # CLI arg parsing (clap) + job files
+│       ├── cli_sink.rs         # CLI EventSink (stderr + indicatif)
+│       ├── batch_control.rs    # CLI BatchControl (atomics + TTY prompts)
+│       ├── remote.rs           # Network mount detection + caching
+│       ├── staging.rs          # Local staging for remote files
+│       └── disk_monitor.rs     # Disk-space estimation + runtime monitoring
 ├── .github/workflows/          # CI: per-platform builds
 ├── THEMES.md                   # Theme creation guide
 ├── CLI-README.md               # CLI documentation
+├── Sonarr-Radarr-Integration.md
 └── README.md
 ```
 

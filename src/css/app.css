@@ -210,13 +210,15 @@ html, body {
   letter-spacing: 0.3px;
 }
 
-/* Column widths */
+/* Column widths - 8 columns */
 #queue-table th:nth-child(1), #queue-table td:nth-child(1) { width: 2%; text-align: center; padding: 0 0 0 4px; }
-#queue-table th:nth-child(2), #queue-table td:nth-child(2) { width: 34%; }
-#queue-table th:nth-child(3), #queue-table td:nth-child(3) { width: 12%; }
-#queue-table th:nth-child(4), #queue-table td:nth-child(4) { width: 14%; }
-#queue-table th:nth-child(5), #queue-table td:nth-child(5) { width: 16%; }
-#queue-table th:nth-child(6), #queue-table td:nth-child(6) { width: 18%; }
+#queue-table th:nth-child(2), #queue-table td:nth-child(2) { width: 26%; }
+#queue-table th:nth-child(3), #queue-table td:nth-child(3) { width: 8%; min-width: 65px; }
+#queue-table th:nth-child(4), #queue-table td:nth-child(4) { width: 11%; min-width: 90px; }
+#queue-table th:nth-child(5), #queue-table td:nth-child(5) { width: 10%; }
+#queue-table th:nth-child(6), #queue-table td:nth-child(6) { width: 12%; }
+#queue-table th:nth-child(7), #queue-table td:nth-child(7) { width: 13%; }
+#queue-table th:nth-child(8), #queue-table td:nth-child(8) { width: 14%; }
 
 #queue-table td {
   padding: 4px 8px;

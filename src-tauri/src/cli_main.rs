@@ -555,6 +555,9 @@ fn main() {
         threads: args.threads,
         low_priority: args.low_priority,
         precision_mode: args.precision_mode,
+		compatibility_mode: args.compat,
+        preserve_av1: args.preserve_av1,
+        force_local: false,
     };
 
     // ── Remote staging + encoding loop ─────────────────────────
@@ -628,7 +631,7 @@ fn main() {
 
     // Run the encoding loop
     let (done, failed, _skipped, was_cancelled) = rt.block_on(
-        encoder::run_encode_loop(&sink, batch_control.as_ref(), &mut queue_items, &batch_settings)
+        encoder::run_encode_loop(&sink, batch_control.as_ref(), &mut queue_items, &batch_settings, &video_encoders)
     );
 
     // ── Post-encode: move staged outputs back to remote mount ──
@@ -803,18 +806,25 @@ fn resolve_encoder(
         return forced.clone();
     }
 
-    // Otherwise, pick the first available encoder for the target codec family
-    let target_family = args.codec.to_string();
+    // Determine the target codec family
+    let target_family = if args.compat {
+        "h264"
+    } else if args.preserve_av1 {
+        "av1"
+    } else {
+        match args.codec {
+            cli::CodecFamily::H264 => "h264",
+            cli::CodecFamily::Hevc => "hevc",
+            cli::CodecFamily::Auto => "hevc", // default
+        }
+    };
+
     video_encoders
         .iter()
         .find(|e| e.codec_family == target_family)
         .map(|e| e.name.clone())
         .unwrap_or_else(|| {
-            // Fallback to software encoder
-            encoder::software_fallback(match args.codec {
-                cli::CodecFamily::Hevc => "HEVC",
-                cli::CodecFamily::H264 => "H.264",
-            }).to_string()
+            encoder::software_fallback(target_family).to_string()
         })
 }
 

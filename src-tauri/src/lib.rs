@@ -470,8 +470,7 @@ mod gui_commands {
 
         let batch_settings = encoder::BatchSettings {
             output_folder,
-            output_container: settings["outputContainer"]
-                .as_str().unwrap_or("mkv").to_string(),
+            output_container: "mkv".to_string(), // legacy: resolved per-file now
             output_mode,
             threshold: settings["targetBitrate"]
                 .as_f64().unwrap_or(5.0),
@@ -480,23 +479,17 @@ mod gui_commands {
             crf_val: settings["crf"].as_u64().unwrap_or(20) as u32,
             rate_control_mode: settings["rateControlMode"]
                 .as_str().unwrap_or("QP").to_string(),
-            video_encoder: settings["videoEncoder"]
-                .as_str().unwrap_or("libx265").to_string(),
-            codec_family: match settings["codecFamily"].as_str().unwrap_or("HEVC") {
-    "H.264" | "h264" => "h264",
-    _ => "hevc",
-}.to_string(),
-            audio_encoder: settings["audioEncoder"]
-                .as_str().unwrap_or("ac3").to_string(),
-            audio_cap: settings["audioBitrateCap"]
-                .as_u64().unwrap_or(640) as u32,
+            video_encoder: "auto".to_string(), // legacy: resolved per-file now
+            codec_family: "hevc".to_string(),  // legacy: resolved per-file now
+            audio_encoder: "ac3".to_string(),  // legacy: resolved per-file now
+            audio_cap: 640,                    // legacy: resolved per-file now
             pix_fmt: settings["pixFmt"]
                 .as_str().unwrap_or("yuv420p").to_string(),
             delete_source: settings["deleteSource"]
                 .as_bool().unwrap_or(false),
             save_log: settings["saveLog"]
                 .as_bool().unwrap_or(false),
-            post_command: None, // GUI uses post-batch action events instead
+            post_command: None,
             peak_multiplier: settings["peakMultiplier"]
                 .as_f64().unwrap_or(1.5),
             threads: settings["threads"]
@@ -505,6 +498,11 @@ mod gui_commands {
                 .as_bool().unwrap_or(false),
             precision_mode: settings["precisionMode"]
                 .as_bool().unwrap_or(false),
+            compatibility_mode: settings["compatibilityMode"]
+                .as_bool().unwrap_or(false),
+            preserve_av1: settings["preserveAv1"]
+                .as_bool().unwrap_or(false),
+            force_local: false,
         };
 
         let show_toast = settings["showToast"].as_bool().unwrap_or(false);
@@ -572,6 +570,10 @@ mod gui_commands {
         let state_for_task = state_arc.clone();
         let sink_for_task = sink.clone();
         let app_for_task = app.clone();
+		let detected_encoders_for_task = {
+            let ve = state_arc.detected_video_encoders.lock().await;
+            ve.clone()
+        };
         tokio::spawn(async move {
             let (done, failed, skipped, _was_cancelled) =
                 encoder::run_encode_loop(
@@ -579,6 +581,7 @@ mod gui_commands {
                     batch_ctrl.as_ref(),
                     &mut queue_items,
                     &batch_settings,
+					&detected_encoders_for_task,
                 ).await;
 
             // Sync only the items that were pending at batch start (#15).

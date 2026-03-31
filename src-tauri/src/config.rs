@@ -7,6 +7,7 @@ use tauri::Manager;
 /// All persisted user settings (§13.2).
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
+#[serde(default)]
 pub struct AppConfig {
     pub theme: String,
     pub output_folder: String,
@@ -34,6 +35,10 @@ pub struct AppConfig {
     pub threads: u32,
     pub low_priority: bool,
     pub precision_mode: bool,
+	#[serde(default)]
+    pub compatibility_mode: bool,
+    #[serde(default)]
+    pub preserve_av1: bool,
 }
 
 impl Default for AppConfig {
@@ -65,6 +70,8 @@ impl Default for AppConfig {
             threads: 0,
             low_priority: false,
             precision_mode: false,
+			compatibility_mode: false,
+            preserve_av1: false,
         }
     }
 }

@@ -79,14 +79,82 @@ fn read_u16_le(r: &mut impl Read) -> Result<u16, String> {
     Ok(u16::from_le_bytes(buf))
 }
 
+/// Probe an animated WebP for metadata only, without reading frame data.
+/// Returns None if the file is not an animated WebP (no ANIM chunk found).
+fn probe_metadata(path: &Path) -> Result<Option<WebpInfo>, String> {
+    let mut file = std::fs::File::open(path)
+        .map_err(|e| format!("open {}: {e}", path.display()))?;
+
+    file.seek(SeekFrom::Start(12)).map_err(|e| format!("seek: {e}"))?;
+
+    let mut width: u32 = 0;
+    let mut height: u32 = 0;
+    let mut has_alpha = false;
+    let mut loop_count: u16 = 0;
+    let mut total_duration_ms: u32 = 0;
+    let mut frame_count: u32 = 0;
+    let mut found_anim = false;
+
+    loop {
+        let chunk_id = match read_fourcc(&mut file) {
+            Ok(id) => id,
+            Err(_) => break,
+        };
+        let chunk_size = match read_u32_le(&mut file) {
+            Ok(s) => s,
+            Err(_) => break,
+        };
+        let chunk_start = file.stream_position().map_err(|e| format!("{e}"))?;
+
+        match &chunk_id {
+            b"VP8X" => {
+                let mut flags = [0u8; 4];
+                file.read_exact(&mut flags).map_err(|e| format!("VP8X: {e}"))?;
+                has_alpha = (flags[0] & 0x10) != 0;
+                width = read_u24_le(&mut file)? + 1;
+                height = read_u24_le(&mut file)? + 1;
+            }
+            b"ANIM" => {
+                let _bg = read_u32_le(&mut file)?;
+                loop_count = read_u16_le(&mut file)?;
+                found_anim = true;
+            }
+            b"ANMF" => {
+                // Read only the duration (3 bytes at offset +12 into the chunk)
+                // Skip: x(3) + y(3) + w(3) + h(3) = 12 bytes
+                file.seek(SeekFrom::Start(chunk_start + 12))
+                    .map_err(|e| format!("seek: {e}"))?;
+                let dur = read_u24_le(&mut file)?;
+                total_duration_ms += dur;
+                frame_count += 1;
+                // Skip the rest - no frame data read
+            }
+            _ => {}
+        }
+
+        let padded_size = chunk_size + (chunk_size & 1);
+        let next = chunk_start + padded_size as u64;
+        file.seek(SeekFrom::Start(next)).map_err(|e| format!("seek: {e}"))?;
+    }
+
+    if !found_anim || frame_count == 0 {
+        return Ok(None);
+    }
+
+    Ok(Some(WebpInfo {
+        width,
+        height,
+        frame_count,
+        total_duration_ms,
+        loop_count,
+        has_alpha,
+    }))
+}
+
 /// Probe an animated WebP file for canvas dimensions, frame count, and
 /// total duration. Returns `None` if the file is not an animated WebP.
 pub fn probe_webp(path: &Path) -> Result<Option<WebpInfo>, String> {
-    match extract_frames(path) {
-        Ok((info, frames)) if !frames.is_empty() => Ok(Some(info)),
-        Ok(_) => Ok(None),
-        Err(e) => Err(e),
-    }
+    probe_metadata(path)
 }
 
 /// Extract all animation frames from an animated WebP file.

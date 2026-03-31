@@ -52,6 +52,7 @@ pub struct QueueItem {
     pub color_transfer: String,
     pub audio_streams: Vec<AudioStreamInfo>,
     pub duration_secs: f64,
+	pub source_bytes: u64,
 }
 
 /// Per-stream audio metadata collected during probing.
@@ -161,6 +162,10 @@ pub fn add_paths_to_queue(queue: &mut Vec<QueueItem>, paths: &[String]) -> AddRe
             .to_string_lossy()
             .to_string();
 
+        let source_bytes = std::fs::metadata(&file_path)
+            .map(|m| m.len())
+            .unwrap_or(0);
+
         let item = QueueItem {
             full_path: file_path,
             file_name,
@@ -175,6 +180,7 @@ pub fn add_paths_to_queue(queue: &mut Vec<QueueItem>, paths: &[String]) -> AddRe
             color_transfer: String::new(),
             audio_streams: Vec::new(),
             duration_secs: 0.0,
+            source_bytes,
         };
         queue.push(item);
     }
