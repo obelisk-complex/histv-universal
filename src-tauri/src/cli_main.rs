@@ -64,7 +64,6 @@ fn main() {
     let (video_encoders, _audio_encoders) = rt.block_on(encoder::detect_encoders(&sink));
 
     // Resolve which video encoder to use
-    let target_codec = args.codec.to_string();
     let video_encoder = resolve_encoder(&args, &video_encoders);
     let is_hw_encoder = video_encoders
         .iter()
@@ -246,11 +245,45 @@ fn main() {
     let rate_control_mode = args.rc.to_string().to_uppercase();
     let decisions: Vec<EncodeDecision> = probed_items.iter()
         .map(|item| {
+            let source_ext = std::path::Path::new(&item.full_path)
+                .extension()
+                .map(|e| e.to_string_lossy().to_lowercase())
+                .unwrap_or_default();
+            let resolved = encoder::resolve_file_settings(
+                &item.video_codec, &source_ext,
+                &encoder::BatchSettings {
+                    compatibility_mode: args.compat,
+                    preserve_av1: args.preserve_av1,
+                    precision_mode: args.precision_mode,
+                    // Fields below don't affect resolve_file_settings
+                    output_folder: String::new(),
+                    output_mode: String::new(),
+                    threshold: args.bitrate,
+                    qp_i: args.qp_i,
+                    qp_p: args.qp_p,
+                    crf_val: args.crf,
+                    rate_control_mode: rate_control_mode.clone(),
+                    pix_fmt: String::new(),
+                    delete_source: false,
+                    save_log: false,
+                    post_command: None,
+                    peak_multiplier: args.peak_multiplier,
+                    threads: 0,
+                    low_priority: false,
+                    force_local: false,
+                    video_encoder: String::new(),
+                    codec_family: String::new(),
+                    audio_encoder: String::new(),
+                    audio_cap: 0,
+                    output_container: String::new(),
+                },
+                &video_encoders,
+            );
             encoder::decide_encode_strategy(
                 item.video_bitrate_mbps,
                 args.bitrate,
                 &item.video_codec,
-                &target_codec,
+                &resolved.codec_family,
                 &rate_control_mode,
                 args.qp_i,
                 args.qp_p,
@@ -321,6 +354,7 @@ fn main() {
     let codec_display = match args.codec {
         cli::CodecFamily::Hevc => "HEVC",
         cli::CodecFamily::H264 => "H.264",
+		cli::CodecFamily::Auto => "auto",
     };
 
     // ANSI colour helpers — no-ops when not a TTY
@@ -815,7 +849,7 @@ fn resolve_encoder(
         match args.codec {
             cli::CodecFamily::H264 => "h264",
             cli::CodecFamily::Hevc => "hevc",
-            cli::CodecFamily::Auto => "hevc", // default
+			cli::CodecFamily::Auto => "auto",
         }
     };
 

@@ -419,6 +419,8 @@ pub fn export_job_file(args: &CliArgs, path: &std::path::Path) -> Result<(), Str
         threads: Some(args.threads),
         low_priority: Some(args.low_priority),
         precision_mode: Some(args.precision_mode),
+		compat: Some(args.compat),
+        preserve_av1: Some(args.preserve_av1),
     };
 
     let json = serde_json::to_string_pretty(&job)

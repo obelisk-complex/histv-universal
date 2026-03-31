@@ -267,21 +267,11 @@ pub fn decide_encode_strategy(
     let is_already_target = video_codec == target_codec;
 
     if bitrate_mbps <= threshold || bitrate_mbps <= 0.0 {
-        // Below threshold: copy only if the source codec matches the target
-        // (or is in the same family). Otherwise transcode to the target codec.
-        if bitrate_mbps > 0.0 && is_copyable && is_already_target {
+        // Below threshold with a valid bitrate: copy as-is. The file is
+        // already small enough - transcoding to a different codec doesn't
+        // make it smaller and risks making it bigger.
+        if bitrate_mbps > 0.0 && is_copyable {
             EncodeDecision::Copy
-        } else if bitrate_mbps > 0.0 && is_copyable && !is_already_target {
-            // Cross-codec but below threshold - quality-based transcode
-            if rate_control_mode == "CRF" || rate_control_mode == "crf" {
-                EncodeDecision::Crf {
-                    crf: crf_val,
-                    qi_fallback: qp_i,
-                    qp_fallback: qp_p,
-                }
-            } else {
-                EncodeDecision::Cqp { qi: qp_i, qp: qp_p }
-            }
         } else if rate_control_mode == "CRF" || rate_control_mode == "crf" {
             EncodeDecision::Crf {
                 crf: crf_val,
