@@ -6,6 +6,8 @@
 use std::io::{self, BufRead, BufReader, BufWriter, Read, Write};
 use std::path::Path;
 
+use tempfile::TempDir;
+
 /// Annex B start code (4-byte form).
 pub const START_CODE: [u8; 4] = [0x00, 0x00, 0x00, 0x01];
 
@@ -264,6 +266,66 @@ where
     Ok(())
 }
 
+// ── Pipeline helpers ─────────────────────────────────────────────
+
+/// Demux a video file to raw Annex B HEVC using ffmpeg.
+/// Pipes stderr and returns it on failure for diagnostics.
+pub async fn demux_to_annexb(
+    input_path: &Path,
+    output_path: &Path,
+    sink: &dyn crate::events::EventSink,
+    label: &str,
+) -> Result<(), String> {
+    let demux_output = crate::ffmpeg::ffmpeg_command()
+        .args([
+            "-y",
+            "-i",
+            &input_path.to_string_lossy(),
+            "-c:v",
+            "copy",
+            "-bsf:v",
+            "hevc_mp4toannexb",
+            "-an",
+            "-sn",
+            "-f",
+            "hevc",
+            &output_path.to_string_lossy(),
+        ])
+        .stdout(std::process::Stdio::null())
+        .stderr(std::process::Stdio::piped())
+        .spawn()
+        .map_err(|e| format!("Failed to launch ffmpeg for {label} demux: {e}"))?
+        .wait_with_output()
+        .await
+        .map_err(|e| format!("Failed to wait for ffmpeg {label} demux: {e}"))?;
+
+    if !demux_output.status.success() {
+        let stderr = String::from_utf8_lossy(&demux_output.stderr);
+        sink.log(&format!("  {label} demux stderr: {stderr}"));
+        return Err(format!(
+            "ffmpeg {label} demux to raw HEVC failed (exit {})",
+            demux_output.status
+        ));
+    }
+
+    Ok(())
+}
+
+/// Create a secure temp directory. Prefers `near` (same partition as
+/// source/output) to avoid flatpak tmpfs space limits and cross-device copies.
+/// Falls back to the system temp directory if `near` fails.
+pub fn make_tempdir(prefix: &str, near: Option<&Path>) -> Result<TempDir, String> {
+    if let Some(dir) = near {
+        if let Ok(td) = tempfile::Builder::new().prefix(prefix).tempdir_in(dir) {
+            return Ok(td);
+        }
+    }
+    tempfile::Builder::new()
+        .prefix(prefix)
+        .tempdir()
+        .map_err(|e| format!("Could not create temp dir: {e}"))
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -381,5 +443,31 @@ mod tests {
         let n2 = reader.next_nalu().unwrap().unwrap();
         assert_eq!(n2.data, nalu2);
         assert!(reader.next_nalu().unwrap().is_none());
+    }
+
+    #[test]
+    fn make_tempdir_near_valid_dir() {
+        let td = super::make_tempdir("histv_test_", Some(std::path::Path::new("/tmp")));
+        assert!(td.is_ok());
+        let td = td.unwrap();
+        assert!(td.path().exists());
+        assert!(td.path().to_string_lossy().contains("histv_test_"));
+    }
+
+    #[test]
+    fn make_tempdir_fallback_on_bad_path() {
+        let td = super::make_tempdir(
+            "histv_test_",
+            Some(std::path::Path::new("/nonexistent/path")),
+        );
+        assert!(td.is_ok());
+        assert!(td.unwrap().path().exists());
+    }
+
+    #[test]
+    fn make_tempdir_none_uses_system_temp() {
+        let td = super::make_tempdir("histv_test_", None);
+        assert!(td.is_ok());
+        assert!(td.unwrap().path().exists());
     }
 }

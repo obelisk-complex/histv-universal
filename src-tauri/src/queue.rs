@@ -3,6 +3,8 @@ use std::collections::HashSet;
 use std::collections::VecDeque;
 use std::path::Path;
 
+use crate::probe::ProbeResult;
+
 /// Supported video file extensions (§5.2).
 const SUPPORTED_EXTENSIONS: &[&str] = &[
     "mkv", "mp4", "avi", "ts", "m2ts", "mts", "wmv", "mov", "webm", "m4v", "mpg", "mpeg", "vob",
@@ -42,19 +44,9 @@ pub struct QueueItem {
     pub file_name: String,
     pub base_name: String,
     pub status: QueueItemStatus,
-    pub video_codec: String,
-    pub video_width: u32,
-    pub video_height: u32,
-    pub video_bitrate_bps: f64,
-    pub video_bitrate_mbps: f64,
-    pub is_hdr: bool,
-    pub color_transfer: String,
-    pub audio_streams: Vec<AudioStreamInfo>,
-    pub duration_secs: f64,
     pub source_bytes: u64,
-    pub dovi_profile: Option<u8>,
-    pub dovi_bl_compat_id: Option<u8>,
-    pub has_hdr10plus: bool,
+    #[serde(flatten)]
+    pub probe: ProbeResult,
 }
 
 /// Per-stream audio metadata collected during probing.
@@ -174,19 +166,8 @@ pub fn add_paths_to_queue(queue: &mut Vec<QueueItem>, paths: &[String]) -> AddRe
             file_name,
             base_name,
             status: QueueItemStatus::Pending,
-            video_codec: String::new(),
-            video_width: 0,
-            video_height: 0,
-            video_bitrate_bps: 0.0,
-            video_bitrate_mbps: 0.0,
-            is_hdr: false,
-            color_transfer: String::new(),
-            audio_streams: Vec::new(),
-            duration_secs: 0.0,
             source_bytes,
-            dovi_profile: None,
-            dovi_bl_compat_id: None,
-            has_hdr10plus: false,
+            probe: ProbeResult::default(),
         };
         queue.push(item);
     }

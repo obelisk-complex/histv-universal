@@ -90,10 +90,10 @@ fn read_vint(r: &mut impl Read) -> Result<(u64, usize, bool), String> {
     let mut all_ones = (b & mask) == mask;
 
     if len > 1 {
-        let mut rest = vec![0u8; len - 1];
-        r.read_exact(&mut rest)
+        let mut rest = [0u8; 7]; // VINT is at most 8 bytes; first already read
+        r.read_exact(&mut rest[..len - 1])
             .map_err(|e| format!("read VINT: {e}"))?;
-        for &byte in &rest {
+        for &byte in &rest[..len - 1] {
             value = (value << 8) | byte as u64;
             if byte != 0xFF {
                 all_ones = false;
@@ -760,9 +760,11 @@ async fn count_frames_with_progress(
 
     let stderr = child.stderr.take();
     let progress = crate::encoder::FfmpegProgress::new();
-    let stderr_log = crate::encoder::create_stderr_log("mkv_tags");
-    let stderr_thread =
-        stderr.map(|stderr| crate::encoder::spawn_stderr_reader(stderr, &progress, stderr_log));
+    let log_dir = path.parent().unwrap_or(std::path::Path::new("."));
+    let stderr_log = crate::encoder::open_stderr_log(log_dir);
+    let stderr_thread = stderr.map(|stderr| {
+        crate::encoder::spawn_stderr_reader(stderr, &progress, stderr_log.clone(), "mkv_tags")
+    });
 
     // Poll for progress updates
     let mut last_pct: i32 = -1;
@@ -793,6 +795,10 @@ async fn count_frames_with_progress(
     if let Some(handle) = stderr_thread {
         let _ = handle.join();
     }
+
+    // Clean up: drop the shared log handle, then remove if empty and enforce cap
+    drop(stderr_log);
+    crate::encoder::cleanup_stderr_logs(log_dir, None, 10);
 
     let final_count = progress.frames();
     Ok(final_count)

@@ -11,8 +11,7 @@ use tauri::Manager;
 pub struct AppConfig {
     pub theme: String,
     pub output_folder: String,
-    pub output_container: String, // "mkv" | "mp4"
-    pub output_mode: String,      // "folder" | "beside" | "replace"
+    pub output_mode: String, // "folder" | "beside" | "replace"
     pub overwrite: bool,
     pub delete_source: bool,
     pub save_log: bool,
@@ -48,7 +47,6 @@ impl Default for AppConfig {
         Self {
             theme: "Default Dark".to_string(),
             output_folder: "output".to_string(),
-            output_container: "auto".to_string(),
             output_mode: "folder".to_string(),
             overwrite: false,
             delete_source: false,
@@ -79,18 +77,26 @@ impl Default for AppConfig {
     }
 }
 
-/// Get the directory where config.json lives (next to the binary).
+/// Get the directory where config.json lives.
+///
+/// Uses the platform-standard app data directory (via Tauri's path API),
+/// falling back to the directory containing the executable if unavailable.
+/// This avoids writing to read-only locations (AppImage mounts, /usr/bin)
+/// and follows OS conventions (Linux: ~/.local/share, macOS: ~/Library,
+/// Windows: AppData\Roaming).
 fn config_dir(app: &AppHandle) -> PathBuf {
-    // Prefer the directory containing the executable
+    // Prefer platform-standard app data directory
+    if let Ok(dir) = app.path().app_data_dir() {
+        let _ = fs::create_dir_all(&dir);
+        return dir;
+    }
+    // Fallback: directory containing the executable
     if let Ok(exe) = std::env::current_exe() {
         if let Some(dir) = exe.parent() {
             return dir.to_path_buf();
         }
     }
-    // Fallback to Tauri's resource dir
-    app.path()
-        .resource_dir()
-        .unwrap_or_else(|_| PathBuf::from("."))
+    PathBuf::from(".")
 }
 
 fn config_path(app: &AppHandle) -> PathBuf {
@@ -99,6 +105,25 @@ fn config_path(app: &AppHandle) -> PathBuf {
 
 pub fn load_config(app: &AppHandle) -> AppConfig {
     let path = config_path(app);
+
+    // Migrate: if the new location is empty but the old exe-relative config
+    // exists, copy it over so users don't lose settings on upgrade.
+    if !path.exists() {
+        if let Ok(exe) = std::env::current_exe() {
+            if let Some(exe_dir) = exe.parent() {
+                let legacy = exe_dir.join("config.json");
+                if legacy.exists() && legacy != path {
+                    eprintln!(
+                        "Migrating config from {} to {}",
+                        legacy.display(),
+                        path.display()
+                    );
+                    let _ = fs::copy(&legacy, &path);
+                }
+            }
+        }
+    }
+
     if path.exists() {
         match fs::read_to_string(&path) {
             Ok(contents) => match serde_json::from_str::<AppConfig>(&contents) {

@@ -48,8 +48,8 @@ pub fn estimate_file(item: &QueueItem, decision: &EncodeDecision) -> FileEstimat
         }
         EncodeDecision::Vbr { target_bps, .. } => {
             // VBR: estimate from target bitrate * duration
-            if item.duration_secs > 0.0 {
-                ((*target_bps as f64 * item.duration_secs) / 8.0) as u64
+            if item.probe.duration_secs > 0.0 {
+                ((*target_bps as f64 * item.probe.duration_secs) / 8.0) as u64
             } else {
                 source_bytes // Can't estimate without duration
             }

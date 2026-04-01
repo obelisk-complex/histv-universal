@@ -14,7 +14,6 @@ use hdr10plus::hevc::encode_hdr10plus_nal;
 use hdr10plus::metadata::Hdr10PlusMetadata;
 
 use std::path::Path;
-use tempfile::TempDir;
 
 use crate::events::EventSink;
 use crate::ffmpeg as ffbin;
@@ -54,41 +53,11 @@ pub async fn extract_hdr10plus(
     source_path: &Path,
     sink: &dyn EventSink,
 ) -> Result<ExtractedHdr10Plus, String> {
-    let temp_dir = make_tempdir("histv_hdr10p_", source_path.parent())?;
+    let temp_dir = hevc_utils::make_tempdir("histv_hdr10p_", source_path.parent())?;
     let raw_hevc = temp_dir.path().join("source.h265");
 
     sink.log("  HDR10+: Extracting HEVC bitstream from source...");
-    let demux_output = ffbin::ffmpeg_command()
-        .args([
-            "-y",
-            "-i",
-            &source_path.to_string_lossy(),
-            "-c:v",
-            "copy",
-            "-bsf:v",
-            "hevc_mp4toannexb",
-            "-an",
-            "-sn",
-            "-f",
-            "hevc",
-            &raw_hevc.to_string_lossy(),
-        ])
-        .stdout(std::process::Stdio::null())
-        .stderr(std::process::Stdio::piped())
-        .spawn()
-        .map_err(|e| format!("Failed to launch ffmpeg for demux: {e}"))?
-        .wait_with_output()
-        .await
-        .map_err(|e| format!("Failed to wait for ffmpeg demux: {e}"))?;
-
-    if !demux_output.status.success() {
-        let stderr = String::from_utf8_lossy(&demux_output.stderr);
-        sink.log(&format!("  HDR10+ demux stderr: {stderr}"));
-        return Err(format!(
-            "ffmpeg demux to raw HEVC failed (exit {})",
-            demux_output.status
-        ));
-    }
+    hevc_utils::demux_to_annexb(source_path, &raw_hevc, sink, "HDR10+").await?;
 
     // Stream through the bitstream, extracting HDR10+ payloads from SEI NALs
     sink.log("  HDR10+: Scanning for dynamic metadata (streaming)...");
@@ -168,43 +137,12 @@ pub async fn inject_hdr10plus(
     metadata: &ExtractedHdr10Plus,
     sink: &dyn EventSink,
 ) -> Result<Hdr10PlusPipelineResult, String> {
-    let temp_dir = make_tempdir("histv_hdr10p_inject_", output_path.parent())?;
+    let temp_dir = hevc_utils::make_tempdir("histv_hdr10p_inject_", output_path.parent())?;
 
     // Step 1: Demux encoded output to raw HEVC
     let encoded_hevc = temp_dir.path().join("encoded.h265");
     sink.log("  HDR10+: Extracting encoded HEVC bitstream...");
-
-    let demux_output = ffbin::ffmpeg_command()
-        .args([
-            "-y",
-            "-i",
-            &encoded_path.to_string_lossy(),
-            "-c:v",
-            "copy",
-            "-bsf:v",
-            "hevc_mp4toannexb",
-            "-an",
-            "-sn",
-            "-f",
-            "hevc",
-            &encoded_hevc.to_string_lossy(),
-        ])
-        .stdout(std::process::Stdio::null())
-        .stderr(std::process::Stdio::piped())
-        .spawn()
-        .map_err(|e| format!("Failed to demux encoded output: {e}"))?
-        .wait_with_output()
-        .await
-        .map_err(|e| format!("Failed to wait for ffmpeg demux: {e}"))?;
-
-    if !demux_output.status.success() {
-        let stderr = String::from_utf8_lossy(&demux_output.stderr);
-        sink.log(&format!("  HDR10+ inject demux stderr: {stderr}"));
-        return Err(format!(
-            "Could not demux encoded output to raw HEVC (exit {})",
-            demux_output.status
-        ));
-    }
+    hevc_utils::demux_to_annexb(encoded_path, &encoded_hevc, sink, "HDR10+ inject").await?;
 
     // SEI NALUs were pre-encoded at extraction time — use directly
     let sei_nalus = &metadata.sei_nalus;
@@ -356,21 +294,6 @@ fn parse_hdr10plus_from_sei_nalu(nalu_data: &[u8]) -> Option<Vec<u8>> {
     Some(payload.to_vec())
 }
 
-/// Create a secure temp directory. Prefers `near` (same partition as
-/// source/output) to avoid flatpak tmpfs space limits and cross-device copies.
-/// Falls back to the system temp directory if `near` fails.
-fn make_tempdir(prefix: &str, near: Option<&std::path::Path>) -> Result<TempDir, String> {
-    if let Some(dir) = near {
-        if let Ok(td) = tempfile::Builder::new().prefix(prefix).tempdir_in(dir) {
-            return Ok(td);
-        }
-    }
-    tempfile::Builder::new()
-        .prefix(prefix)
-        .tempdir()
-        .map_err(|e| format!("Could not create temp dir: {e}"))
-}
-
 // ── Stubs for non-dovi builds ─────────────────────────────────────
 
 #[cfg(not(feature = "dovi"))]
@@ -475,31 +398,5 @@ mod tests {
     fn parse_rejects_too_short() {
         assert!(parse_hdr10plus_from_sei_nalu(&[]).is_none());
         assert!(parse_hdr10plus_from_sei_nalu(&[0x4E, 0x01, 4, 2, 0xB5, 0x00]).is_none());
-    }
-
-    #[test]
-    fn make_tempdir_near_valid_dir() {
-        let td = make_tempdir("histv_test_", Some(std::path::Path::new("/tmp")));
-        assert!(td.is_ok());
-        let td = td.unwrap();
-        assert!(td.path().exists());
-        assert!(td.path().to_string_lossy().contains("histv_test_"));
-    }
-
-    #[test]
-    fn make_tempdir_fallback_on_bad_path() {
-        let td = make_tempdir(
-            "histv_test_",
-            Some(std::path::Path::new("/nonexistent/path")),
-        );
-        assert!(td.is_ok());
-        assert!(td.unwrap().path().exists());
-    }
-
-    #[test]
-    fn make_tempdir_none_uses_system_temp() {
-        let td = make_tempdir("histv_test_", None);
-        assert!(td.is_ok());
-        assert!(td.unwrap().path().exists());
     }
 }

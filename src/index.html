@@ -134,18 +134,6 @@
             </div>
           </div>
 
-          <div class="form-row has-tooltip">
-            <label for="sel-container" class="has-tooltip">Container
-              <span class="tooltip-icon">?</span>
-              <span class="tooltip-text">Keeps the original container format where possible. Files in formats that don't support modern codecs (AVI, WMV, etc.) default to MKV. Dolby Vision files always output as MP4 regardless of this setting.</span>
-            </label>
-            <select id="sel-container">
-              <option value="auto" selected>Auto</option>
-              <option value="mkv">MKV</option>
-              <option value="mp4">MP4</option>
-            </select>
-          </div>
-
           <div class="section-header">Behaviour</div>
 
           <div class="checkbox-row has-tooltip">
@@ -499,7 +487,6 @@
     const selTheme        = $('#sel-theme');
     const txtOutputFolder = $('#txt-output-folder');
     const radioOutputMode = document.querySelectorAll('input[name="output-mode"]');
-    const selContainer    = $('#sel-container');
     const chkOverwrite    = $('#chk-overwrite');
     const chkDeleteSource = $('#chk-delete-source');
     const chkSaveLog      = $('#chk-save-log');
@@ -674,7 +661,6 @@
         chkLowPriority.checked = cfg.lowPriority || false;
         txtOutputFolder.value = cfg.outputFolder || 'output';
         setOutputMode(cfg.outputMode || 'folder');
-        selContainer.value = cfg.outputContainer || 'auto';
         chkOverwrite.checked = cfg.overwrite || false;
         chkDeleteSource.checked = cfg.deleteSource || false;
         chkSaveLog.checked = cfg.saveLog || false;
@@ -709,7 +695,7 @@
               theme: selTheme.value || 'Default Dark',
               outputFolder: txtOutputFolder.value,
               outputMode: getOutputMode(),
-              outputContainer: selContainer.value,
+              outputContainer: 'auto',
               overwrite: chkOverwrite.checked,
               deleteSource: chkDeleteSource.checked,
               saveLog: chkSaveLog.checked,
@@ -2595,7 +2581,7 @@
           settings: {
             outputFolder: txtOutputFolder.value,
             outputMode: getOutputMode(),
-            outputContainer: selContainer.value,
+            outputContainer: 'auto',
             targetBitrate: parseFloat(numBitrate.value) || 4,
             peakMultiplier: getCurrentPeakMultiplier(),
             qpI: parseInt(numQpI.value, 10) || 20,

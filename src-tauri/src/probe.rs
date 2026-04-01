@@ -4,7 +4,7 @@ use crate::events::EventSink;
 use crate::ffmpeg;
 use crate::queue::AudioStreamInfo;
 
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, Default, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct ProbeResult {
     pub video_codec: String,
@@ -151,10 +151,11 @@ pub async fn probe_file(file_path: &str, sink: &dyn EventSink) -> Result<ProbeRe
                     for sd in side_data_list {
                         let sd_type = sd["side_data_type"].as_str().unwrap_or("");
                         if sd_type == "DOVI configuration record" {
-                            dovi_profile = sd["dv_profile"].as_u64().map(|v| v as u8);
+                            dovi_profile =
+                                sd["dv_profile"].as_u64().and_then(|v| u8::try_from(v).ok());
                             dovi_bl_compat_id = sd["dv_bl_signal_compatibility_id"]
                                 .as_u64()
-                                .map(|v| v as u8);
+                                .and_then(|v| u8::try_from(v).ok());
                         }
                         if sd_type.contains("HDR10+")
                             || sd_type.contains("SMPTE2094-40")
@@ -210,7 +211,7 @@ pub async fn probe_file(file_path: &str, sink: &dyn EventSink) -> Result<ProbeRe
                 let br_kbps: u32 = s["bit_rate"]
                     .as_str()
                     .and_then(|v| v.parse::<u64>().ok())
-                    .map(|v| (v / 1000) as u32)
+                    .and_then(|v| u32::try_from(v / 1000).ok())
                     .unwrap_or(0);
 
                 audio_streams.push(AudioStreamInfo {
@@ -296,7 +297,14 @@ pub async fn probe_file(file_path: &str, sink: &dyn EventSink) -> Result<ProbeRe
     let duration_secs = if duration_secs > 0.0 {
         duration_secs
     } else {
-        packet_scan_duration(file_path, sink).await
+        let scanned = packet_scan_duration(file_path, sink).await;
+        if scanned <= 0.0 {
+            return Err(format!(
+                "Could not determine duration for '{}' — all six tiers failed",
+                file_path
+            ));
+        }
+        scanned
     };
 
     let video_bitrate_bps = if file_size > 0 && duration_secs > 0.0 {

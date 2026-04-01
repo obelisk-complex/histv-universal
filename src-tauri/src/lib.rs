@@ -27,7 +27,7 @@ mod themes;
 use std::sync::atomic::AtomicBool;
 #[cfg(feature = "custom-protocol")]
 use std::sync::{atomic::Ordering, Arc};
-use tokio::sync::Mutex;
+use tokio::sync::{Mutex, RwLock};
 
 pub use encoder::EncoderInfo;
 pub use events::{BatchControl, EventSink};
@@ -41,16 +41,16 @@ pub use themes::Theme;
 
 /// Shared application state accessible from all Tauri commands.
 pub struct AppState {
-    pub queue: Mutex<Vec<QueueItem>>,
+    pub queue: RwLock<Vec<QueueItem>>,
     pub batch: Mutex<BatchState>,
-    pub detected_video_encoders: Mutex<Vec<EncoderInfo>>,
-    pub detected_audio_encoders: Mutex<Vec<String>>,
+    pub detected_video_encoders: RwLock<Vec<EncoderInfo>>,
+    pub detected_audio_encoders: RwLock<Vec<String>>,
     #[cfg(feature = "custom-protocol")]
-    pub config: Mutex<AppConfig>,
+    pub config: RwLock<AppConfig>,
     pub encoder_detection_done: AtomicBool,
     pub ffmpeg_missing: AtomicBool,
     #[cfg(feature = "custom-protocol")]
-    pub themes: Mutex<Vec<Theme>>,
+    pub themes: RwLock<Vec<Theme>>,
 }
 
 // ── Tauri commands ──────────────────────────────────────────────
@@ -62,6 +62,79 @@ mod gui_commands {
     use super::*;
     use tauri::Emitter;
 
+    /// Wraps an `EventSink` and translates local (compact) queue indices
+    /// back to original queue positions for `queue_item_updated` /
+    /// `queue_item_probed` events, so the frontend sees the right rows.
+    struct IndexMappingSink {
+        inner: Arc<dyn EventSink>,
+        /// `index_map[local_idx] == original_queue_idx`
+        index_map: Vec<usize>,
+    }
+
+    impl EventSink for IndexMappingSink {
+        fn log(&self, message: &str) {
+            self.inner.log(message);
+        }
+        fn file_progress(
+            &self,
+            percent: f64,
+            time_secs: f64,
+            total_secs: f64,
+            pass: Option<(u8, u8)>,
+        ) {
+            self.inner
+                .file_progress(percent, time_secs, total_secs, pass);
+        }
+        fn batch_progress(&self, current: u32, total: usize) {
+            self.inner.batch_progress(current, total);
+        }
+        fn batch_status(&self, message: &str) {
+            self.inner.batch_status(message);
+        }
+        fn queue_item_updated(&self, index: usize, status: &str) {
+            let mapped = self.index_map.get(index).copied().unwrap_or(index);
+            self.inner.queue_item_updated(mapped, status);
+        }
+        fn queue_item_probed(&self, index: usize) {
+            let mapped = self.index_map.get(index).copied().unwrap_or(index);
+            self.inner.queue_item_probed(mapped);
+        }
+        fn batch_started(&self) {
+            self.inner.batch_started();
+        }
+        fn batch_finished(&self, done: u32, failed: u32, skipped: u32, duration: &str) {
+            self.inner.batch_finished(done, failed, skipped, duration);
+        }
+        fn ffmpeg_stderr(&self, line: &str) {
+            self.inner.ffmpeg_stderr(line);
+        }
+        fn batch_command(&self, cmd: &str) {
+            self.inner.batch_command(cmd);
+        }
+        fn ffmpeg_download_progress(&self, message: &str) {
+            self.inner.ffmpeg_download_progress(message);
+        }
+        fn toast(&self, message: &str) {
+            self.inner.toast(message);
+        }
+        fn post_batch(&self, action: &str, countdown: u32) {
+            self.inner.post_batch(action, countdown);
+        }
+        fn wave_progress(&self, wave: u32, total_waves: u32, file_in_wave: u32, wave_size: u32) {
+            self.inner
+                .wave_progress(wave, total_waves, file_in_wave, wave_size);
+        }
+        fn wave_status(&self, message: &str) {
+            self.inner.wave_status(message);
+        }
+        fn batch_time_estimate(&self, elapsed_secs: f64, remaining_secs: f64) {
+            self.inner.batch_time_estimate(elapsed_secs, remaining_secs);
+        }
+        fn wave_time_estimate(&self, elapsed_secs: f64, remaining_secs: f64) {
+            self.inner.wave_time_estimate(elapsed_secs, remaining_secs);
+        }
+    }
+
     #[tauri::command]
     #[allow(dead_code)]
     pub fn is_flatpak() -> bool {
@@ -70,7 +143,7 @@ mod gui_commands {
 
     #[tauri::command]
     pub async fn get_themes(state: tauri::State<'_, Arc<AppState>>) -> Result<Vec<Theme>, String> {
-        let t = state.themes.lock().await;
+        let t = state.themes.read().await;
         Ok(t.clone())
     }
 
@@ -80,14 +153,14 @@ mod gui_commands {
         state: tauri::State<'_, Arc<AppState>>,
     ) -> Result<Vec<Theme>, String> {
         let loaded = themes::scan_themes_folder(&app);
-        let mut t = state.themes.lock().await;
+        let mut t = state.themes.write().await;
         *t = loaded.clone();
         Ok(loaded)
     }
 
     #[tauri::command]
     pub async fn get_config(state: tauri::State<'_, Arc<AppState>>) -> Result<AppConfig, String> {
-        let c = state.config.lock().await;
+        let c = state.config.read().await;
         Ok(c.clone())
     }
 
@@ -97,7 +170,7 @@ mod gui_commands {
         state: tauri::State<'_, Arc<AppState>>,
         config: AppConfig,
     ) -> Result<(), String> {
-        let mut c = state.config.lock().await;
+        let mut c = state.config.write().await;
         *c = config.clone();
         config::save_config(&app, &config).map_err(|e| e.to_string())
     }
@@ -120,8 +193,8 @@ mod gui_commands {
     pub async fn get_detected_encoders(
         state: tauri::State<'_, Arc<AppState>>,
     ) -> Result<(Vec<EncoderInfo>, Vec<String>), String> {
-        let ve = state.detected_video_encoders.lock().await;
-        let ae = state.detected_audio_encoders.lock().await;
+        let ve = state.detected_video_encoders.read().await;
+        let ae = state.detected_audio_encoders.read().await;
         Ok((ve.clone(), ae.clone()))
     }
 
@@ -130,7 +203,7 @@ mod gui_commands {
         state: tauri::State<'_, Arc<AppState>>,
         paths: Vec<String>,
     ) -> Result<AddResult, String> {
-        let mut q = state.queue.lock().await;
+        let mut q = state.queue.write().await;
         let result = queue::add_paths_to_queue(&mut q, &paths);
         Ok(result)
     }
@@ -140,28 +213,28 @@ mod gui_commands {
         state: tauri::State<'_, Arc<AppState>>,
         mut indices: Vec<usize>,
     ) -> Result<(), String> {
-        let mut q = state.queue.lock().await;
+        let mut q = state.queue.write().await;
         queue::remove_items(&mut q, &mut indices);
         Ok(())
     }
 
     #[tauri::command]
     pub async fn clear_completed(state: tauri::State<'_, Arc<AppState>>) -> Result<(), String> {
-        let mut q = state.queue.lock().await;
+        let mut q = state.queue.write().await;
         q.retain(|item| item.status != QueueItemStatus::Done);
         Ok(())
     }
 
     #[tauri::command]
     pub async fn clear_non_pending(state: tauri::State<'_, Arc<AppState>>) -> Result<(), String> {
-        let mut q = state.queue.lock().await;
+        let mut q = state.queue.write().await;
         queue::clear_non_pending(&mut q);
         Ok(())
     }
 
     #[tauri::command]
     pub async fn clear_all_queue(state: tauri::State<'_, Arc<AppState>>) -> Result<(), String> {
-        let mut q = state.queue.lock().await;
+        let mut q = state.queue.write().await;
         q.clear();
         Ok(())
     }
@@ -171,14 +244,14 @@ mod gui_commands {
         state: tauri::State<'_, Arc<AppState>>,
         indices: Vec<usize>,
     ) -> Result<(), String> {
-        let mut q = state.queue.lock().await;
+        let mut q = state.queue.write().await;
         queue::requeue_items(&mut q, &indices);
         Ok(())
     }
 
     #[tauri::command]
     pub async fn requeue_all(state: tauri::State<'_, Arc<AppState>>) -> Result<(), String> {
-        let mut q = state.queue.lock().await;
+        let mut q = state.queue.write().await;
         queue::requeue_all(&mut q);
         Ok(())
     }
@@ -189,7 +262,7 @@ mod gui_commands {
         from: usize,
         to: usize,
     ) -> Result<(), String> {
-        let mut q = state.queue.lock().await;
+        let mut q = state.queue.write().await;
         queue::move_item(&mut q, from, to);
         Ok(())
     }
@@ -252,7 +325,7 @@ mod gui_commands {
     pub async fn get_queue(
         state: tauri::State<'_, Arc<AppState>>,
     ) -> Result<Vec<QueueItem>, String> {
-        let q = state.queue.lock().await;
+        let q = state.queue.read().await;
         Ok(q.clone())
     }
 
@@ -265,7 +338,7 @@ mod gui_commands {
         let sink = tauri_sink::TauriSink::new(app.clone());
 
         let file_path = {
-            let q = state.queue.lock().await;
+            let q = state.queue.read().await;
             if index >= q.len() {
                 return Err("Index out of range".to_string());
             }
@@ -274,7 +347,7 @@ mod gui_commands {
 
         // Update status to Probing
         {
-            let mut q = state.queue.lock().await;
+            let mut q = state.queue.write().await;
             if index < q.len() {
                 q[index].status = QueueItemStatus::Probing;
             }
@@ -285,34 +358,24 @@ mod gui_commands {
 
         // Update the queue item with probe results
         {
-            let mut q = state.queue.lock().await;
+            let mut q = state.queue.write().await;
             if index < q.len() {
                 match &result {
                     Ok(pr) => {
-                        q[index].video_codec = pr.video_codec.clone();
-                        q[index].video_width = pr.video_width;
-                        q[index].video_height = pr.video_height;
-                        q[index].video_bitrate_bps = pr.video_bitrate_bps;
-                        q[index].video_bitrate_mbps = pr.video_bitrate_mbps;
-                        q[index].is_hdr = pr.is_hdr;
-                        q[index].color_transfer = pr.color_transfer.clone();
-                        q[index].audio_streams = pr.audio_streams.clone();
-                        q[index].duration_secs = pr.duration_secs;
-                        q[index].dovi_profile = pr.dovi_profile;
-                        q[index].dovi_bl_compat_id = pr.dovi_bl_compat_id;
-                        q[index].has_hdr10plus = pr.has_hdr10plus;
-                        q[index].status = QueueItemStatus::Pending;
-
                         // Lightweight MKV tag repair: fix stale statistics
                         // so the queue shows the real bitrate from import.
-                        if let Some(bps) = crate::mkv_tags::repair_after_probe(
+                        let repair = crate::mkv_tags::repair_after_probe(
                             &file_path,
                             pr.duration_secs,
                             &pr.audio_streams,
-                        ) {
+                        );
+                        q[index].probe = pr.clone();
+                        q[index].status = QueueItemStatus::Pending;
+
+                        if let Some(bps) = repair {
                             let corrected_mbps = bps as f64 / 1_000_000.0;
-                            q[index].video_bitrate_bps = bps as f64;
-                            q[index].video_bitrate_mbps = corrected_mbps;
+                            q[index].probe.video_bitrate_bps = bps as f64;
+                            q[index].probe.video_bitrate_mbps = corrected_mbps;
                         }
                     }
                     Err(_) => {
@@ -341,7 +404,7 @@ mod gui_commands {
 
         for (i, &index) in indices.iter().enumerate() {
             let file_path = {
-                let q = state.queue.lock().await;
+                let q = state.queue.read().await;
                 if index >= q.len() {
                     continue;
                 }
@@ -362,10 +425,10 @@ mod gui_commands {
                         mbps
                     ));
                     {
-                        let mut q = state.queue.lock().await;
+                        let mut q = state.queue.write().await;
                         if index < q.len() {
-                            q[index].video_bitrate_bps = bps as f64;
-                            q[index].video_bitrate_mbps = mbps;
+                            q[index].probe.video_bitrate_bps = bps as f64;
+                            q[index].probe.video_bitrate_mbps = mbps;
                         }
                     }
                     sink.queue_item_probed(index);
@@ -405,7 +468,7 @@ mod gui_commands {
 
         for (i, &index) in indices.iter().enumerate() {
             let file_path = {
-                let q = state.queue.lock().await;
+                let q = state.queue.read().await;
                 if index >= q.len() {
                     continue;
                 }
@@ -426,10 +489,10 @@ mod gui_commands {
                         mbps
                     ));
                     {
-                        let mut q = state.queue.lock().await;
+                        let mut q = state.queue.write().await;
                         if index < q.len() {
-                            q[index].video_bitrate_bps = bps as f64;
-                            q[index].video_bitrate_mbps = mbps;
+                            q[index].probe.video_bitrate_bps = bps as f64;
+                            q[index].probe.video_bitrate_mbps = mbps;
                         }
                     }
                     sink.queue_item_probed(index);
@@ -458,7 +521,7 @@ mod gui_commands {
     pub async fn preflight_check(
         state: tauri::State<'_, Arc<AppState>>,
     ) -> Result<Vec<encoder::PreflightWarning>, String> {
-        let q = state.queue.lock().await;
+        let q = state.queue.read().await;
         Ok(encoder::preflight_scan(&q))
     }
 
@@ -466,74 +529,31 @@ mod gui_commands {
     pub async fn start_batch(
         app: tauri::AppHandle,
         state: tauri::State<'_, Arc<AppState>>,
-        settings: serde_json::Value,
+        settings: encoder::BatchRequest,
     ) -> Result<(), String> {
         let state_arc = state.inner().clone();
         let sink = Arc::new(tauri_sink::TauriSink::new(app.clone()));
 
-        // Parse settings from the frontend JSON
-        let output_mode = settings["outputMode"]
-            .as_str()
-            .unwrap_or("folder")
-            .to_string();
+        // Extract GUI-only fields before converting to BatchSettings
+        let show_toast = settings.show_toast;
+        let post_action = settings.post_action.clone();
+        let post_countdown = settings.post_countdown;
+        let overwrite = settings.overwrite;
 
-        let raw_output_folder = settings["outputFolder"]
-            .as_str()
-            .unwrap_or("output")
-            .to_string();
+        // Convert the validated request into BatchSettings (applies clamping)
+        let mut batch_settings = settings.into_batch_settings();
 
         // Resolve relative output paths (AppImage fix)
-        let output_folder = if std::path::Path::new(&raw_output_folder).is_relative() {
+        if std::path::Path::new(&batch_settings.output_folder).is_relative() {
             let base = encoder::resolve_base_dir();
-            let resolved = base.join(&raw_output_folder);
+            let resolved = base.join(&batch_settings.output_folder);
             sink.log(&format!(
                 "[batch] Resolved relative output '{}' to '{}'",
-                raw_output_folder,
+                batch_settings.output_folder,
                 resolved.display()
             ));
-            resolved.to_string_lossy().to_string()
-        } else {
-            raw_output_folder
-        };
-
-        let batch_settings = encoder::BatchSettings {
-            output_folder,
-            output_container: settings["outputContainer"]
-                .as_str()
-                .unwrap_or("auto")
-                .to_string(),
-            output_mode,
-            threshold: settings["targetBitrate"].as_f64().unwrap_or(5.0),
-            qp_i: (settings["qpI"].as_u64().unwrap_or(20).min(51)) as u32,
-            qp_p: (settings["qpP"].as_u64().unwrap_or(22).min(51)) as u32,
-            crf_val: (settings["crf"].as_u64().unwrap_or(20).min(51)) as u32,
-            rate_control_mode: settings["rateControlMode"]
-                .as_str()
-                .unwrap_or("QP")
-                .to_string(),
-            video_encoder: "auto".to_string(), // legacy: resolved per-file now
-            codec_family: "hevc".to_string(),  // legacy: resolved per-file now
-            audio_encoder: "ac3".to_string(),  // legacy: resolved per-file now
-            audio_cap: 640,                    // legacy: resolved per-file now
-            pix_fmt: settings["pixFmt"].as_str().unwrap_or("yuv420p").to_string(),
-            delete_source: settings["deleteSource"].as_bool().unwrap_or(false),
-            save_log: settings["saveLog"].as_bool().unwrap_or(false),
-            post_command: None,
-            peak_multiplier: settings["peakMultiplier"].as_f64().unwrap_or(1.5),
-            threads: (settings["threads"].as_u64().unwrap_or(0).min(64)) as u32,
-            low_priority: settings["lowPriority"].as_bool().unwrap_or(false),
-            precision_mode: settings["precisionMode"].as_bool().unwrap_or(false),
-            compatibility_mode: settings["compatibilityMode"].as_bool().unwrap_or(false),
-            preserve_av1: settings["preserveAv1"].as_bool().unwrap_or(false),
-            force_local: settings["forceLocal"].as_bool().unwrap_or(false),
-        };
-
-        let show_toast = settings["showToast"].as_bool().unwrap_or(false);
-        let post_action = settings["postAction"]
-            .as_str()
-            .unwrap_or("None")
-            .to_string();
-        let post_countdown: u32 = settings["postCountdown"].as_u64().unwrap_or(0) as u32;
+            batch_settings.output_folder = resolved.to_string_lossy().to_string();
+        }
 
         // Validate output folder (only in folder mode)
         if batch_settings.output_mode == "folder" {
@@ -563,28 +583,31 @@ mod gui_commands {
             b.cancel_current = false;
             b.cancel_all = false;
             b.paused = false;
-            b.overwrite_always = settings["overwrite"].as_bool().unwrap_or(false);
+            b.overwrite_always = overwrite;
             b.hw_fallback_offered = false;
             b.overwrite_response = None;
             b.fallback_response = None;
         }
 
-        // Clone queue items for the encoding loop (#14).
-        // The encoder indexes by original queue position, so we clone the
-        // full queue but record which indices are pending. After the loop,
-        // only those indices are synced back (#15).
-        let (mut queue_items, pending_indices): (Vec<queue::QueueItem>, Vec<usize>) = {
-            let q = state_arc.queue.lock().await;
-            let pending: Vec<usize> = q
-                .iter()
-                .enumerate()
-                .filter(|(_, item)| item.status == queue::QueueItemStatus::Pending)
-                .map(|(i, _)| i)
-                .collect();
-            (q.clone(), pending)
+        // Clone only the pending items for the encoding loop.
+        // Previously the entire queue was cloned; now we build a compact
+        // vec of just the pending items plus an index map so the encoder
+        // works with local indices 0..N while the sink translates them
+        // back to original queue positions for the frontend.
+        let (mut pending_items, index_map): (Vec<queue::QueueItem>, Vec<usize>) = {
+            let q = state_arc.queue.read().await;
+            let mut items = Vec::new();
+            let mut map = Vec::new();
+            for (i, item) in q.iter().enumerate() {
+                if item.status == queue::QueueItemStatus::Pending {
+                    items.push(item.clone());
+                    map.push(i); // map[local_idx] == original_queue_idx
+                }
+            }
+            (items, map)
         };
 
-        if pending_indices.is_empty() {
+        if pending_items.is_empty() {
             let mut b = state_arc.batch.lock().await;
             b.running = false;
             return Err("No pending files in the queue.".into());
@@ -596,13 +619,18 @@ mod gui_commands {
             app.clone(),
         ));
 
-        // Build wave plan for remote file staging
+        // Build wave plan for remote file staging.
+        // The planner receives the compact pending_items vec and local
+        // indices (0..N). Its output (WaveItem queue_index values) will
+        // therefore also be local indices, which is what run_encode_loop
+        // expects when iterating over the compact vec.
+        let local_indices: Vec<usize> = (0..pending_items.len()).collect();
         let wave_plan = {
             let staging_dir = staging::resolve_staging_dir(None);
             let mut mount_cache = remote::MountCache::new();
             staging::WavePlanner::plan(
-                &queue_items,
-                &pending_indices,
+                &pending_items,
+                &local_indices,
                 &mut mount_cache,
                 &staging_dir,
                 batch_settings.force_local,
@@ -612,36 +640,39 @@ mod gui_commands {
 
         // Spawn the encoding loop in the background
         let state_for_task = state_arc.clone();
-        let sink_for_task = sink.clone();
         let app_for_task = app.clone();
         let detected_encoders_for_task = {
-            let ve = state_arc.detected_video_encoders.lock().await;
+            let ve = state_arc.detected_video_encoders.read().await;
             ve.clone()
         };
+
+        // Wrap the sink so queue_item_updated / queue_item_probed calls
+        // translate local (compact) indices back to original queue positions.
+        let mapping_sink = Arc::new(IndexMappingSink {
+            inner: sink.clone() as Arc<dyn EventSink>,
+            index_map: index_map.clone(),
+        });
+
         tokio::spawn(async move {
             let (done, failed, skipped, _was_cancelled) = encoder::run_encode_loop(
-                sink_for_task.as_ref(),
+                mapping_sink.as_ref(),
                 batch_ctrl.as_ref(),
-                &mut queue_items,
+                &mut pending_items,
                 &batch_settings,
                 &detected_encoders_for_task,
                 Some(wave_plan),
             )
             .await;
 
-            // Sync only the items that were pending at batch start (#15).
-            // Non-pending items were never touched by the encoder and don't
-            // need their status copied back.
-            //
-            // Note: the encoder's batch_finished event fires before this sync
-            // (it's called inside run_encode_loop). The frontend re-fetches the
-            // queue on batch-finished, so we emit queue-sync-complete afterwards
-            // to trigger a second fetch with the final statuses.
+            // Sync statuses from the compact pending_items vec back to
+            // the shared queue using the index map.
             {
-                let mut q = state_for_task.queue.lock().await;
-                for &i in &pending_indices {
-                    if i < q.len() && i < queue_items.len() {
-                        q[i].status = queue_items[i].status.clone();
+                let mut q = state_for_task.queue.write().await;
+                for (local_idx, item) in pending_items.iter().enumerate() {
+                    if let Some(&orig_idx) = index_map.get(local_idx) {
+                        if orig_idx < q.len() {
+                            q[orig_idx].status = item.status.clone();
+                        }
                     }
                 }
             }
@@ -649,14 +680,15 @@ mod gui_commands {
 
             // GUI-specific post-batch actions
             if show_toast {
-                sink_for_task.toast(&format!(
+                // Use the inner sink for toast/post-batch (no index translation needed)
+                mapping_sink.toast(&format!(
                     "Done: {}  Failed: {}  Skipped: {}",
                     done, failed, skipped
                 ));
             }
 
             if post_action != "None" {
-                sink_for_task.post_batch(&post_action, post_countdown);
+                mapping_sink.post_batch(&post_action, post_countdown);
             }
 
             // Mark batch as finished
@@ -760,11 +792,11 @@ mod gui_commands {
         sink.log("[detect] ffmpeg downloaded, re-running encoder detection...");
         let (video, audio) = encoder::detect_encoders(&sink).await;
         {
-            let mut ve = state.detected_video_encoders.lock().await;
+            let mut ve = state.detected_video_encoders.write().await;
             *ve = video;
         }
         {
-            let mut ae = state.detected_audio_encoders.lock().await;
+            let mut ae = state.detected_audio_encoders.write().await;
             *ae = audio;
         }
         state.encoder_detection_done.store(true, Ordering::Relaxed);
@@ -811,14 +843,14 @@ pub fn run() {
     use tauri::{Emitter, Manager};
 
     let app_state = Arc::new(AppState {
-        queue: Mutex::new(Vec::new()),
+        queue: RwLock::new(Vec::new()),
         batch: Mutex::new(BatchState::default()),
-        detected_video_encoders: Mutex::new(Vec::new()),
-        detected_audio_encoders: Mutex::new(Vec::new()),
-        config: Mutex::new(AppConfig::default()),
+        detected_video_encoders: RwLock::new(Vec::new()),
+        detected_audio_encoders: RwLock::new(Vec::new()),
+        config: RwLock::new(AppConfig::default()),
         encoder_detection_done: AtomicBool::new(false),
         ffmpeg_missing: AtomicBool::new(false),
-        themes: Mutex::new(Vec::new()),
+        themes: RwLock::new(Vec::new()),
     });
 
     tauri::Builder::default()
@@ -885,11 +917,11 @@ pub fn run() {
             // Set config and themes synchronously via blocking
             tauri::async_runtime::block_on(async {
                 {
-                    let mut c = state.config.lock().await;
+                    let mut c = state.config.write().await;
                     *c = loaded_config;
                 }
                 {
-                    let mut t = state.themes.lock().await;
+                    let mut t = state.themes.write().await;
                     *t = themes_loaded;
                 }
             });
@@ -914,11 +946,11 @@ pub fn run() {
 
                 let (video, audio) = encoder::detect_encoders(&detect_sink).await;
                 {
-                    let mut ve = state_for_detect.detected_video_encoders.lock().await;
+                    let mut ve = state_for_detect.detected_video_encoders.write().await;
                     *ve = video;
                 }
                 {
-                    let mut ae = state_for_detect.detected_audio_encoders.lock().await;
+                    let mut ae = state_for_detect.detected_audio_encoders.write().await;
                     *ae = audio;
                 }
                 state_for_detect

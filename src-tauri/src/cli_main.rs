@@ -1,8 +1,12 @@
 //! CLI entry point for histv-cli.
 //!
 //! Parses arguments, resolves ffmpeg, detects encoders, collects files,
-//! probes them, and either prints a dry-run plan or (in future phases)
-//! encodes them.
+//! probes them, and either prints a dry-run plan or encodes them.
+//!
+//! `main()` is the thin orchestrator; heavy lifting is delegated to:
+//!  - `collect_and_probe_files` — glob/walk + parallel ffprobe + MKV tag repair
+//!  - `print_dry_run_plan`      — decision table, DV/HDR10+ warnings, disk est.
+//!  - `run_batch`               — wave-based staging, encode loop, exit code
 
 mod batch_control;
 mod cli;
@@ -10,8 +14,11 @@ mod cli_sink;
 
 use clap::Parser;
 use std::path::PathBuf;
+use std::sync::Arc;
 
-use histv_lib::encoder::{self, EncodeDecision};
+use tokio::sync::Semaphore;
+
+use histv_lib::encoder::{self, EncodeDecision, EncoderInfo};
 use histv_lib::events::EventSink;
 use histv_lib::queue::{self, QueueItem, QueueItemStatus};
 
@@ -46,13 +53,13 @@ fn main() {
         }
     }
 
-    // Create the CLI event sink
-    let sink = cli_sink::CliSink::new(args.log_level.clone());
+    // Create the CLI event sink (Arc-wrapped for sharing across probe tasks)
+    let sink = Arc::new(cli_sink::CliSink::new(args.log_level.clone()));
 
     // Resolve ffmpeg/ffprobe binary paths (no resource dir for CLI)
-    histv_lib::ffmpeg::init(None, None, &sink);
+    histv_lib::ffmpeg::init(None, None, &*sink);
     #[cfg(feature = "dovi")]
-    histv_lib::dovi_tools::init(None, &sink);
+    histv_lib::dovi_tools::init(None, &*sink);
 
     // Check ffmpeg availability
     let rt = tokio::runtime::Runtime::new().expect("Could not create tokio runtime");
@@ -63,7 +70,7 @@ fn main() {
     }
 
     // Run encoder detection
-    let (video_encoders, _audio_encoders) = rt.block_on(encoder::detect_encoders(&sink));
+    let (video_encoders, _audio_encoders) = rt.block_on(encoder::detect_encoders(&*sink));
 
     // Resolve which video encoder to use
     let video_encoder = resolve_encoder(&args, &video_encoders);
@@ -73,8 +80,70 @@ fn main() {
         .map(|e| e.is_hardware)
         .unwrap_or(false);
 
-    // ── File collection (Phase 2.1) ────────────────────────────
+    // ── File collection + probing ─────────────────────────────
+    let mut queue_items = collect_and_probe_files(&args, &rt, &sink, is_tty);
 
+    // ── Repair tags mode (early exit) ─────────────────────────
+    if args.repair_tags || args.deep_repair {
+        run_repair_tags(&args, &rt, &queue_items, &sink, is_tty);
+        std::process::exit(0);
+    }
+
+    // ── Dry-run plan display ──────────────────────────────────
+    let disk_info = {
+        let output_path = match args.output_mode {
+            cli::OutputMode::Beside | cli::OutputMode::Replace => queue_items
+                .iter()
+                .find(|item| item.status == QueueItemStatus::Pending)
+                .and_then(|item| std::path::Path::new(&item.full_path).parent())
+                .unwrap_or(std::path::Path::new("."))
+                .to_path_buf(),
+            cli::OutputMode::Folder => args.output.clone(),
+        };
+        histv_lib::disk_monitor::partition_free_space(&output_path)
+    };
+
+    print_dry_run_plan(
+        &queue_items,
+        &args,
+        &video_encoders,
+        &video_encoder,
+        is_hw_encoder,
+        disk_info,
+        is_tty,
+        &sink,
+    );
+
+    if args.dry_run {
+        eprintln!("");
+        eprintln!("Dry run complete. No files were encoded.");
+        std::process::exit(0);
+    }
+
+    // ── Batch execution ───────────────────────────────────────
+    let exit_code = run_batch(
+        &args,
+        &rt,
+        &mut queue_items,
+        &video_encoders,
+        &video_encoder,
+        &sink,
+    );
+
+    std::process::exit(exit_code);
+}
+
+// ── Extracted orchestration functions ─────────────────────────
+
+/// Collect input files (glob / directory walk), probe each one in parallel,
+/// and apply lightweight MKV tag repair. Returns the full queue — callers
+/// filter by `QueueItemStatus::Pending` as needed.
+fn collect_and_probe_files(
+    args: &cli::CliArgs,
+    rt: &tokio::runtime::Runtime,
+    sink: &Arc<cli_sink::CliSink>,
+    is_tty: bool,
+) -> Vec<QueueItem> {
     if args.inputs.is_empty() {
         eprintln!("No input files specified. Use histv-cli --help for usage.");
         std::process::exit(3);
@@ -102,45 +171,52 @@ fn main() {
         if args.inputs.len() == 1 { "" } else { "s" },
     ));
 
-    // ── Batch probe (Phase 2.2) ────────────────────────────────
-
+    // ── Batch probe (parallel, up to 8 concurrent) ────────────
     let total_files = queue_items.len();
+
+    let semaphore = Arc::new(Semaphore::new(8));
+    let mut handles = Vec::with_capacity(total_files);
+
     for i in 0..total_files {
+        let file_path = queue_items[i].full_path.clone();
+        let sem = semaphore.clone();
+        let sink_ref = sink.clone();
+        handles.push(rt.spawn(async move {
+            let _permit = sem.acquire().await.unwrap();
+            let result = histv_lib::probe::probe_file(&file_path, &*sink_ref).await;
+            (i, file_path, result)
+        }));
+    }
+
+    let mut probed_count: usize = 0;
+    for handle in handles {
+        let (i, file_path, result) = rt.block_on(handle).expect("probe task panicked");
+        probed_count += 1;
+
         if !matches!(args.log_level, cli::LogLevel::Quiet) {
             if is_tty {
-                eprint!("\rProbing {}/{}...", i + 1, total_files);
+                eprint!("\rProbing {}/{}...", probed_count, total_files);
             } else {
-                eprintln!("Probing {}/{}...", i + 1, total_files);
+                eprintln!("Probing {}/{}...", probed_count, total_files);
             }
         }
 
-        let file_path = queue_items[i].full_path.clone();
-        match rt.block_on(histv_lib::probe::probe_file(&file_path, &sink)) {
+        match result {
             Ok(pr) => {
-                queue_items[i].video_codec = pr.video_codec;
-                queue_items[i].video_width = pr.video_width;
-                queue_items[i].video_height = pr.video_height;
-                queue_items[i].video_bitrate_bps = pr.video_bitrate_bps;
-                queue_items[i].video_bitrate_mbps = pr.video_bitrate_mbps;
-                queue_items[i].is_hdr = pr.is_hdr;
-                queue_items[i].color_transfer = pr.color_transfer;
-                queue_items[i].audio_streams = pr.audio_streams;
-                queue_items[i].duration_secs = pr.duration_secs;
-                queue_items[i].dovi_profile = pr.dovi_profile;
-                queue_items[i].dovi_bl_compat_id = pr.dovi_bl_compat_id;
-                queue_items[i].has_hdr10plus = pr.has_hdr10plus;
-                queue_items[i].status = QueueItemStatus::Pending;
-
                 // Lightweight MKV tag repair: fix stale statistics
                 // so the queue shows the real bitrate from import.
-                if let Some(bps) = histv_lib::mkv_tags::repair_after_probe(
+                let repair = histv_lib::mkv_tags::repair_after_probe(
                     &file_path,
                     pr.duration_secs,
-                    &queue_items[i].audio_streams,
-                ) {
+                    &pr.audio_streams,
+                );
+                queue_items[i].probe = pr;
+                queue_items[i].status = QueueItemStatus::Pending;
+
+                if let Some(bps) = repair {
                     let corrected_mbps = bps as f64 / 1_000_000.0;
-                    queue_items[i].video_bitrate_bps = bps as f64;
-                    queue_items[i].video_bitrate_mbps = corrected_mbps;
+                    queue_items[i].probe.video_bitrate_bps = bps as f64;
+                    queue_items[i].probe.video_bitrate_mbps = corrected_mbps;
                 }
             }
             Err(e) => {
@@ -160,18 +236,18 @@ fn main() {
         }
     }
 
-    // Filter to only successfully probed files
-    let probed_items: Vec<&QueueItem> = queue_items
+    // Report probe failures
+    let pending_count = queue_items
         .iter()
         .filter(|item| item.status == QueueItemStatus::Pending)
-        .collect();
+        .count();
 
-    if probed_items.is_empty() {
+    if pending_count == 0 {
         eprintln!("All files failed to probe. Nothing to encode.");
         std::process::exit(3);
     }
 
-    let failed_count = total_files - probed_items.len();
+    let failed_count = total_files - pending_count;
     if failed_count > 0 {
         sink.log(&format!(
             "{} file{} failed to probe and will be skipped.",
@@ -180,97 +256,126 @@ fn main() {
         ));
     }
 
-    // ── Repair tags mode ──────────────────────────────────────────
+    queue_items
+}
 
-    if args.repair_tags || args.deep_repair {
-        let is_deep = args.deep_repair;
-        let mode_label = if is_deep {
-            "Deep repairing"
+/// Run the `--repair-tags` / `--deep-repair` mode and print results.
+fn run_repair_tags(
+    args: &cli::CliArgs,
+    rt: &tokio::runtime::Runtime,
+    queue_items: &[QueueItem],
+    sink: &cli_sink::CliSink,
+    is_tty: bool,
+) {
+    let probed_items: Vec<&QueueItem> = queue_items
+        .iter()
+        .filter(|item| item.status == QueueItemStatus::Pending)
+        .collect();
+
+    let is_deep = args.deep_repair;
+    let mode_label = if is_deep {
+        "Deep repairing"
+    } else {
+        "Repairing"
+    };
+    eprintln!("");
+    eprintln!("{} MKV stream statistics tags...", mode_label);
+    eprintln!("");
+
+    let mut repaired: u32 = 0;
+    let mut skipped: u32 = 0;
+    let total = probed_items.len();
+
+    for (i, item) in probed_items.iter().enumerate() {
+        let path = std::path::Path::new(&item.full_path);
+        let ext = path
+            .extension()
+            .map(|e| e.to_string_lossy().to_lowercase())
+            .unwrap_or_default();
+
+        if ext != "mkv" {
+            eprintln!(
+                "  ({}/{}) {} - skipped (not MKV)",
+                i + 1,
+                total,
+                item.file_name
+            );
+            skipped += 1;
+            continue;
+        }
+
+        if is_tty {
+            eprint!("\r\x1b[2K  ({}/{}) {}...", i + 1, total, item.file_name);
+        }
+
+        let result = if is_deep {
+            rt.block_on(histv_lib::mkv_tags::deep_repair(path, &*sink))
         } else {
-            "Repairing"
+            rt.block_on(histv_lib::mkv_tags::repair_file_tags(path, &*sink))
         };
-        eprintln!("");
-        eprintln!("{} MKV stream statistics tags...", mode_label);
-        eprintln!("");
 
-        let mut repaired: u32 = 0;
-        let mut skipped: u32 = 0;
-        let total = probed_items.len();
+        if is_tty {
+            eprint!("\r\x1b[2K");
+        }
 
-        for (i, item) in probed_items.iter().enumerate() {
-            let path = std::path::Path::new(&item.full_path);
-            let ext = path
-                .extension()
-                .map(|e| e.to_string_lossy().to_lowercase())
-                .unwrap_or_default();
-
-            if ext != "mkv" {
+        match result {
+            Ok((n, bps)) if n > 0 => {
+                let mbps = bps as f64 / 1_000_000.0;
                 eprintln!(
-                    "  ({}/{}) {} - skipped (not MKV)",
+                    "  ({}/{}) {} - updated {} tag{} (video: {:.2}Mbps)",
+                    i + 1,
+                    total,
+                    item.file_name,
+                    n,
+                    if n == 1 { "" } else { "s" },
+                    mbps
+                );
+                repaired += 1;
+            }
+            Ok(_) => {
+                eprintln!(
+                    "  ({}/{}) {} - no statistics tags to update",
                     i + 1,
                     total,
                     item.file_name
                 );
                 skipped += 1;
-                continue;
             }
-
-            if is_tty {
-                eprint!("\r\x1b[2K  ({}/{}) {}...", i + 1, total, item.file_name);
-            }
-
-            let result = if is_deep {
-                rt.block_on(histv_lib::mkv_tags::deep_repair(path, &sink))
-            } else {
-                rt.block_on(histv_lib::mkv_tags::repair_file_tags(path, &sink))
-            };
-
-            if is_tty {
-                eprint!("\r\x1b[2K");
-            }
-
-            match result {
-                Ok((n, bps)) if n > 0 => {
-                    let mbps = bps as f64 / 1_000_000.0;
-                    eprintln!(
-                        "  ({}/{}) {} - updated {} tag{} (video: {:.2}Mbps)",
-                        i + 1,
-                        total,
-                        item.file_name,
-                        n,
-                        if n == 1 { "" } else { "s" },
-                        mbps
-                    );
-                    repaired += 1;
-                }
-                Ok(_) => {
-                    eprintln!(
-                        "  ({}/{}) {} - no statistics tags to update",
-                        i + 1,
-                        total,
-                        item.file_name
-                    );
-                    skipped += 1;
-                }
-                Err(e) => {
-                    eprintln!("  ({}/{}) {} - ERROR: {}", i + 1, total, item.file_name, e);
-                    skipped += 1;
-                }
+            Err(e) => {
+                eprintln!("  ({}/{}) {} - ERROR: {}", i + 1, total, item.file_name, e);
+                skipped += 1;
             }
         }
-
-        eprintln!("");
-        eprintln!(
-            "Repair complete. {} file{} updated, {} skipped.",
-            repaired,
-            if repaired == 1 { "" } else { "s" },
-            skipped
-        );
-        std::process::exit(0);
     }
 
-    // ── Compute encoding decisions (Phase 2.3) ─────────────────
+    eprintln!("");
+    eprintln!(
+        "Repair complete. {} file{} updated, {} skipped.",
+        repaired,
+        if repaired == 1 { "" } else { "s" },
+        skipped
+    );
+}
 
+/// Print the full dry-run plan: decision table, DV/HDR10+ warnings,
+/// disk-space estimate, and staging plan for remote mounts.
+#[allow(clippy::too_many_arguments)]
+fn print_dry_run_plan(
+    queue_items: &[QueueItem],
+    args: &cli::CliArgs,
+    detected_encoders: &[EncoderInfo],
+    video_encoder: &str,
+    is_hw_encoder: bool,
+    disk_info: Option<(u64, u64)>,
+    is_tty: bool,
+    _sink: &cli_sink::CliSink,
+) {
+    let probed_items: Vec<&QueueItem> = queue_items
+        .iter()
+        .filter(|item| item.status == QueueItemStatus::Pending)
+        .collect();
+
+    // ── Compute encoding decisions ────────────────────────────
     let rate_control_mode = args.rc.to_string().to_uppercase();
     let decisions: Vec<EncodeDecision> = probed_items
         .iter()
@@ -280,7 +385,7 @@ fn main() {
                 .map(|e| e.to_string_lossy().to_lowercase())
                 .unwrap_or_default();
             let resolved = encoder::resolve_file_settings(
-                &item.video_codec,
+                &item.probe.video_codec,
                 &source_ext,
                 &encoder::BatchSettings {
                     compatibility_mode: args.compat,
@@ -308,12 +413,12 @@ fn main() {
                     audio_cap: 0,
                     output_container: String::new(),
                 },
-                &video_encoders,
+                detected_encoders,
             );
             encoder::decide_encode_strategy(
-                item.video_bitrate_mbps,
+                item.probe.video_bitrate_mbps,
                 args.bitrate,
-                &item.video_codec,
+                &item.probe.video_codec,
                 &resolved.codec_family,
                 &rate_control_mode,
                 args.qp_i,
@@ -324,8 +429,7 @@ fn main() {
         })
         .collect();
 
-    // ── Remote mount detection (Phase 2.4) ─────────────────────
-
+    // ── Remote mount detection ────────────────────────────────
     let mut mount_cache = histv_lib::remote::MountCache::new();
     let remote_annotations: Vec<Option<String>> = probed_items
         .iter()
@@ -347,31 +451,20 @@ fn main() {
         })
         .collect();
 
-    // ── Disk-space estimate (Phase 2.5) ────────────────────────
-
+    // ── Disk-space estimate ───────────────────────────────────
     let batch_estimate = histv_lib::disk_monitor::estimate_batch(&probed_items, &decisions);
 
-    let output_path = match args.output_mode {
-        cli::OutputMode::Beside | cli::OutputMode::Replace => {
-            // Use the first input's parent as a representative
-            probed_items
-                .first()
-                .and_then(|item| std::path::Path::new(&item.full_path).parent())
-                .unwrap_or(std::path::Path::new("."))
-                .to_path_buf()
-        }
-        cli::OutputMode::Folder => args.output.clone(),
-    };
-
-    let disk_info = histv_lib::disk_monitor::partition_free_space(&output_path);
-
-    // ── Dry-run output or batch summary ────────────────────────
-
-    // Determine the display name for the encoder
+    // ── Encoder label ─────────────────────────────────────────
     let encoder_label = if is_hw_encoder {
         format!("{} (HW)", video_encoder)
     } else {
         format!("{} (SW)", video_encoder)
+    };
+
+    let codec_display = match args.codec {
+        cli::CodecFamily::Hevc => "HEVC",
+        cli::CodecFamily::H264 => "H.264",
+        cli::CodecFamily::Auto => "auto",
     };
 
     // Count decisions by type
@@ -388,12 +481,6 @@ fn main() {
         .filter(|d| matches!(d, EncodeDecision::Cqp { .. } | EncodeDecision::Crf { .. }))
         .count();
     let remote_count = remote_annotations.iter().filter(|a| a.is_some()).count();
-
-    let codec_display = match args.codec {
-        cli::CodecFamily::Hevc => "HEVC",
-        cli::CodecFamily::H264 => "H.264",
-        cli::CodecFamily::Auto => "auto",
-    };
 
     // ANSI colour helpers — no-ops when not a TTY
     let dim = if is_tty { "\x1b[2m" } else { "" };
@@ -424,7 +511,7 @@ fn main() {
 
     // Print per-file plan
     for (i, (item, decision)) in probed_items.iter().zip(decisions.iter()).enumerate() {
-        let resolution = format!("{}x{}", item.video_width, item.video_height);
+        let resolution = format!("{}x{}", item.probe.video_width, item.probe.video_height);
 
         let hdr_label = hdr_type_label(item);
 
@@ -450,12 +537,12 @@ fn main() {
         };
 
         // Truncate codec to 10 chars for consistent spacing
-        let codec_str = truncate_filename(&item.video_codec, 10);
+        let codec_str = truncate_filename(&item.probe.video_codec, 10);
 
         eprintln!(
             "  {:<34} {:>8.2}Mbps  {:<10}  {:>11}  {:<7}  {}  {}",
             truncate_filename(&item.file_name, 34),
-            item.video_bitrate_mbps,
+            item.probe.video_bitrate_mbps,
             codec_str,
             resolution,
             hdr_label,
@@ -492,15 +579,15 @@ fn main() {
         let caps = histv_lib::dovi_tools::capabilities();
         let dv_count = probed_items
             .iter()
-            .filter(|item| item.dovi_profile.is_some())
+            .filter(|item| item.probe.dovi_profile.is_some())
             .count();
         let dv5_count = probed_items
             .iter()
-            .filter(|item| item.dovi_profile == Some(5))
+            .filter(|item| item.probe.dovi_profile == Some(5))
             .count();
         let hdr10plus_count = probed_items
             .iter()
-            .filter(|item| item.has_hdr10plus)
+            .filter(|item| item.probe.has_hdr10plus)
             .count();
 
         let yellow = if is_tty { "\x1b[33m" } else { "" };
@@ -605,8 +692,7 @@ fn main() {
         }
     }
 
-    // ── Dry-run staging plan (Phase 3) ──────────────────────────
-
+    // ── Dry-run staging plan ──────────────────────────────────
     if remote_count > 0 {
         // Build a dry-run wave plan to show grouping
         let dry_pending: Vec<usize> = probed_items.iter().enumerate().map(|(i, _)| i).collect();
@@ -657,7 +743,7 @@ fn main() {
             plan
         } else {
             histv_lib::staging::WavePlanner::plan(
-                &queue_items,
+                queue_items,
                 &dry_pending,
                 &mut mount_cache,
                 &staging_dir,
@@ -716,14 +802,20 @@ fn main() {
             }
         }
     }
+}
 
-    if args.dry_run {
-        eprintln!("");
-        eprintln!("Dry run complete. No files were encoded.");
-        std::process::exit(0);
-    }
-
-    // ── Pre-batch setup ────────────────────────────────────────
+/// Execute the batch: set up output folder, disk monitor, wave plan,
+/// run the encode loop, and return an appropriate exit code.
+#[allow(clippy::too_many_arguments)]
+fn run_batch(
+    args: &cli::CliArgs,
+    rt: &tokio::runtime::Runtime,
+    queue_items: &mut Vec<QueueItem>,
+    detected_encoders: &[EncoderInfo],
+    video_encoder: &str,
+    sink: &cli_sink::CliSink,
+) -> i32 {
+    // ── Pre-batch setup ───────────────────────────────────────
 
     // Create output folder if needed (only in "folder" mode)
     if matches!(args.output_mode, cli::OutputMode::Folder) {
@@ -784,6 +876,13 @@ fn main() {
     let batch_control =
         batch_control::CliBatchControl::new(args.overwrite.clone(), args.fallback.clone());
 
+    // Codec display label
+    let codec_display = match args.codec {
+        cli::CodecFamily::Hevc => "HEVC",
+        cli::CodecFamily::H264 => "H.264",
+        cli::CodecFamily::Auto => "auto",
+    };
+
     // Build settings struct
     let output_folder_str = args.output.to_string_lossy().to_string();
     let batch_settings = encoder::BatchSettings {
@@ -795,7 +894,7 @@ fn main() {
         qp_p: args.qp_p,
         crf_val: args.crf,
         rate_control_mode: args.rc.to_string().to_uppercase(),
-        video_encoder: video_encoder.clone(),
+        video_encoder: video_encoder.to_string(),
         codec_family: codec_display.to_string(),
         audio_encoder: args.audio.to_string(),
         audio_cap: args.audio_cap,
@@ -816,10 +915,9 @@ fn main() {
         force_local: false,
     };
 
-    // ── Wave-based remote staging + encoding loop ──────────────
+    // ── Wave-based remote staging + encoding loop ─────────────
 
     // Build wave plan: groups consecutive remote files into staging waves.
-    // The encode loop handles staging/cleanup per-wave internally.
     let pending_indices: Vec<usize> = queue_items
         .iter()
         .enumerate()
@@ -830,9 +928,8 @@ fn main() {
     let remote_never = matches!(args.remote, cli::RemotePolicy::Never);
     let force_local = batch_settings.force_local;
 
-    // For --remote always, mark all files as remote in mount_cache
-    // by checking each file. The WavePlanner uses mount_cache.is_remote().
-    // For --remote always, we need to override detection:
+    let mut mount_cache = histv_lib::remote::MountCache::new();
+
     let wave_plan = if matches!(args.remote, cli::RemotePolicy::Always) {
         // All files treated as remote - put them all in waves
         use histv_lib::staging::WaveItem;
@@ -879,7 +976,7 @@ fn main() {
         plan
     } else {
         histv_lib::staging::WavePlanner::plan(
-            &queue_items,
+            queue_items,
             &pending_indices,
             &mut mount_cache,
             &staging_dir,
@@ -892,31 +989,30 @@ fn main() {
 
     // Run the encoding loop with the wave plan
     let (done, failed, _skipped, was_cancelled) = rt.block_on(encoder::run_encode_loop(
-        &sink,
+        &*sink,
         batch_control.as_ref(),
-        &mut queue_items,
+        queue_items,
         &batch_settings,
-        &video_encoders,
+        detected_encoders,
         Some(wave_plan),
     ));
 
-    // ── Exit code ──────────────────────────────────────────────
-
+    // ── Exit code ─────────────────────────────────────────────
     if was_cancelled {
-        std::process::exit(2);
+        2
     } else if failed > 0 {
-        std::process::exit(1);
+        1
     } else if done == 0 {
-        std::process::exit(3);
+        3
     } else {
-        std::process::exit(0);
+        0
     }
 }
 
 // ── Helper functions ───────────────────────────────────────────
 
 /// Resolve which video encoder to use based on args and detected encoders.
-fn resolve_encoder(args: &cli::CliArgs, video_encoders: &[encoder::EncoderInfo]) -> String {
+fn resolve_encoder(args: &cli::CliArgs, video_encoders: &[EncoderInfo]) -> String {
     // If the user forced a specific encoder, use it
     if let Some(ref forced) = args.encoder {
         return forced.clone();
@@ -1052,17 +1148,17 @@ fn merge_job_into_args(args: &mut cli::CliArgs, job: &cli::JobFile) {
 
 /// HDR type label for a queue item.
 fn hdr_type_label(item: &QueueItem) -> &'static str {
-    if let Some(p) = item.dovi_profile {
+    if let Some(p) = item.probe.dovi_profile {
         match p {
             5 => "DV5",
             7 => "DV7",
             8 => "DV8",
             _ => "DV",
         }
-    } else if item.has_hdr10plus {
+    } else if item.probe.has_hdr10plus {
         "HDR10+"
-    } else if item.is_hdr {
-        if item.color_transfer == "arib-std-b67" {
+    } else if item.probe.is_hdr {
+        if item.probe.color_transfer == "arib-std-b67" {
             "HLG"
         } else {
             "HDR10"

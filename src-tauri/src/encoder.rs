@@ -63,6 +63,16 @@ const TONEMAP_HABLE: &str =
 /// time on marginal bitrate gains (e.g. 4.5 Mbps vs 4.0 Mbps target).
 const COPY_HYSTERESIS: f64 = 1.15;
 
+/// Minimum file duration (seconds) required for CRF viability probing.
+/// Files shorter than this skip the probe — not worth the overhead.
+const MIN_PROBE_DURATION_SECS: f64 = 120.0;
+
+/// Fractional seek points for CRF viability probe samples (25%, 50%, 75%).
+const PROBE_SEEK_POINTS: [f64; 3] = [0.25, 0.50, 0.75];
+
+/// Duration of each CRF probe sample in seconds.
+const PROBE_SAMPLE_DURATION_SECS: f64 = 10.0;
+
 /// Per-encoder flag mapping for VBR mode.
 /// AV1 hardware encoders use the same flags as their H.264/HEVC counterparts.
 pub fn vbr_flags(encoder: &str, target: &str, peak: &str) -> Vec<String> {
@@ -659,7 +669,7 @@ pub fn preflight_scan(queue: &[QueueItem]) -> Vec<PreflightWarning> {
         }
 
         // Dolby Vision files without MP4Box
-        if let Some(profile) = item.dovi_profile {
+        if let Some(profile) = item.probe.dovi_profile {
             if !caps.can_package_dovi_mp4 {
                 let source_type = format!("Dolby Vision Profile {}", profile);
                 let actual = if profile == 5 {
@@ -680,7 +690,7 @@ pub fn preflight_scan(queue: &[QueueItem]) -> Vec<PreflightWarning> {
         }
 
         // HDR10+ without the crate (only if feature not compiled)
-        if item.has_hdr10plus && !caps.can_process_hdr10plus {
+        if item.probe.has_hdr10plus && !caps.can_process_hdr10plus {
             warnings.push(PreflightWarning {
                 file_name: item.file_name.clone(),
                 source_type: "HDR10+".to_string(),
@@ -692,6 +702,122 @@ pub fn preflight_scan(queue: &[QueueItem]) -> Vec<PreflightWarning> {
     }
 
     warnings
+}
+
+/// Typed deserialization target for the frontend's `startBatch` JSON payload.
+///
+/// Field names use `camelCase` to match the frontend keys.  Each field has a
+/// serde default that mirrors the old `unwrap_or()` fallbacks so that missing
+/// keys are handled identically.
+#[derive(Debug, Clone, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct BatchRequest {
+    #[serde(default = "batch_req_default_output_folder")]
+    pub output_folder: String,
+    #[serde(default = "batch_req_default_output_mode")]
+    pub output_mode: String,
+    #[serde(default = "batch_req_default_target_bitrate")]
+    pub target_bitrate: f64,
+    #[serde(default = "batch_req_default_qp_i")]
+    pub qp_i: u32,
+    #[serde(default = "batch_req_default_qp_p")]
+    pub qp_p: u32,
+    #[serde(default = "batch_req_default_crf")]
+    pub crf: u32,
+    #[serde(default = "batch_req_default_rate_control_mode")]
+    pub rate_control_mode: String,
+    #[serde(default = "batch_req_default_pix_fmt")]
+    pub pix_fmt: String,
+    #[serde(default)]
+    pub delete_source: bool,
+    #[serde(default)]
+    pub save_log: bool,
+    #[serde(default = "batch_req_default_peak_multiplier")]
+    pub peak_multiplier: f64,
+    #[serde(default)]
+    pub threads: u32,
+    #[serde(default)]
+    pub low_priority: bool,
+    #[serde(default)]
+    pub precision_mode: bool,
+    #[serde(default)]
+    pub compatibility_mode: bool,
+    #[serde(default)]
+    pub preserve_av1: bool,
+    #[serde(default)]
+    pub force_local: bool,
+    // GUI-only post-batch fields (not part of BatchSettings)
+    #[serde(default)]
+    pub show_toast: bool,
+    #[serde(default = "batch_req_default_post_action")]
+    pub post_action: String,
+    #[serde(default)]
+    pub post_countdown: u32,
+    #[serde(default)]
+    pub overwrite: bool,
+}
+
+fn batch_req_default_output_folder() -> String {
+    "output".to_string()
+}
+fn batch_req_default_output_mode() -> String {
+    "folder".to_string()
+}
+fn batch_req_default_target_bitrate() -> f64 {
+    5.0
+}
+fn batch_req_default_qp_i() -> u32 {
+    20
+}
+fn batch_req_default_qp_p() -> u32 {
+    22
+}
+fn batch_req_default_crf() -> u32 {
+    20
+}
+fn batch_req_default_rate_control_mode() -> String {
+    "QP".to_string()
+}
+fn batch_req_default_pix_fmt() -> String {
+    "yuv420p".to_string()
+}
+fn batch_req_default_peak_multiplier() -> f64 {
+    1.5
+}
+fn batch_req_default_post_action() -> String {
+    "None".to_string()
+}
+
+impl BatchRequest {
+    /// Convert the validated frontend request into the internal `BatchSettings`
+    /// used by the encode loop, applying any clamping rules.
+    pub fn into_batch_settings(self) -> BatchSettings {
+        BatchSettings {
+            output_folder: self.output_folder,
+            output_container: "auto".to_string(),
+            output_mode: self.output_mode,
+            threshold: self.target_bitrate,
+            qp_i: self.qp_i.min(51),
+            qp_p: self.qp_p.min(51),
+            crf_val: self.crf.min(51),
+            rate_control_mode: self.rate_control_mode,
+            video_encoder: "auto".to_string(),
+            codec_family: "hevc".to_string(),
+            audio_encoder: "ac3".to_string(),
+            audio_cap: 640,
+            pix_fmt: self.pix_fmt,
+            delete_source: self.delete_source,
+            save_log: self.save_log,
+            post_command: None,
+            peak_multiplier: self.peak_multiplier,
+            threads: self.threads.min(64),
+            low_priority: self.low_priority,
+            precision_mode: self.precision_mode,
+            compatibility_mode: self.compatibility_mode,
+            preserve_av1: self.preserve_av1,
+            force_local: self.force_local,
+        }
+    }
 }
 
 /// Batch encoding settings, extracted from either CLI args or GUI settings JSON.
@@ -724,6 +850,21 @@ pub struct BatchSettings {
     pub output_container: String,
 }
 
+/// Result of encoding a single file, returned by `encode_single_file`.
+/// The caller accumulates counters and decides whether to break the outer loop.
+enum EncodeFileResult {
+    /// Encode completed successfully.
+    Done,
+    /// Encode failed (ffmpeg error, missing output, etc.).
+    Failed,
+    /// File was skipped (output exists and user chose to skip).
+    Skipped,
+    /// User cancelled this file only (cancel-current).
+    CancelledCurrent,
+    /// User cancelled the entire batch (cancel-all / break 'outer).
+    CancelledAll,
+}
+
 /// A work unit in the wave-aware encode loop: either a single local file
 /// or a wave of remote files to stage together.
 struct WaveWork {
@@ -733,6 +874,1189 @@ struct WaveWork {
     total_stage_bytes: u64,
     wave_number: u32, // 0 for local items
     total_waves: u32,
+}
+
+/// Post-encode processing: DV/HDR10+ metadata injection, size check, MKV tag
+/// patching, and source replacement/deletion.
+///
+/// Returns `true` if the file was completed successfully, `false` on failure.
+/// On failure the queue item is marked as `Failed`.
+#[allow(clippy::too_many_arguments)]
+async fn handle_post_encode(
+    idx: usize,
+    queue: &mut [QueueItem],
+    decision: &EncodeDecision,
+    temp_output_file: &std::path::Path,
+    output_file: &std::path::Path,
+    output_str: &str,
+    final_output_str: &str,
+    ext: &str,
+    item_full_path: &str,
+    is_image_source: bool,
+    is_replace_mode: bool,
+    item_duration_secs: f64,
+    final_frame_count: Option<u64>,
+    #[cfg(feature = "dovi")] extracted_rpus: &Option<dovi_pipeline::ExtractedRpus>,
+    #[cfg(not(feature = "dovi"))] _extracted_rpus: &Option<()>,
+    #[cfg(feature = "dovi")] extracted_hdr10plus: &Option<hdr10plus_pipeline::ExtractedHdr10Plus>,
+    #[cfg(not(feature = "dovi"))] _extracted_hdr10plus: &Option<()>,
+    settings: &BatchSettings,
+    log_writer: &mut Option<std::io::BufWriter<std::fs::File>>,
+    write_log: &(dyn Fn(&mut Option<std::io::BufWriter<std::fs::File>>, &str) + Send + Sync),
+    sink: &dyn EventSink,
+) -> bool {
+    // ── Post-encode: DV RPU injection + MP4Box packaging (Tier 1) ──
+    #[cfg(feature = "dovi")]
+    if let Some(ref rpus) = extracted_rpus {
+        if temp_output_file.exists() {
+            // Stage DV output to a separate temp file so the downstream
+            // logic (size check, replace rename) works unchanged.
+            let dv_staging = temp_output_file.with_extension("histv-dv.mp4");
+
+            match dovi_pipeline::inject_and_package(
+                temp_output_file,
+                temp_output_file, // audio source: use encoded audio, not original
+                &dv_staging,
+                rpus,
+                sink,
+            )
+            .await
+            {
+                Ok(result) if result.success => {
+                    sink.log(&format!("  {}", result.message));
+                    write_log(log_writer, &format!("  {}", result.message));
+                    // Swap: remove the non-DV encode, put the DV MP4 in its place
+                    let _ = std::fs::remove_file(temp_output_file);
+                    if let Err(e) = std::fs::rename(&dv_staging, temp_output_file) {
+                        sink.log(&format!("  WARNING: Could not rename DV output: {e}"));
+                        // Try copy as fallback (cross-filesystem)
+                        let _ = std::fs::copy(&dv_staging, temp_output_file);
+                        let _ = std::fs::remove_file(&dv_staging);
+                    }
+                }
+                Ok(result) => {
+                    // MP4Box failed — fall through with original encode (HDR10 fallback)
+                    sink.log(&format!("  {}", result.message));
+                    write_log(log_writer, &format!("  {}", result.message));
+                    let _ = std::fs::remove_file(&dv_staging);
+                }
+                Err(e) => {
+                    sink.log(&format!(
+                        "  DV injection failed: {e} - output has HDR10 only"
+                    ));
+                    write_log(log_writer, &format!("  DV injection failed: {e}"));
+                    let _ = std::fs::remove_file(&dv_staging);
+                }
+            }
+        }
+    }
+
+    // ── Post-encode: HDR10+ metadata injection (Tier 2) ──────
+    #[cfg(feature = "dovi")]
+    if let Some(ref meta) = extracted_hdr10plus {
+        if temp_output_file.exists() {
+            let injected_output = temp_output_file.with_extension(format!("hdr10p.{}", ext));
+
+            match hdr10plus_pipeline::inject_hdr10plus(
+                temp_output_file,
+                &injected_output,
+                meta,
+                sink,
+            )
+            .await
+            {
+                Ok(result) if result.success => {
+                    sink.log(&format!("  {}", result.message));
+                    write_log(log_writer, &format!("  {}", result.message));
+                    // Replace the encoded file with the injected version
+                    if injected_output.exists() {
+                        let _ = std::fs::remove_file(temp_output_file);
+                        if let Err(e) = std::fs::rename(&injected_output, temp_output_file) {
+                            sink.log(&format!("  WARNING: Could not rename injected file: {e}"));
+                        }
+                    }
+                }
+                Ok(result) => {
+                    sink.log(&format!("  {}", result.message));
+                    write_log(log_writer, &format!("  {}", result.message));
+                    let _ = std::fs::remove_file(&injected_output);
+                }
+                Err(e) => {
+                    sink.log(&format!(
+                        "  HDR10+ injection failed: {e} - output has static HDR10 only"
+                    ));
+                    write_log(log_writer, &format!("  HDR10+ injection failed: {e}"));
+                    let _ = std::fs::remove_file(&injected_output);
+                }
+            }
+        }
+    }
+
+    // Post-encode size check
+    // In replace mode, ffmpeg wrote to temp_output_file; in other modes temp == final.
+    if temp_output_file.exists() {
+        let src_size = std::fs::metadata(item_full_path)
+            .map(|m| m.len())
+            .unwrap_or(0);
+        let dst_size = std::fs::metadata(temp_output_file)
+            .map(|m| m.len())
+            .unwrap_or(0);
+
+        if dst_size > src_size && src_size > 0 && !is_image_source {
+            sink.log(&format!(
+                "  WARNING: Output ({:.1}MB) larger than source ({:.1}MB) - remuxing source instead",
+                dst_size as f64 / 1_000_000.0, src_size as f64 / 1_000_000.0,
+            ));
+            write_log(log_writer, "  Output larger than source - remuxing");
+            let _ = std::fs::remove_file(temp_output_file);
+
+            let remux_output = ffbin::ffmpeg_command()
+                .args([
+                    "-y",
+                    "-i",
+                    item_full_path,
+                    "-map",
+                    "0",
+                    "-c",
+                    "copy",
+                    output_str,
+                ])
+                .stdout(std::process::Stdio::null())
+                .stderr(std::process::Stdio::piped())
+                .spawn()
+                .map(|child| child.wait_with_output())
+                .ok();
+            let remux_status = match remux_output {
+                Some(fut) => fut.await.ok(),
+                None => None,
+            };
+
+            match remux_status {
+                Some(ref o) if o.status.success() => {
+                    sink.log(&format!(
+                        "  Remuxed source to {} → {}",
+                        ext.to_uppercase(),
+                        output_str
+                    ));
+                    write_log(log_writer, &format!("  Remuxed to {}", ext.to_uppercase()));
+                }
+                _ => {
+                    if let Some(ref o) = remux_status {
+                        let stderr = String::from_utf8_lossy(&o.stderr);
+                        sink.log(&format!("  Remux stderr: {stderr}"));
+                        write_log(log_writer, &format!("  Remux stderr: {stderr}"));
+                    }
+                    sink.log("  ERROR: Remux failed");
+                    write_log(log_writer, "  ERROR: Remux failed");
+                    if temp_output_file.exists() {
+                        let _ = std::fs::remove_file(temp_output_file);
+                    }
+                    queue[idx].status = QueueItemStatus::Failed;
+                    sink.queue_item_updated(idx, "Failed");
+                    return false;
+                }
+            }
+        } else {
+            sink.log(&format!(
+                "  Done → {} ({:.1}MB from {:.1}MB)",
+                final_output_str,
+                dst_size as f64 / 1_000_000.0,
+                src_size as f64 / 1_000_000.0,
+            ));
+            write_log(
+                log_writer,
+                &format!(
+                    "  Done: {:.1}MB from {:.1}MB",
+                    dst_size as f64 / 1_000_000.0,
+                    src_size as f64 / 1_000_000.0,
+                ),
+            );
+        }
+
+        // Patch stale MKV stream statistics tags with the actual values.
+        // Only needed for MKV encodes (not copies, not MP4). Source muxers
+        // write BPS/NUMBER_OF_BYTES/DURATION tags that ffmpeg copies
+        // verbatim; after re-encoding these are wrong and mislead
+        // subsequent probes.
+        if ext == "mkv" && !matches!(decision, EncodeDecision::Copy) {
+            let audio_total_bps: u64 = queue[idx]
+                .probe
+                .audio_streams
+                .iter()
+                .map(|s| s.bitrate_kbps as u64 * 1000)
+                .sum();
+
+            let frames = final_frame_count.filter(|&f| f > 0);
+
+            match crate::mkv_tags::lightweight_repair(
+                temp_output_file,
+                dst_size,
+                item_duration_secs,
+                audio_total_bps,
+                frames,
+            ) {
+                Ok((n, bps)) if n > 0 => {
+                    let mbps = bps as f64 / 1_000_000.0;
+                    sink.log(&format!(
+                        "  Updated {} MKV tag{} (video: {:.2}Mbps)",
+                        n,
+                        if n == 1 { "" } else { "s" },
+                        mbps
+                    ));
+                }
+                Ok(_) => {
+                    sink.log("  No MKV statistics tags to update");
+                }
+                Err(e) => {
+                    sink.log(&format!("  WARNING: Could not update MKV tags: {e}"));
+                }
+            }
+        }
+
+        // Replace mode: delete source, rename temp to final path
+        if is_replace_mode && temp_output_file.exists() {
+            // Delete the original source file
+            if let Err(e) = std::fs::remove_file(item_full_path) {
+                let warn = format!("  WARNING: Could not delete source for replacement: {e}");
+                sink.log(&warn);
+                write_log(log_writer, &warn);
+                // Don't fail - the encode succeeded, we just can't replace
+            }
+            // Rename temp to final
+            if temp_output_file != output_file {
+                if let Err(e) = std::fs::rename(temp_output_file, output_file) {
+                    let warn = format!("  WARNING: Could not rename temp to final path: {e}");
+                    sink.log(&warn);
+                    write_log(log_writer, &warn);
+                } else {
+                    let msg = format!("  Replaced source → {}", final_output_str);
+                    sink.log(&msg);
+                    write_log(log_writer, &msg);
+                }
+            }
+        } else if settings.delete_source && temp_output_file.exists() {
+            // Normal delete-source mode
+            match std::fs::remove_file(item_full_path) {
+                Ok(_) => {
+                    sink.log("  Source file deleted");
+                    write_log(log_writer, "  Source deleted");
+                }
+                Err(e) => {
+                    let warn = format!("  WARNING: Could not delete source: {e}");
+                    sink.log(&warn);
+                    write_log(log_writer, &warn);
+                }
+            }
+        }
+
+        queue[idx].status = QueueItemStatus::Done;
+        sink.queue_item_updated(idx, "Done");
+        true
+    } else {
+        sink.log("  ERROR: Output file not found after encode");
+        write_log(log_writer, "  ERROR: Output file not found");
+        queue[idx].status = QueueItemStatus::Failed;
+        sink.queue_item_updated(idx, "Failed");
+        false
+    }
+}
+
+/// Encode a single file from the queue. Handles field extraction, MKV tag
+/// repair, encode decision, DV/HDR10+ metadata extraction, FFmpeg arg
+/// assembly, precision mode CRF probe, two-pass or single-pass encode,
+/// hardware fallback on failure, and post-encode processing.
+#[allow(clippy::too_many_arguments)]
+async fn encode_single_file(
+    idx: usize,
+    queue: &mut [QueueItem],
+    settings: &BatchSettings,
+    detected_encoders: &[EncoderInfo],
+    preserve_hdr: bool,
+    cached_ram_gb: u64,
+    qi_str: &str,
+    qp_str: &str,
+    crf_str: &str,
+    file_counter: u32,
+    total: usize,
+    log_writer: &mut Option<std::io::BufWriter<std::fs::File>>,
+    write_log: &(dyn Fn(&mut Option<std::io::BufWriter<std::fs::File>>, &str) + Send + Sync),
+    sink: &dyn EventSink,
+    batch_control: &dyn BatchControl,
+    batch_stderr_log: Option<SharedStderrLog>,
+) -> EncodeFileResult {
+    // Extract read-only data from the queue item. Cloning individual
+    // fields avoids a full QueueItem clone (which includes audio_streams
+    // Vec, all Strings, and fields unused in the loop body).
+    let item_full_path = queue[idx].full_path.clone();
+    let item_file_name = queue[idx].file_name.clone();
+    let item_base_name = queue[idx].base_name.clone();
+    let item_video_codec = queue[idx].probe.video_codec.clone();
+    let item_video_width = queue[idx].probe.video_width;
+    let item_video_height = queue[idx].probe.video_height;
+    let item_video_bitrate_mbps = queue[idx].probe.video_bitrate_mbps;
+    let item_duration_secs = queue[idx].probe.duration_secs;
+    let item_is_hdr = queue[idx].probe.is_hdr;
+    let is_image_source = matches!(item_video_codec.as_str(), "gif" | "apng" | "mjpeg" | "webp");
+    let is_animated_webp =
+        item_video_codec == "webp" && item_full_path.to_lowercase().ends_with(".webp");
+
+    // ── DV/HDR10+ tier determination (Phase DV) ──────────────
+    let item_dovi_profile = queue[idx].probe.dovi_profile;
+    let item_dovi_bl_compat_id = queue[idx].probe.dovi_bl_compat_id;
+    let item_has_hdr10plus = queue[idx].probe.has_hdr10plus;
+    let caps = crate::dovi_tools::capabilities();
+
+    // Tier 1: DV source + MP4Box available → full DV preservation
+    let is_dovi_tier1 = item_dovi_profile.is_some()
+        && caps.can_process_dovi
+        && caps.can_package_dovi_mp4
+        && preserve_hdr;
+
+    // Tier 2: HDR10+ source + crate available → full metadata preservation
+    let is_hdr10plus_tier2 =
+        item_has_hdr10plus && caps.can_process_hdr10plus && preserve_hdr && !is_dovi_tier1; // DV takes priority if both are present
+
+    // Per-file codec/encoder/container resolution (§2.4.0)
+    let source_ext = std::path::Path::new(&item_full_path)
+        .extension()
+        .map(|e| e.to_string_lossy().to_lowercase())
+        .unwrap_or_default();
+    let resolved =
+        resolve_file_settings(&item_video_codec, &source_ext, settings, detected_encoders);
+    let file_encoder = &resolved.encoder_name;
+    let file_codec_family = &resolved.codec_family;
+    // Override container for DV Tier 1. DV requires MP4 container for
+    // proper signaling. For copies this is typically a no-op (DV sources
+    // are already MP4). For re-encodes, MP4Box will set the DV flags.
+    let file_ext = if is_dovi_tier1 {
+        let resolved_ext = resolve_container(&item_full_path, &settings.output_container, true);
+        if resolved_ext != resolved.container_ext {
+            sink.log("  Dolby Vision requires MP4 container - output set to MP4 for this file");
+        }
+        resolved_ext.to_string()
+    } else {
+        resolved.container_ext.clone()
+    };
+    let sw_fallback = software_fallback(file_codec_family).to_string();
+    let is_sw = file_encoder.starts_with("lib");
+    let target_codec = file_codec_family.as_str();
+
+    // Per-file pixel format and optional tonemap filter (#1, #2).
+    // preserve_hdr is hoisted above the loop; tonemap uses a static str.
+    let (file_pix_fmt, tonemap_filter): (&str, Option<&'static str>) =
+        if item_is_hdr && !preserve_hdr {
+            // HDR source, user wants SDR - tonemap via zscale + Hable curve
+            ("yuv420p", Some(TONEMAP_HABLE))
+        } else if item_is_hdr {
+            // HDR source, preserve HDR
+            ("p010le", None)
+        } else {
+            // SDR source
+            ("yuv420p", None)
+        };
+
+    sink.batch_status(&format!("[{}/{}] {}", file_counter, total, item_file_name));
+
+    if tonemap_filter.is_some() {
+        sink.log("  HDR → SDR: tonemapping with Hable curve");
+    }
+
+    queue[idx].status = QueueItemStatus::Encoding;
+    sink.queue_item_updated(idx, "Encoding");
+
+    let ext = file_ext.as_str();
+    let is_replace_mode = settings.output_mode == "replace";
+
+    // Determine output path based on output mode (#8 - eliminate clone)
+    let (output_file, temp_output_file) = match settings.output_mode.as_str() {
+        "beside" => {
+            // Create an "output" subfolder next to the input file
+            let input_dir = std::path::Path::new(&item_full_path)
+                .parent()
+                .unwrap_or_else(|| std::path::Path::new("."));
+            let out_dir = input_dir.join("output");
+            if !out_dir.exists() {
+                if let Err(e) = std::fs::create_dir_all(&out_dir) {
+                    let err_msg = format!("  ERROR: Could not create output folder: {e}");
+                    sink.log(&err_msg);
+                    write_log(log_writer, &err_msg);
+                    queue[idx].status = QueueItemStatus::Failed;
+                    sink.queue_item_updated(idx, "Failed");
+                    return EncodeFileResult::Failed;
+                }
+            }
+            let out = out_dir.join(format!("{}.{}", item_base_name, ext));
+            (out.clone(), out)
+        }
+        "replace" => {
+            // Encode to a temp file in the same directory, then replace the source
+            let input_path = std::path::Path::new(&item_full_path);
+            let input_dir = input_path
+                .parent()
+                .unwrap_or_else(|| std::path::Path::new("."));
+            let final_path = input_dir.join(format!("{}.{}", item_base_name, ext));
+            let temp_path = input_dir.join(format!("{}.histv-tmp.{}", item_base_name, ext));
+            (final_path, temp_path)
+        }
+        _ => {
+            // "folder" - default: use the configured output folder
+            let out = std::path::Path::new(&settings.output_folder)
+                .join(format!("{}.{}", item_base_name, ext));
+            (out.clone(), out)
+        }
+    };
+    let output_str = temp_output_file.to_string_lossy().to_string();
+    let final_output_str = output_file.to_string_lossy().to_string();
+
+    let log_msg = format!("[{}/{}] {}", file_counter, total, item_file_name);
+    sink.log(&log_msg);
+    write_log(log_writer, &log_msg);
+
+    // Overwrite check - in replace mode, we're replacing the source so
+    // no overwrite prompt is needed. In other modes, check the final output.
+    if !is_replace_mode && output_file.exists() {
+        if !batch_control.overwrite_always() {
+            let response = batch_control.overwrite_prompt(&final_output_str);
+            match response.as_str() {
+                "no" | "skip" => {
+                    sink.log("  Skipped (output exists)");
+                    write_log(log_writer, "  Skipped (output exists)");
+                    queue[idx].status = QueueItemStatus::Skipped;
+                    sink.queue_item_updated(idx, "Skipped");
+                    return EncodeFileResult::Skipped;
+                }
+                "always" => {
+                    batch_control.set_overwrite_always();
+                }
+                "cancel" => {
+                    return EncodeFileResult::CancelledAll;
+                }
+                _ => {} // "yes" - proceed
+            }
+        }
+    }
+
+    // Pre-decision MKV tag repair: fix stale statistics tags on input
+    // files so the encoding decision uses the actual bitrate. This is
+    // lightweight (no I/O beyond a stat + in-place tag write) and runs
+    // automatically before every encode.
+    let mut item_video_bitrate_mbps = item_video_bitrate_mbps;
+    if let Some(bps) = crate::mkv_tags::repair_after_probe(
+        &item_full_path,
+        item_duration_secs,
+        &queue[idx].probe.audio_streams,
+    ) {
+        let corrected_mbps = bps as f64 / 1_000_000.0;
+        if (corrected_mbps - item_video_bitrate_mbps).abs() > 0.1 {
+            sink.log(&format!(
+                "  Tag repair: {:.2}Mbps → {:.2}Mbps",
+                item_video_bitrate_mbps, corrected_mbps
+            ));
+            item_video_bitrate_mbps = corrected_mbps;
+            queue[idx].probe.video_bitrate_mbps = corrected_mbps;
+            queue[idx].probe.video_bitrate_bps = bps as f64;
+        }
+    }
+
+    // Determine encoding strategy
+    let decision = decide_encode_strategy(
+        item_video_bitrate_mbps,
+        settings.threshold,
+        &item_video_codec,
+        target_codec,
+        &settings.rate_control_mode,
+        settings.qp_i,
+        settings.qp_p,
+        settings.crf_val,
+        settings.peak_multiplier,
+    );
+
+    // ── Pre-encode: DV/HDR10+ metadata extraction ────────────
+    // Only extract when actually re-encoding (not copy). Extraction is
+    // expensive (demux + full bitstream parse) so we skip it for copies
+    // where the original bitstream (and its DV/HDR10+ data) is preserved.
+    let is_copy = matches!(decision, EncodeDecision::Copy);
+
+    #[cfg(feature = "dovi")]
+    let extracted_rpus = if is_dovi_tier1 && !is_copy {
+        let profile = item_dovi_profile.unwrap();
+        sink.log(&format!(
+            "  Dolby Vision Profile {} detected - extracting RPU data for preservation",
+            profile,
+        ));
+        match dovi_pipeline::extract_rpus(
+            std::path::Path::new(&item_full_path),
+            profile,
+            item_dovi_bl_compat_id,
+            sink,
+        )
+        .await
+        {
+            Ok(rpus) => Some(rpus),
+            Err(e) => {
+                sink.log(&format!(
+                    "  DV extraction failed: {e} - falling back to HDR10"
+                ));
+                write_log(log_writer, &format!("  DV extraction failed: {e}"));
+                None
+            }
+        }
+    } else {
+        None
+    };
+    #[cfg(not(feature = "dovi"))]
+    let extracted_rpus: Option<()> = None;
+
+    #[cfg(feature = "dovi")]
+    let extracted_hdr10plus = if is_hdr10plus_tier2 && !is_copy {
+        sink.log("  HDR10+ detected - extracting dynamic metadata for preservation");
+        match hdr10plus_pipeline::extract_hdr10plus(std::path::Path::new(&item_full_path), sink)
+            .await
+        {
+            Ok(meta) => Some(meta),
+            Err(e) => {
+                sink.log(&format!(
+                    "  HDR10+ extraction failed: {e} - falling back to static HDR10"
+                ));
+                write_log(log_writer, &format!("  HDR10+ extraction failed: {e}"));
+                None
+            }
+        }
+    } else {
+        None
+    };
+    #[cfg(not(feature = "dovi"))]
+    let extracted_hdr10plus: Option<()> = None;
+
+    // Build video args from the decision
+    let mut video_args: Vec<String> = if matches!(decision, EncodeDecision::Copy) {
+        vec!["-c:v".into(), "copy".into()]
+    } else {
+        vec!["-c:v".into(), file_encoder.to_string()]
+    };
+    let mut mode_desc;
+
+    match &decision {
+        EncodeDecision::Copy => {
+            mode_desc = format!(
+                "  Already {} at {:.2}Mbps (at/below target) - copying video",
+                display_codec_family(file_codec_family),
+                item_video_bitrate_mbps
+            );
+        }
+        EncodeDecision::Vbr {
+            target_bps,
+            peak_bps,
+        } => {
+            let target_str = target_bps.to_string();
+            let peak_str = peak_bps.to_string();
+            video_args.extend(vbr_flags(file_encoder, &target_str, &peak_str));
+            let peak_mbps = *peak_bps as f64 / 1_000_000.0;
+            mode_desc = format!(
+                "  Video: {:.2}Mbps [{}] {}x{} - VBR target {}Mbps peak {:.2}Mbps",
+                item_video_bitrate_mbps,
+                item_video_codec,
+                item_video_width,
+                item_video_height,
+                settings.threshold,
+                peak_mbps
+            );
+        }
+        EncodeDecision::Cqp { .. } => {
+            video_args.extend(cqp_flags(file_encoder, qi_str, qp_str));
+            mode_desc = format!(
+                "  Video: {:.2}Mbps [{}] {}x{} - CQP ({}/{})",
+                item_video_bitrate_mbps,
+                item_video_codec,
+                item_video_width,
+                item_video_height,
+                settings.qp_i,
+                settings.qp_p
+            );
+        }
+        EncodeDecision::Crf { crf, .. } => {
+            video_args.extend(crf_flags(file_encoder, crf_str, qi_str, qp_str));
+            mode_desc = format!(
+                "  Video: {:.2}Mbps [{}] {}x{} - CRF {}",
+                item_video_bitrate_mbps, item_video_codec, item_video_width, item_video_height, crf
+            );
+        }
+    }
+
+    // ── Precision mode: CRF viability probe + lookahead + maxrate ──
+    // Only applies to CRF decisions with software encoders.
+    let is_crf_decision = matches!(decision, EncodeDecision::Crf { .. });
+
+    if settings.precision_mode && is_sw && is_crf_decision && !is_image_source {
+        // Probe CRF viability with 3 x 10-second samples
+        sink.log("  Precision mode: probing CRF viability...");
+
+        let probe_result = probe_crf_viability(
+            &item_full_path,
+            item_duration_secs,
+            &video_args,
+            file_pix_fmt,
+            settings.threads,
+            settings.low_priority,
+            batch_stderr_log.clone(),
+            sink,
+            batch_control,
+        )
+        .await;
+
+        // Check for cancellation during probe
+        if batch_control.should_cancel_all() {
+            queue[idx].status = QueueItemStatus::Cancelled;
+            sink.queue_item_updated(idx, "Cancelled");
+            return EncodeFileResult::CancelledAll;
+        }
+        if batch_control.should_cancel_current() {
+            queue[idx].status = QueueItemStatus::Cancelled;
+            sink.queue_item_updated(idx, "Cancelled");
+            return EncodeFileResult::CancelledCurrent;
+        }
+
+        match probe_result {
+            Some(avg_mbps)
+                if item_video_bitrate_mbps > 0.0 && avg_mbps > item_video_bitrate_mbps =>
+            {
+                // CRF would produce a larger file than source - fall back to CQP
+                sink.log(&format!(
+                    "  Precision mode: CRF estimate {:.2}Mbps exceeds source {:.2}Mbps - falling back to CQP",
+                    avg_mbps, item_video_bitrate_mbps
+                ));
+                write_log(
+                    log_writer,
+                    &format!(
+                        "  Precision: CRF {:.2}Mbps > source {:.2}Mbps - CQP fallback",
+                        avg_mbps, item_video_bitrate_mbps
+                    ),
+                );
+                // Rebuild video args as CQP
+                video_args = vec!["-c:v".into(), file_encoder.clone()];
+                video_args.extend(cqp_flags(file_encoder, qi_str, qp_str));
+                mode_desc = format!(
+                    "  Video: {:.2}Mbps [{}] {}x{} - CQP ({}/{}) (precision fallback)",
+                    item_video_bitrate_mbps,
+                    item_video_codec,
+                    item_video_width,
+                    item_video_height,
+                    settings.qp_i,
+                    settings.qp_p
+                );
+                sink.log(&mode_desc);
+                write_log(log_writer, &mode_desc);
+            }
+            Some(_) | None => {
+                // CRF is viable (or file was too short to probe) - enhance
+                // based on available system RAM (#3 - use cached value).
+                let use_lookahead = !precision_needs_two_pass_with_ram(cached_ram_gb);
+                let lookahead = if use_lookahead {
+                    lookahead_for_ram_with_cache(cached_ram_gb)
+                } else {
+                    0
+                };
+
+                if lookahead > 0 {
+                    video_args.extend(vec!["-rc-lookahead".into(), lookahead.to_string()]);
+                    sink.log(&format!(
+                        "  Precision mode: rc-lookahead {} ({}GB RAM)",
+                        lookahead, cached_ram_gb
+                    ));
+                } else if use_lookahead {
+                    sink.log(&format!(
+                        "  Precision mode: default lookahead ({}GB RAM)",
+                        cached_ram_gb
+                    ));
+                } else {
+                    sink.log(&format!("  Precision mode: two-pass ({}GB RAM - insufficient for extended lookahead)", cached_ram_gb));
+                }
+
+                // Cap with maxrate based on the user's target and peak multiplier
+                if settings.threshold > 0.0 {
+                    let maxrate_bps =
+                        (settings.threshold * 1_000_000.0 * settings.peak_multiplier) as u64;
+                    video_args.extend(vec![
+                        "-maxrate".into(),
+                        maxrate_bps.to_string(),
+                        "-bufsize".into(),
+                        (maxrate_bps * 2).to_string(),
+                    ]);
+                    sink.log(&format!(
+                        "  Precision mode: maxrate {:.1}Mbps ({}Mbps x {}x)",
+                        maxrate_bps as f64 / 1_000_000.0,
+                        settings.threshold,
+                        settings.peak_multiplier
+                    ));
+                }
+
+                let precision_note = if lookahead > 0 {
+                    format!(" (precision: lookahead {})", lookahead)
+                } else if !use_lookahead {
+                    " (precision: 2-pass)".to_string()
+                } else {
+                    " (precision)".to_string()
+                };
+                mode_desc = format!("{}{}", mode_desc, precision_note);
+                sink.log(&mode_desc);
+                write_log(log_writer, &mode_desc);
+            }
+        }
+    } else {
+        sink.log(&mode_desc);
+        write_log(log_writer, &mode_desc);
+    }
+
+    // Build audio args (skipped for image sources like GIF)
+    let (audio_map_args, audio_codec_args) = if is_image_source {
+        (Vec::new(), Vec::new())
+    } else {
+        build_audio_args_from_probe(
+            &queue[idx].probe.audio_streams,
+            &resolved.audio_strategy,
+            sink,
+        )
+    };
+
+    let exit_code: i32;
+    let mut final_frame_count: Option<u64>;
+
+    // ── Animated WebP: dedicated decode + encode pipeline ──
+    if is_animated_webp {
+        sink.log("  Animated WebP: using RIFF decode pipeline");
+        let webp_result = crate::webp_decode::transcode_animated_webp(
+            &item_full_path,
+            &output_str,
+            &video_args,
+            settings.threads,
+            settings.low_priority,
+            sink,
+            batch_control,
+        )
+        .await;
+
+        match webp_result {
+            Ok(r) if r.was_cancelled => {
+                if batch_control.should_cancel_all() {
+                    queue[idx].status = QueueItemStatus::Cancelled;
+                    sink.queue_item_updated(idx, "Cancelled");
+                    return EncodeFileResult::CancelledAll;
+                }
+                queue[idx].status = QueueItemStatus::Cancelled;
+                sink.queue_item_updated(idx, "Cancelled");
+                return EncodeFileResult::CancelledCurrent;
+            }
+            Ok(r) if r.exit_code != 0 => {
+                let err_msg = format!("  ERROR: WebP encode failed (exit code {})", r.exit_code);
+                sink.log(&err_msg);
+                write_log(log_writer, &err_msg);
+                if temp_output_file.exists() {
+                    let _ = std::fs::remove_file(&temp_output_file);
+                }
+                queue[idx].status = QueueItemStatus::Failed;
+                sink.queue_item_updated(idx, "Failed");
+                return EncodeFileResult::Failed;
+            }
+            Ok(r) => {
+                final_frame_count = Some(r.frame_count);
+            }
+
+            Err(e) => {
+                sink.log(&format!("  ERROR: {e}"));
+                write_log(log_writer, &format!("  ERROR: {e}"));
+                queue[idx].status = QueueItemStatus::Failed;
+                sink.queue_item_updated(idx, "Failed");
+                return EncodeFileResult::Failed;
+            }
+        }
+
+        // Skip the normal ffmpeg path - jump to post-encode
+    } else {
+        // Assemble ffmpeg command
+        let video_arg_refs: Vec<&str> = video_args.iter().map(|s| s.as_str()).collect();
+        let ffmpeg_args = assemble_ffmpeg_args(
+            &item_full_path,
+            &video_arg_refs,
+            file_pix_fmt,
+            &audio_map_args,
+            &audio_codec_args,
+            &output_str,
+            is_image_source,
+            settings.threads,
+            tonemap_filter,
+        );
+
+        let cmd_line = format!("ffmpeg {}", ffmpeg_args.join(" "));
+        sink.batch_command(&cmd_line);
+        let cmd_log = format!("  CMD: {cmd_line}");
+        sink.log(&cmd_log);
+        write_log(log_writer, &cmd_log);
+
+        // Spawn ffmpeg - optionally as a two-pass encode.
+        // Precision mode on low-RAM systems (<8GB) uses two-pass CRF instead
+        // of extended lookahead, since the lookahead would consume too much memory.
+        let precision_two_pass = settings.precision_mode
+            && is_sw
+            && is_crf_decision
+            && precision_needs_two_pass_with_ram(cached_ram_gb);
+        let use_two_pass = precision_two_pass;
+
+        let proc_start = std::time::Instant::now();
+
+        if use_two_pass {
+            // ── Two-pass VBR (software encoders only) (#5) ──
+            // TempDir auto-cleans passlog files on drop (including break 'outer).
+            let passlog_dir = tempfile::Builder::new()
+                .prefix("histv_2pass_")
+                .tempdir()
+                .map_err(|e| format!("Could not create passlog temp dir: {e}"));
+            let passlog_prefix = match passlog_dir {
+                Ok(ref d) => d.path().join("passlog").to_string_lossy().to_string(),
+                Err(ref e) => {
+                    sink.log(&format!("  ERROR: {e}"));
+                    queue[idx].status = QueueItemStatus::Failed;
+                    sink.queue_item_updated(idx, "Failed");
+                    return EncodeFileResult::Failed;
+                }
+            };
+
+            let fmt = if ext == "mp4" { "mp4" } else { "matroska" };
+
+            // Pass 1: analysis only - build args fresh from components
+            let pass1_args = build_two_pass_args(&ffmpeg_args, 1, &passlog_prefix, fmt);
+
+            let pass1_cmd = format!("ffmpeg {}", pass1_args.join(" "));
+            sink.batch_command(&pass1_cmd);
+            write_log(log_writer, &format!("  CMD (pass 1): {pass1_cmd}"));
+
+            match run_ffmpeg_with_progress(
+                &pass1_args,
+                item_duration_secs,
+                Some((1, 2)),
+                settings.low_priority,
+                batch_stderr_log.clone(),
+                &item_file_name,
+                sink,
+                batch_control,
+            )
+            .await
+            {
+                Ok(r) if r.was_cancelled_all => {
+                    sink.log("  Cancelled (batch cancel)");
+                    write_log(log_writer, "  Cancelled (batch cancel)");
+                    queue[idx].status = QueueItemStatus::Cancelled;
+                    sink.queue_item_updated(idx, "Cancelled");
+                    return EncodeFileResult::CancelledAll;
+                }
+                Ok(r) if r.was_cancelled_current => {
+                    sink.log("  Cancelled current file");
+                    write_log(log_writer, "  Cancelled");
+                    queue[idx].status = QueueItemStatus::Cancelled;
+                    sink.queue_item_updated(idx, "Cancelled");
+                    return EncodeFileResult::CancelledCurrent;
+                }
+                Ok(r) if r.exit_code != 0 => {
+                    sink.log(&format!(
+                        "  ERROR: Pass 1 failed (exit code {})",
+                        r.exit_code
+                    ));
+                    write_log(log_writer, "  ERROR: Pass 1 failed");
+                    queue[idx].status = QueueItemStatus::Failed;
+                    sink.queue_item_updated(idx, "Failed");
+                    return EncodeFileResult::Failed;
+                }
+                Err(e) => {
+                    sink.log(&format!("  ERROR: {e}"));
+                    write_log(log_writer, &format!("  ERROR: {e}"));
+                    queue[idx].status = QueueItemStatus::Failed;
+                    sink.queue_item_updated(idx, "Failed");
+                    return EncodeFileResult::Failed;
+                }
+                _ => {} // pass 1 OK
+            }
+
+            // Pass 2: actual encode with stats from pass 1
+            let pass2_args = build_two_pass_args(&ffmpeg_args, 2, &passlog_prefix, fmt);
+
+            let pass2_cmd = format!("ffmpeg {}", pass2_args.join(" "));
+            sink.batch_command(&pass2_cmd);
+            write_log(log_writer, &format!("  CMD (pass 2): {pass2_cmd}"));
+
+            match run_ffmpeg_with_progress(
+                &pass2_args,
+                item_duration_secs,
+                Some((2, 2)),
+                settings.low_priority,
+                batch_stderr_log.clone(),
+                &item_file_name,
+                sink,
+                batch_control,
+            )
+            .await
+            {
+                Ok(r) if r.was_cancelled_all => {
+                    sink.log("  Cancelled (batch cancel)");
+                    write_log(log_writer, "  Cancelled (batch cancel)");
+                    if temp_output_file.exists() {
+                        let _ = std::fs::remove_file(&temp_output_file);
+                    }
+                    queue[idx].status = QueueItemStatus::Cancelled;
+                    sink.queue_item_updated(idx, "Cancelled");
+                    return EncodeFileResult::CancelledAll;
+                }
+                Ok(r) if r.was_cancelled_current => {
+                    sink.log("  Cancelled current file");
+                    write_log(log_writer, "  Cancelled");
+                    if temp_output_file.exists() {
+                        let _ = std::fs::remove_file(&temp_output_file);
+                        sink.log("  Partial output removed");
+                    }
+                    queue[idx].status = QueueItemStatus::Cancelled;
+                    sink.queue_item_updated(idx, "Cancelled");
+                    return EncodeFileResult::CancelledCurrent;
+                }
+                Ok(r) => {
+                    exit_code = r.exit_code;
+                    final_frame_count = Some(r.frame_count);
+                }
+                Err(e) => {
+                    sink.log(&format!("  ERROR: {e}"));
+                    write_log(log_writer, &format!("  ERROR: {e}"));
+                    queue[idx].status = QueueItemStatus::Failed;
+                    sink.queue_item_updated(idx, "Failed");
+                    return EncodeFileResult::Failed;
+                }
+            }
+            // passlog_dir dropped here — auto-cleans passlog files
+        } else {
+            // ── Single-pass encode ──
+            match run_ffmpeg_with_progress(
+                &ffmpeg_args,
+                item_duration_secs,
+                None,
+                settings.low_priority,
+                batch_stderr_log.clone(),
+                &item_file_name,
+                sink,
+                batch_control,
+            )
+            .await
+            {
+                Ok(r) if r.was_cancelled_all => {
+                    sink.log("  Cancelled (batch cancel)");
+                    write_log(log_writer, "  Cancelled (batch cancel)");
+                    if temp_output_file.exists() {
+                        let _ = std::fs::remove_file(&temp_output_file);
+                    }
+                    queue[idx].status = QueueItemStatus::Cancelled;
+                    sink.queue_item_updated(idx, "Cancelled");
+                    return EncodeFileResult::CancelledAll;
+                }
+                Ok(r) if r.was_cancelled_current => {
+                    sink.log("  Cancelled current file");
+                    write_log(log_writer, "  Cancelled");
+                    if temp_output_file.exists() {
+                        let _ = std::fs::remove_file(&temp_output_file);
+                        sink.log("  Partial output removed");
+                    }
+                    queue[idx].status = QueueItemStatus::Cancelled;
+                    sink.queue_item_updated(idx, "Cancelled");
+                    return EncodeFileResult::CancelledCurrent;
+                }
+                Ok(r) => {
+                    exit_code = r.exit_code;
+                    final_frame_count = Some(r.frame_count);
+                }
+                Err(e) => {
+                    sink.log(&format!("  ERROR: {e}"));
+                    write_log(log_writer, &format!("  ERROR: {e}"));
+                    queue[idx].status = QueueItemStatus::Failed;
+                    sink.queue_item_updated(idx, "Failed");
+                    return EncodeFileResult::Failed;
+                }
+            }
+        }
+
+        let proc_duration = proc_start.elapsed();
+        // Encoder failure fallback (#6 - use run_ffmpeg_with_progress)
+        if exit_code != 0
+            && proc_duration.as_secs() < 30
+            && !matches!(decision, EncodeDecision::Copy)
+            && *file_encoder != sw_fallback
+        {
+            if !batch_control.hw_fallback_offered() {
+                batch_control.set_hw_fallback_offered();
+                sink.log(&format!("  HW encoder failed for {}", item_file_name));
+                let response = batch_control.fallback_prompt(&item_file_name);
+
+                if response == "yes" {
+                    sink.log(&format!(
+                        "  Falling back to software encoder ({})...",
+                        sw_fallback
+                    ));
+                    write_log(log_writer, &format!("  Fallback to {}", sw_fallback));
+
+                    if temp_output_file.exists() {
+                        let _ = std::fs::remove_file(&temp_output_file);
+                    }
+
+                    // Rebuild with software encoder
+                    let mut sw_video_args: Vec<String>;
+                    match &decision {
+                        EncodeDecision::Vbr {
+                            target_bps,
+                            peak_bps,
+                        } => {
+                            sw_video_args = vec!["-c:v".into(), sw_fallback.clone()];
+                            sw_video_args.extend(vbr_flags(
+                                &sw_fallback,
+                                &target_bps.to_string(),
+                                &peak_bps.to_string(),
+                            ));
+                        }
+                        _ => {
+                            sw_video_args = vec!["-c:v".into(), sw_fallback.clone()];
+                            sw_video_args.extend(cqp_flags(&sw_fallback, qi_str, qp_str));
+                        }
+                    }
+
+                    // Reuse audio args from the primary encode - inputs haven't changed
+                    let sw_ref: Vec<&str> = sw_video_args.iter().map(|s| s.as_str()).collect();
+                    let sw_args = assemble_ffmpeg_args(
+                        &item_full_path,
+                        &sw_ref,
+                        file_pix_fmt,
+                        &audio_map_args,
+                        &audio_codec_args,
+                        &output_str,
+                        is_image_source,
+                        settings.threads,
+                        tonemap_filter,
+                    );
+
+                    let sw_cmd = format!("ffmpeg {}", sw_args.join(" "));
+                    sink.batch_command(&sw_cmd);
+                    let sw_cmd_log = format!("  CMD (fallback): {sw_cmd}");
+                    sink.log(&sw_cmd_log);
+                    write_log(log_writer, &sw_cmd_log);
+
+                    // Use shared helper for progress, pause/cancel, low-priority (#6)
+                    match run_ffmpeg_with_progress(
+                        &sw_args,
+                        item_duration_secs,
+                        None,
+                        settings.low_priority,
+                        batch_stderr_log.clone(),
+                        &item_file_name,
+                        sink,
+                        batch_control,
+                    )
+                    .await
+                    {
+                        Ok(r) if r.was_cancelled_all => {
+                            sink.log("  Cancelled (batch cancel during fallback)");
+                            write_log(log_writer, "  Cancelled (batch cancel during fallback)");
+                            if temp_output_file.exists() {
+                                let _ = std::fs::remove_file(&temp_output_file);
+                            }
+                            queue[idx].status = QueueItemStatus::Cancelled;
+                            sink.queue_item_updated(idx, "Cancelled");
+                            return EncodeFileResult::CancelledAll;
+                        }
+                        Ok(r) if r.was_cancelled_current => {
+                            sink.log("  Cancelled current file (during fallback)");
+                            write_log(log_writer, "  Cancelled (during fallback)");
+                            if temp_output_file.exists() {
+                                let _ = std::fs::remove_file(&temp_output_file);
+                                sink.log("  Partial output removed");
+                            }
+                            queue[idx].status = QueueItemStatus::Cancelled;
+                            sink.queue_item_updated(idx, "Cancelled");
+                            return EncodeFileResult::CancelledCurrent;
+                        }
+                        Ok(r) if r.exit_code != 0 => {
+                            sink.log("  ERROR: Software encoder also failed - stopping batch");
+                            write_log(log_writer, "  ERROR: Software encoder also failed");
+                            if temp_output_file.exists() {
+                                let _ = std::fs::remove_file(&temp_output_file);
+                            }
+                            queue[idx].status = QueueItemStatus::Failed;
+                            sink.queue_item_updated(idx, "Failed");
+                            // Original code: break 'outer after SW fallback failure.
+                            // Return CancelledAll to trigger the same outer break.
+                            return EncodeFileResult::CancelledAll;
+                        }
+                        Err(e) => {
+                            sink.log(&format!("  ERROR: Could not launch fallback: {e}"));
+                            write_log(log_writer, &format!("  ERROR: Fallback launch failed: {e}"));
+                            queue[idx].status = QueueItemStatus::Failed;
+                            sink.queue_item_updated(idx, "Failed");
+                            // Original code: break 'outer after fallback launch failure.
+                            return EncodeFileResult::CancelledAll;
+                        }
+                        Ok(r) => {
+                            final_frame_count = Some(r.frame_count);
+                        } // fallback encode OK
+                    }
+                } else {
+                    sink.log("  Stopping batch due to encoder failure");
+                    write_log(log_writer, "  Batch stopped (encoder failure)");
+                    if temp_output_file.exists() {
+                        let _ = std::fs::remove_file(&temp_output_file);
+                    }
+                    queue[idx].status = QueueItemStatus::Failed;
+                    sink.queue_item_updated(idx, "Failed");
+                    // Original code: break 'outer when user declines fallback.
+                    return EncodeFileResult::CancelledAll;
+                }
+            }
+        } else if exit_code != 0 {
+            if batch_control.hw_fallback_offered() && *file_encoder != sw_fallback {
+                sink.log("  HW encoder failed (fallback already offered for this batch)");
+                write_log(log_writer, "  HW encoder failed (fallback already offered)");
+            }
+            let err_msg = format!("  ERROR: ffmpeg exited with code {}", exit_code);
+            sink.log(&err_msg);
+            write_log(log_writer, &err_msg);
+            if temp_output_file.exists() {
+                let _ = std::fs::remove_file(&temp_output_file);
+                sink.log("  Failed output removed");
+            }
+            queue[idx].status = QueueItemStatus::Failed;
+            sink.queue_item_updated(idx, "Failed");
+            return EncodeFileResult::Failed;
+        }
+    }
+
+    // ── Post-encode processing ──
+    let success = handle_post_encode(
+        idx,
+        queue,
+        &decision,
+        &temp_output_file,
+        &output_file,
+        &output_str,
+        &final_output_str,
+        ext,
+        &item_full_path,
+        is_image_source,
+        is_replace_mode,
+        item_duration_secs,
+        final_frame_count,
+        &extracted_rpus,
+        &extracted_hdr10plus,
+        settings,
+        log_writer,
+        write_log,
+        sink,
+    )
+    .await;
+
+    if success {
+        EncodeFileResult::Done
+    } else {
+        EncodeFileResult::Failed
+    }
 }
 
 /// Shared encoding loop used by the CLI. Takes trait objects for output and
@@ -768,6 +2092,7 @@ pub async fn run_encode_loop(
     let mut fail_count: u32 = 0;
     let mut skip_count: u32 = 0;
     let save_log = settings.save_log;
+    let output_dir = std::path::Path::new(&settings.output_folder);
     let batch_start = std::time::Instant::now();
     let mut file_counter: u32 = 0;
     let mut was_cancelled = false;
@@ -801,6 +2126,32 @@ pub async fn run_encode_loop(
             use std::io::Write;
             let _ = writeln!(w, "{}", line);
         }
+    };
+
+    // ── Per-batch ffmpeg stderr log ──
+    // One shared log file for all ffmpeg invocations in this batch.
+    let batch_stderr_log: Option<SharedStderrLog> = open_stderr_log(output_dir);
+    // Remember the log filename so we can check if it's empty after the batch
+    let stderr_log_filename: Option<std::path::PathBuf> = {
+        let log_dir = output_dir.join("ffmpeg_logs");
+        // The file was just created by open_stderr_log — find the newest .log
+        std::fs::read_dir(&log_dir).ok().and_then(|entries| {
+            entries
+                .filter_map(|e| e.ok())
+                .filter(|e| {
+                    e.path()
+                        .extension()
+                        .map(|ext| ext == "log")
+                        .unwrap_or(false)
+                })
+                .max_by_key(|e| {
+                    e.metadata()
+                        .ok()
+                        .and_then(|m| m.modified().ok())
+                        .unwrap_or(std::time::SystemTime::UNIX_EPOCH)
+                })
+                .map(|e| e.path())
+        })
     };
 
     sink.batch_started();
@@ -900,7 +2251,7 @@ pub async fn run_encode_loop(
         }
 
         // ── Encode each file in this work unit ────────────────
-        'per_file: for &idx in &work.indices {
+        for &idx in &work.indices {
             // Pause / cancel check - wait while paused before starting next file
             while batch_control.is_paused() {
                 if batch_control.should_cancel_all() {
@@ -917,1156 +2268,35 @@ pub async fn run_encode_loop(
             file_counter += 1;
             sink.batch_progress(file_counter, total);
 
-            // Extract read-only data from the queue item. Cloning individual
-            // fields avoids a full QueueItem clone (which includes audio_streams
-            // Vec, all Strings, and fields unused in the loop body).
-            let item_full_path = queue[idx].full_path.clone();
-            let item_file_name = queue[idx].file_name.clone();
-            let item_base_name = queue[idx].base_name.clone();
-            let item_video_codec = queue[idx].video_codec.clone();
-            let item_video_width = queue[idx].video_width;
-            let item_video_height = queue[idx].video_height;
-            let item_video_bitrate_mbps = queue[idx].video_bitrate_mbps;
-            let item_duration_secs = queue[idx].duration_secs;
-            let item_is_hdr = queue[idx].is_hdr;
-            let is_image_source =
-                matches!(item_video_codec.as_str(), "gif" | "apng" | "mjpeg" | "webp");
-            let is_animated_webp =
-                item_video_codec == "webp" && item_full_path.to_lowercase().ends_with(".webp");
+            let result = encode_single_file(
+                idx,
+                queue,
+                settings,
+                detected_encoders,
+                preserve_hdr,
+                cached_ram_gb,
+                &qi_str,
+                &qp_str,
+                &crf_str,
+                file_counter,
+                total,
+                &mut log_writer,
+                &write_log,
+                sink,
+                batch_control,
+                batch_stderr_log.clone(),
+            )
+            .await;
 
-            // ── DV/HDR10+ tier determination (Phase DV) ──────────────
-            let item_dovi_profile = queue[idx].dovi_profile;
-            let item_dovi_bl_compat_id = queue[idx].dovi_bl_compat_id;
-            let item_has_hdr10plus = queue[idx].has_hdr10plus;
-            let caps = crate::dovi_tools::capabilities();
-
-            // Tier 1: DV source + MP4Box available → full DV preservation
-            let is_dovi_tier1 = item_dovi_profile.is_some()
-                && caps.can_process_dovi
-                && caps.can_package_dovi_mp4
-                && preserve_hdr;
-
-            // Tier 2: HDR10+ source + crate available → full metadata preservation
-            let is_hdr10plus_tier2 =
-                item_has_hdr10plus && caps.can_process_hdr10plus && preserve_hdr && !is_dovi_tier1; // DV takes priority if both are present
-
-            // Per-file codec/encoder/container resolution (§2.4.0)
-            let source_ext = std::path::Path::new(&item_full_path)
-                .extension()
-                .map(|e| e.to_string_lossy().to_lowercase())
-                .unwrap_or_default();
-            let resolved =
-                resolve_file_settings(&item_video_codec, &source_ext, settings, detected_encoders);
-            let file_encoder = &resolved.encoder_name;
-            let file_codec_family = &resolved.codec_family;
-            // Override container for DV Tier 1. DV requires MP4 container for
-            // proper signaling. For copies this is typically a no-op (DV sources
-            // are already MP4). For re-encodes, MP4Box will set the DV flags.
-            let file_ext = if is_dovi_tier1 {
-                let resolved_ext =
-                    resolve_container(&item_full_path, &settings.output_container, true);
-                if resolved_ext != resolved.container_ext {
-                    sink.log(
-                        "  Dolby Vision requires MP4 container - output set to MP4 for this file",
-                    );
-                }
-                resolved_ext.to_string()
-            } else {
-                resolved.container_ext.clone()
-            };
-            let sw_fallback = software_fallback(file_codec_family).to_string();
-            let is_sw = file_encoder.starts_with("lib");
-            let target_codec = file_codec_family.as_str();
-
-            // Per-file pixel format and optional tonemap filter (#1, #2).
-            // preserve_hdr is hoisted above the loop; tonemap uses a static str.
-            let (file_pix_fmt, tonemap_filter): (&str, Option<&'static str>) =
-                if item_is_hdr && !preserve_hdr {
-                    // HDR source, user wants SDR - tonemap via zscale + Hable curve
-                    ("yuv420p", Some(TONEMAP_HABLE))
-                } else if item_is_hdr {
-                    // HDR source, preserve HDR
-                    ("p010le", None)
-                } else {
-                    // SDR source
-                    ("yuv420p", None)
-                };
-
-            sink.batch_status(&format!("[{}/{}] {}", file_counter, total, item_file_name));
-
-            if tonemap_filter.is_some() {
-                sink.log("  HDR → SDR: tonemapping with Hable curve");
-            }
-
-            queue[idx].status = QueueItemStatus::Encoding;
-            sink.queue_item_updated(idx, "Encoding");
-
-            let ext = file_ext.as_str();
-            let is_replace_mode = settings.output_mode == "replace";
-
-            // Determine output path based on output mode (#8 - eliminate clone)
-            let (output_file, temp_output_file) = match settings.output_mode.as_str() {
-                "beside" => {
-                    // Create an "output" subfolder next to the input file
-                    let input_dir = std::path::Path::new(&item_full_path)
-                        .parent()
-                        .unwrap_or_else(|| std::path::Path::new("."));
-                    let out_dir = input_dir.join("output");
-                    if !out_dir.exists() {
-                        if let Err(e) = std::fs::create_dir_all(&out_dir) {
-                            let err_msg = format!("  ERROR: Could not create output folder: {e}");
-                            sink.log(&err_msg);
-                            write_log(&mut log_writer, &err_msg);
-                            queue[idx].status = QueueItemStatus::Failed;
-                            sink.queue_item_updated(idx, "Failed");
-                            fail_count += 1;
-                            continue;
-                        }
-                    }
-                    let out = out_dir.join(format!("{}.{}", item_base_name, ext));
-                    (out.clone(), out)
-                }
-                "replace" => {
-                    // Encode to a temp file in the same directory, then replace the source
-                    let input_path = std::path::Path::new(&item_full_path);
-                    let input_dir = input_path
-                        .parent()
-                        .unwrap_or_else(|| std::path::Path::new("."));
-                    let final_path = input_dir.join(format!("{}.{}", item_base_name, ext));
-                    let temp_path = input_dir.join(format!("{}.histv-tmp.{}", item_base_name, ext));
-                    (final_path, temp_path)
-                }
-                _ => {
-                    // "folder" - default: use the configured output folder
-                    let out = std::path::Path::new(&settings.output_folder)
-                        .join(format!("{}.{}", item_base_name, ext));
-                    (out.clone(), out)
-                }
-            };
-            let output_str = temp_output_file.to_string_lossy().to_string();
-            let final_output_str = output_file.to_string_lossy().to_string();
-
-            let log_msg = format!("[{}/{}] {}", file_counter, total, item_file_name);
-            sink.log(&log_msg);
-            write_log(&mut log_writer, &log_msg);
-
-            // Overwrite check - in replace mode, we're replacing the source so
-            // no overwrite prompt is needed. In other modes, check the final output.
-            if !is_replace_mode && output_file.exists() {
-                if !batch_control.overwrite_always() {
-                    let response = batch_control.overwrite_prompt(&final_output_str);
-                    match response.as_str() {
-                        "no" | "skip" => {
-                            sink.log("  Skipped (output exists)");
-                            write_log(&mut log_writer, "  Skipped (output exists)");
-                            queue[idx].status = QueueItemStatus::Skipped;
-                            sink.queue_item_updated(idx, "Skipped");
-                            skip_count += 1;
-                            continue;
-                        }
-                        "always" => {
-                            batch_control.set_overwrite_always();
-                        }
-                        "cancel" => {
-                            was_cancelled = true;
-                            break 'outer;
-                        }
-                        _ => {} // "yes" - proceed
-                    }
-                }
-            }
-
-            // Pre-decision MKV tag repair: fix stale statistics tags on input
-            // files so the encoding decision uses the actual bitrate. This is
-            // lightweight (no I/O beyond a stat + in-place tag write) and runs
-            // automatically before every encode.
-            let mut item_video_bitrate_mbps = item_video_bitrate_mbps;
-            if let Some(bps) = crate::mkv_tags::repair_after_probe(
-                &item_full_path,
-                item_duration_secs,
-                &queue[idx].audio_streams,
-            ) {
-                let corrected_mbps = bps as f64 / 1_000_000.0;
-                if (corrected_mbps - item_video_bitrate_mbps).abs() > 0.1 {
-                    sink.log(&format!(
-                        "  Tag repair: {:.2}Mbps → {:.2}Mbps",
-                        item_video_bitrate_mbps, corrected_mbps
-                    ));
-                    item_video_bitrate_mbps = corrected_mbps;
-                    queue[idx].video_bitrate_mbps = corrected_mbps;
-                    queue[idx].video_bitrate_bps = bps as f64;
-                }
-            }
-
-            // Determine encoding strategy
-            let decision = decide_encode_strategy(
-                item_video_bitrate_mbps,
-                settings.threshold,
-                &item_video_codec,
-                target_codec,
-                &settings.rate_control_mode,
-                settings.qp_i,
-                settings.qp_p,
-                settings.crf_val,
-                settings.peak_multiplier,
-            );
-
-            // ── Pre-encode: DV/HDR10+ metadata extraction ────────────
-            // Only extract when actually re-encoding (not copy). Extraction is
-            // expensive (demux + full bitstream parse) so we skip it for copies
-            // where the original bitstream (and its DV/HDR10+ data) is preserved.
-            let is_copy = matches!(decision, EncodeDecision::Copy);
-
-            #[cfg(feature = "dovi")]
-            let extracted_rpus = if is_dovi_tier1 && !is_copy {
-                let profile = item_dovi_profile.unwrap();
-                sink.log(&format!(
-                    "  Dolby Vision Profile {} detected - extracting RPU data for preservation",
-                    profile,
-                ));
-                match dovi_pipeline::extract_rpus(
-                    std::path::Path::new(&item_full_path),
-                    profile,
-                    item_dovi_bl_compat_id,
-                    sink,
-                )
-                .await
-                {
-                    Ok(rpus) => Some(rpus),
-                    Err(e) => {
-                        sink.log(&format!(
-                            "  DV extraction failed: {e} - falling back to HDR10"
-                        ));
-                        write_log(&mut log_writer, &format!("  DV extraction failed: {e}"));
-                        None
-                    }
-                }
-            } else {
-                None
-            };
-            #[cfg(not(feature = "dovi"))]
-            let extracted_rpus: Option<()> = None;
-
-            #[cfg(feature = "dovi")]
-            let extracted_hdr10plus = if is_hdr10plus_tier2 && !is_copy {
-                sink.log("  HDR10+ detected - extracting dynamic metadata for preservation");
-                match hdr10plus_pipeline::extract_hdr10plus(
-                    std::path::Path::new(&item_full_path),
-                    sink,
-                )
-                .await
-                {
-                    Ok(meta) => Some(meta),
-                    Err(e) => {
-                        sink.log(&format!(
-                            "  HDR10+ extraction failed: {e} - falling back to static HDR10"
-                        ));
-                        write_log(&mut log_writer, &format!("  HDR10+ extraction failed: {e}"));
-                        None
-                    }
-                }
-            } else {
-                None
-            };
-            #[cfg(not(feature = "dovi"))]
-            let extracted_hdr10plus: Option<()> = None;
-
-            // Build video args from the decision
-            let mut video_args: Vec<String> = if matches!(decision, EncodeDecision::Copy) {
-                vec!["-c:v".into(), "copy".into()]
-            } else {
-                vec!["-c:v".into(), file_encoder.to_string()]
-            };
-            let mut mode_desc;
-
-            match &decision {
-                EncodeDecision::Copy => {
-                    mode_desc = format!(
-                        "  Already {} at {:.2}Mbps (at/below target) - copying video",
-                        display_codec_family(file_codec_family),
-                        item_video_bitrate_mbps
-                    );
-                }
-                EncodeDecision::Vbr {
-                    target_bps,
-                    peak_bps,
-                } => {
-                    let target_str = target_bps.to_string();
-                    let peak_str = peak_bps.to_string();
-                    video_args.extend(vbr_flags(file_encoder, &target_str, &peak_str));
-                    let peak_mbps = *peak_bps as f64 / 1_000_000.0;
-                    mode_desc = format!(
-                        "  Video: {:.2}Mbps [{}] {}x{} - VBR target {}Mbps peak {:.2}Mbps",
-                        item_video_bitrate_mbps,
-                        item_video_codec,
-                        item_video_width,
-                        item_video_height,
-                        settings.threshold,
-                        peak_mbps
-                    );
-                }
-                EncodeDecision::Cqp { .. } => {
-                    video_args.extend(cqp_flags(file_encoder, &qi_str, &qp_str));
-                    mode_desc = format!(
-                        "  Video: {:.2}Mbps [{}] {}x{} - CQP ({}/{})",
-                        item_video_bitrate_mbps,
-                        item_video_codec,
-                        item_video_width,
-                        item_video_height,
-                        settings.qp_i,
-                        settings.qp_p
-                    );
-                }
-                EncodeDecision::Crf { crf, .. } => {
-                    video_args.extend(crf_flags(file_encoder, &crf_str, &qi_str, &qp_str));
-                    mode_desc = format!(
-                        "  Video: {:.2}Mbps [{}] {}x{} - CRF {}",
-                        item_video_bitrate_mbps,
-                        item_video_codec,
-                        item_video_width,
-                        item_video_height,
-                        crf
-                    );
-                }
-            }
-
-            // ── Precision mode: CRF viability probe + lookahead + maxrate ──
-            // Only applies to CRF decisions with software encoders.
-            // is_sw is hoisted above the loop (#4).
-            let is_crf_decision = matches!(decision, EncodeDecision::Crf { .. });
-
-            if settings.precision_mode && is_sw && is_crf_decision && !is_image_source {
-                // Probe CRF viability with 3 x 10-second samples
-                sink.log("  Precision mode: probing CRF viability...");
-
-                let probe_result = probe_crf_viability(
-                    &item_full_path,
-                    item_duration_secs,
-                    &video_args,
-                    file_pix_fmt,
-                    settings.threads,
-                    settings.low_priority,
-                    sink,
-                    batch_control,
-                )
-                .await;
-
-                // Check for cancellation during probe
-                if batch_control.should_cancel_all() {
+            match result {
+                EncodeFileResult::Done => done_count += 1,
+                EncodeFileResult::Failed => fail_count += 1,
+                EncodeFileResult::Skipped => skip_count += 1,
+                EncodeFileResult::CancelledCurrent => {}
+                EncodeFileResult::CancelledAll => {
                     was_cancelled = true;
-                    queue[idx].status = QueueItemStatus::Cancelled;
-                    sink.queue_item_updated(idx, "Cancelled");
                     break 'outer;
                 }
-                if batch_control.should_cancel_current() {
-                    queue[idx].status = QueueItemStatus::Cancelled;
-                    sink.queue_item_updated(idx, "Cancelled");
-                    continue;
-                }
-
-                match probe_result {
-                    Some(avg_mbps)
-                        if item_video_bitrate_mbps > 0.0 && avg_mbps > item_video_bitrate_mbps =>
-                    {
-                        // CRF would produce a larger file than source - fall back to CQP
-                        sink.log(&format!(
-                        "  Precision mode: CRF estimate {:.2}Mbps exceeds source {:.2}Mbps - falling back to CQP",
-                        avg_mbps, item_video_bitrate_mbps
-                    ));
-                        write_log(
-                            &mut log_writer,
-                            &format!(
-                                "  Precision: CRF {:.2}Mbps > source {:.2}Mbps - CQP fallback",
-                                avg_mbps, item_video_bitrate_mbps
-                            ),
-                        );
-                        // Rebuild video args as CQP
-                        video_args = vec!["-c:v".into(), file_encoder.clone()];
-                        video_args.extend(cqp_flags(file_encoder, &qi_str, &qp_str));
-                        mode_desc = format!(
-                            "  Video: {:.2}Mbps [{}] {}x{} - CQP ({}/{}) (precision fallback)",
-                            item_video_bitrate_mbps,
-                            item_video_codec,
-                            item_video_width,
-                            item_video_height,
-                            settings.qp_i,
-                            settings.qp_p
-                        );
-                        sink.log(&mode_desc);
-                        write_log(&mut log_writer, &mode_desc);
-                    }
-                    Some(_) | None => {
-                        // CRF is viable (or file was too short to probe) - enhance
-                        // based on available system RAM (#3 - use cached value).
-                        let use_lookahead = !precision_needs_two_pass_with_ram(cached_ram_gb);
-                        let lookahead = if use_lookahead {
-                            lookahead_for_ram_with_cache(cached_ram_gb)
-                        } else {
-                            0
-                        };
-
-                        if lookahead > 0 {
-                            video_args.extend(vec!["-rc-lookahead".into(), lookahead.to_string()]);
-                            sink.log(&format!(
-                                "  Precision mode: rc-lookahead {} ({}GB RAM)",
-                                lookahead, cached_ram_gb
-                            ));
-                        } else if use_lookahead {
-                            sink.log(&format!(
-                                "  Precision mode: default lookahead ({}GB RAM)",
-                                cached_ram_gb
-                            ));
-                        } else {
-                            sink.log(&format!("  Precision mode: two-pass ({}GB RAM - insufficient for extended lookahead)", cached_ram_gb));
-                        }
-
-                        // Cap with maxrate based on the user's target and peak multiplier
-                        if settings.threshold > 0.0 {
-                            let maxrate_bps =
-                                (settings.threshold * 1_000_000.0 * settings.peak_multiplier)
-                                    as u64;
-                            video_args.extend(vec![
-                                "-maxrate".into(),
-                                maxrate_bps.to_string(),
-                                "-bufsize".into(),
-                                (maxrate_bps * 2).to_string(),
-                            ]);
-                            sink.log(&format!(
-                                "  Precision mode: maxrate {:.1}Mbps ({}Mbps x {}x)",
-                                maxrate_bps as f64 / 1_000_000.0,
-                                settings.threshold,
-                                settings.peak_multiplier
-                            ));
-                        }
-
-                        let precision_note = if lookahead > 0 {
-                            format!(" (precision: lookahead {})", lookahead)
-                        } else if !use_lookahead {
-                            " (precision: 2-pass)".to_string()
-                        } else {
-                            " (precision)".to_string()
-                        };
-                        mode_desc = format!("{}{}", mode_desc, precision_note);
-                        sink.log(&mode_desc);
-                        write_log(&mut log_writer, &mode_desc);
-                    }
-                }
-            } else {
-                sink.log(&mode_desc);
-                write_log(&mut log_writer, &mode_desc);
-            }
-
-            // Build audio args (skipped for image sources like GIF)
-            let (audio_map_args, audio_codec_args) = if is_image_source {
-                (Vec::new(), Vec::new())
-            } else {
-                build_audio_args_from_probe(
-                    &queue[idx].audio_streams,
-                    &resolved.audio_strategy,
-                    sink,
-                )
-            };
-
-            let exit_code: i32;
-            let mut final_frame_count: Option<u64>;
-
-            // ── Animated WebP: dedicated decode + encode pipeline ──
-            if is_animated_webp {
-                sink.log("  Animated WebP: using RIFF decode pipeline");
-                let webp_result = crate::webp_decode::transcode_animated_webp(
-                    &item_full_path,
-                    &output_str,
-                    &video_args,
-                    settings.threads,
-                    settings.low_priority,
-                    sink,
-                    batch_control,
-                )
-                .await;
-
-                match webp_result {
-                    Ok(r) if r.was_cancelled => {
-                        if batch_control.should_cancel_all() {
-                            was_cancelled = true;
-                            queue[idx].status = QueueItemStatus::Cancelled;
-                            sink.queue_item_updated(idx, "Cancelled");
-                            break 'outer;
-                        }
-                        queue[idx].status = QueueItemStatus::Cancelled;
-                        sink.queue_item_updated(idx, "Cancelled");
-                        continue;
-                    }
-                    Ok(r) if r.exit_code != 0 => {
-                        let err_msg =
-                            format!("  ERROR: WebP encode failed (exit code {})", r.exit_code);
-                        sink.log(&err_msg);
-                        write_log(&mut log_writer, &err_msg);
-                        if temp_output_file.exists() {
-                            let _ = std::fs::remove_file(&temp_output_file);
-                        }
-                        queue[idx].status = QueueItemStatus::Failed;
-                        sink.queue_item_updated(idx, "Failed");
-                        fail_count += 1;
-                        continue;
-                    }
-                    Ok(r) => {
-                        final_frame_count = Some(r.frame_count);
-                    }
-
-                    Err(e) => {
-                        sink.log(&format!("  ERROR: {e}"));
-                        write_log(&mut log_writer, &format!("  ERROR: {e}"));
-                        queue[idx].status = QueueItemStatus::Failed;
-                        sink.queue_item_updated(idx, "Failed");
-                        fail_count += 1;
-                        continue;
-                    }
-                }
-
-                // Skip the normal ffmpeg path - jump to post-encode size check
-                // (the code after the single-pass/two-pass blocks)
-            } else {
-                // Assemble ffmpeg command
-                let video_arg_refs: Vec<&str> = video_args.iter().map(|s| s.as_str()).collect();
-                let ffmpeg_args = assemble_ffmpeg_args(
-                    &item_full_path,
-                    &video_arg_refs,
-                    file_pix_fmt,
-                    &audio_map_args,
-                    &audio_codec_args,
-                    &output_str,
-                    is_image_source,
-                    settings.threads,
-                    tonemap_filter,
-                );
-
-                let cmd_line = format!("ffmpeg {}", ffmpeg_args.join(" "));
-                sink.batch_command(&cmd_line);
-                let cmd_log = format!("  CMD: {cmd_line}");
-                sink.log(&cmd_log);
-                write_log(&mut log_writer, &cmd_log);
-
-                // Spawn ffmpeg - optionally as a two-pass encode.
-                // Precision mode on low-RAM systems (<8GB) uses two-pass CRF instead
-                // of extended lookahead, since the lookahead would consume too much memory.
-                let precision_two_pass = settings.precision_mode
-                    && is_sw
-                    && is_crf_decision
-                    && precision_needs_two_pass_with_ram(cached_ram_gb);
-                let use_two_pass = precision_two_pass;
-
-                let proc_start = std::time::Instant::now();
-
-                if use_two_pass {
-                    // ── Two-pass VBR (software encoders only) (#5) ──
-                    // TempDir auto-cleans passlog files on drop (including break 'outer).
-                    let passlog_dir = tempfile::Builder::new()
-                        .prefix("histv_2pass_")
-                        .tempdir()
-                        .map_err(|e| format!("Could not create passlog temp dir: {e}"));
-                    let passlog_prefix = match passlog_dir {
-                        Ok(ref d) => d.path().join("passlog").to_string_lossy().to_string(),
-                        Err(ref e) => {
-                            sink.log(&format!("  ERROR: {e}"));
-                            queue[idx].status = QueueItemStatus::Failed;
-                            sink.queue_item_updated(idx, "Failed");
-                            fail_count += 1;
-                            continue;
-                        }
-                    };
-
-                    let fmt = if ext == "mp4" { "mp4" } else { "matroska" };
-
-                    // Pass 1: analysis only - build args fresh from components
-                    let pass1_args = build_two_pass_args(&ffmpeg_args, 1, &passlog_prefix, fmt);
-
-                    let pass1_cmd = format!("ffmpeg {}", pass1_args.join(" "));
-                    sink.batch_command(&pass1_cmd);
-                    write_log(&mut log_writer, &format!("  CMD (pass 1): {pass1_cmd}"));
-
-                    match run_ffmpeg_with_progress(
-                        &pass1_args,
-                        item_duration_secs,
-                        Some((1, 2)),
-                        settings.low_priority,
-                        sink,
-                        batch_control,
-                    )
-                    .await
-                    {
-                        Ok(r) if r.was_cancelled_all => {
-                            sink.log("  Cancelled (batch cancel)");
-                            write_log(&mut log_writer, "  Cancelled (batch cancel)");
-                            queue[idx].status = QueueItemStatus::Cancelled;
-                            sink.queue_item_updated(idx, "Cancelled");
-                            was_cancelled = true;
-
-                            break 'outer;
-                        }
-                        Ok(r) if r.was_cancelled_current => {
-                            sink.log("  Cancelled current file");
-                            write_log(&mut log_writer, "  Cancelled");
-                            queue[idx].status = QueueItemStatus::Cancelled;
-                            sink.queue_item_updated(idx, "Cancelled");
-
-                            continue 'per_file;
-                        }
-                        Ok(r) if r.exit_code != 0 => {
-                            sink.log(&format!(
-                                "  ERROR: Pass 1 failed (exit code {})",
-                                r.exit_code
-                            ));
-                            write_log(&mut log_writer, "  ERROR: Pass 1 failed");
-                            queue[idx].status = QueueItemStatus::Failed;
-                            sink.queue_item_updated(idx, "Failed");
-                            fail_count += 1;
-
-                            continue;
-                        }
-                        Err(e) => {
-                            sink.log(&format!("  ERROR: {e}"));
-                            write_log(&mut log_writer, &format!("  ERROR: {e}"));
-                            queue[idx].status = QueueItemStatus::Failed;
-                            sink.queue_item_updated(idx, "Failed");
-                            fail_count += 1;
-
-                            continue;
-                        }
-                        _ => {} // pass 1 OK
-                    }
-
-                    // Pass 2: actual encode with stats from pass 1
-                    let pass2_args = build_two_pass_args(&ffmpeg_args, 2, &passlog_prefix, fmt);
-
-                    let pass2_cmd = format!("ffmpeg {}", pass2_args.join(" "));
-                    sink.batch_command(&pass2_cmd);
-                    write_log(&mut log_writer, &format!("  CMD (pass 2): {pass2_cmd}"));
-
-                    match run_ffmpeg_with_progress(
-                        &pass2_args,
-                        item_duration_secs,
-                        Some((2, 2)),
-                        settings.low_priority,
-                        sink,
-                        batch_control,
-                    )
-                    .await
-                    {
-                        Ok(r) if r.was_cancelled_all => {
-                            sink.log("  Cancelled (batch cancel)");
-                            write_log(&mut log_writer, "  Cancelled (batch cancel)");
-                            if temp_output_file.exists() {
-                                let _ = std::fs::remove_file(&temp_output_file);
-                            }
-                            queue[idx].status = QueueItemStatus::Cancelled;
-                            sink.queue_item_updated(idx, "Cancelled");
-                            was_cancelled = true;
-
-                            break 'outer;
-                        }
-                        Ok(r) if r.was_cancelled_current => {
-                            sink.log("  Cancelled current file");
-                            write_log(&mut log_writer, "  Cancelled");
-                            if temp_output_file.exists() {
-                                let _ = std::fs::remove_file(&temp_output_file);
-                                sink.log("  Partial output removed");
-                            }
-                            queue[idx].status = QueueItemStatus::Cancelled;
-                            sink.queue_item_updated(idx, "Cancelled");
-
-                            continue;
-                        }
-                        Ok(r) => {
-                            exit_code = r.exit_code;
-                            final_frame_count = Some(r.frame_count);
-                        }
-                        Err(e) => {
-                            sink.log(&format!("  ERROR: {e}"));
-                            write_log(&mut log_writer, &format!("  ERROR: {e}"));
-                            queue[idx].status = QueueItemStatus::Failed;
-                            sink.queue_item_updated(idx, "Failed");
-                            fail_count += 1;
-
-                            continue;
-                        }
-                    }
-                    // passlog_dir dropped here — auto-cleans passlog files
-                } else {
-                    // ── Single-pass encode ──
-                    match run_ffmpeg_with_progress(
-                        &ffmpeg_args,
-                        item_duration_secs,
-                        None,
-                        settings.low_priority,
-                        sink,
-                        batch_control,
-                    )
-                    .await
-                    {
-                        Ok(r) if r.was_cancelled_all => {
-                            sink.log("  Cancelled (batch cancel)");
-                            write_log(&mut log_writer, "  Cancelled (batch cancel)");
-                            if temp_output_file.exists() {
-                                let _ = std::fs::remove_file(&temp_output_file);
-                            }
-                            queue[idx].status = QueueItemStatus::Cancelled;
-                            sink.queue_item_updated(idx, "Cancelled");
-                            was_cancelled = true;
-                            break 'outer;
-                        }
-                        Ok(r) if r.was_cancelled_current => {
-                            sink.log("  Cancelled current file");
-                            write_log(&mut log_writer, "  Cancelled");
-                            if temp_output_file.exists() {
-                                let _ = std::fs::remove_file(&temp_output_file);
-                                sink.log("  Partial output removed");
-                            }
-                            queue[idx].status = QueueItemStatus::Cancelled;
-                            sink.queue_item_updated(idx, "Cancelled");
-                            continue;
-                        }
-                        Ok(r) => {
-                            exit_code = r.exit_code;
-                            final_frame_count = Some(r.frame_count);
-                        }
-                        Err(e) => {
-                            sink.log(&format!("  ERROR: {e}"));
-                            write_log(&mut log_writer, &format!("  ERROR: {e}"));
-                            queue[idx].status = QueueItemStatus::Failed;
-                            sink.queue_item_updated(idx, "Failed");
-                            fail_count += 1;
-                            continue;
-                        }
-                    }
-                }
-
-                let proc_duration = proc_start.elapsed();
-                // Encoder failure fallback (#6 - use run_ffmpeg_with_progress)
-                if exit_code != 0
-                    && proc_duration.as_secs() < 30
-                    && !matches!(decision, EncodeDecision::Copy)
-                    && *file_encoder != sw_fallback
-                {
-                    if !batch_control.hw_fallback_offered() {
-                        batch_control.set_hw_fallback_offered();
-                        sink.log(&format!("  HW encoder failed for {}", item_file_name));
-                        let response = batch_control.fallback_prompt(&item_file_name);
-
-                        if response == "yes" {
-                            sink.log(&format!(
-                                "  Falling back to software encoder ({})...",
-                                sw_fallback
-                            ));
-                            write_log(&mut log_writer, &format!("  Fallback to {}", sw_fallback));
-
-                            if temp_output_file.exists() {
-                                let _ = std::fs::remove_file(&temp_output_file);
-                            }
-
-                            // Rebuild with software encoder
-                            let mut sw_video_args: Vec<String>;
-                            match &decision {
-                                EncodeDecision::Vbr {
-                                    target_bps,
-                                    peak_bps,
-                                } => {
-                                    sw_video_args = vec!["-c:v".into(), sw_fallback.clone()];
-                                    sw_video_args.extend(vbr_flags(
-                                        &sw_fallback,
-                                        &target_bps.to_string(),
-                                        &peak_bps.to_string(),
-                                    ));
-                                }
-                                _ => {
-                                    sw_video_args = vec!["-c:v".into(), sw_fallback.clone()];
-                                    sw_video_args.extend(cqp_flags(&sw_fallback, &qi_str, &qp_str));
-                                }
-                            }
-
-                            // Reuse audio args from the primary encode - inputs haven't changed
-                            let sw_ref: Vec<&str> =
-                                sw_video_args.iter().map(|s| s.as_str()).collect();
-                            let sw_args = assemble_ffmpeg_args(
-                                &item_full_path,
-                                &sw_ref,
-                                file_pix_fmt,
-                                &audio_map_args,
-                                &audio_codec_args,
-                                &output_str,
-                                is_image_source,
-                                settings.threads,
-                                tonemap_filter,
-                            );
-
-                            let sw_cmd = format!("ffmpeg {}", sw_args.join(" "));
-                            sink.batch_command(&sw_cmd);
-                            let sw_cmd_log = format!("  CMD (fallback): {sw_cmd}");
-                            sink.log(&sw_cmd_log);
-                            write_log(&mut log_writer, &sw_cmd_log);
-
-                            // Use shared helper for progress, pause/cancel, low-priority (#6)
-                            match run_ffmpeg_with_progress(
-                                &sw_args,
-                                item_duration_secs,
-                                None,
-                                settings.low_priority,
-                                sink,
-                                batch_control,
-                            )
-                            .await
-                            {
-                                Ok(r) if r.was_cancelled_all => {
-                                    sink.log("  Cancelled (batch cancel during fallback)");
-                                    write_log(
-                                        &mut log_writer,
-                                        "  Cancelled (batch cancel during fallback)",
-                                    );
-                                    if temp_output_file.exists() {
-                                        let _ = std::fs::remove_file(&temp_output_file);
-                                    }
-                                    queue[idx].status = QueueItemStatus::Cancelled;
-                                    sink.queue_item_updated(idx, "Cancelled");
-                                    was_cancelled = true;
-                                    break 'outer;
-                                }
-                                Ok(r) if r.was_cancelled_current => {
-                                    sink.log("  Cancelled current file (during fallback)");
-                                    write_log(&mut log_writer, "  Cancelled (during fallback)");
-                                    if temp_output_file.exists() {
-                                        let _ = std::fs::remove_file(&temp_output_file);
-                                        sink.log("  Partial output removed");
-                                    }
-                                    queue[idx].status = QueueItemStatus::Cancelled;
-                                    sink.queue_item_updated(idx, "Cancelled");
-                                    continue 'per_file;
-                                }
-                                Ok(r) if r.exit_code != 0 => {
-                                    sink.log(
-                                        "  ERROR: Software encoder also failed - stopping batch",
-                                    );
-                                    write_log(
-                                        &mut log_writer,
-                                        "  ERROR: Software encoder also failed",
-                                    );
-                                    if temp_output_file.exists() {
-                                        let _ = std::fs::remove_file(&temp_output_file);
-                                    }
-                                    queue[idx].status = QueueItemStatus::Failed;
-                                    sink.queue_item_updated(idx, "Failed");
-                                    fail_count += 1;
-                                    break 'outer;
-                                }
-                                Err(e) => {
-                                    sink.log(&format!("  ERROR: Could not launch fallback: {e}"));
-                                    write_log(
-                                        &mut log_writer,
-                                        &format!("  ERROR: Fallback launch failed: {e}"),
-                                    );
-                                    queue[idx].status = QueueItemStatus::Failed;
-                                    sink.queue_item_updated(idx, "Failed");
-                                    fail_count += 1;
-                                    break 'outer;
-                                }
-                                Ok(r) => {
-                                    final_frame_count = Some(r.frame_count);
-                                } // fallback encode OK
-                            }
-                        } else {
-                            sink.log("  Stopping batch due to encoder failure");
-                            write_log(&mut log_writer, "  Batch stopped (encoder failure)");
-                            if temp_output_file.exists() {
-                                let _ = std::fs::remove_file(&temp_output_file);
-                            }
-                            queue[idx].status = QueueItemStatus::Failed;
-                            sink.queue_item_updated(idx, "Failed");
-                            fail_count += 1;
-                            break 'outer;
-                        }
-                    }
-                } else if exit_code != 0 {
-                    if batch_control.hw_fallback_offered() && *file_encoder != sw_fallback {
-                        sink.log("  HW encoder failed (fallback already offered for this batch)");
-                        write_log(
-                            &mut log_writer,
-                            "  HW encoder failed (fallback already offered)",
-                        );
-                    }
-                    let err_msg = format!("  ERROR: ffmpeg exited with code {}", exit_code);
-                    sink.log(&err_msg);
-                    write_log(&mut log_writer, &err_msg);
-                    if temp_output_file.exists() {
-                        let _ = std::fs::remove_file(&temp_output_file);
-                        sink.log("  Failed output removed");
-                    }
-                    queue[idx].status = QueueItemStatus::Failed;
-                    sink.queue_item_updated(idx, "Failed");
-                    fail_count += 1;
-                    continue;
-                }
-            }
-
-            // ── Post-encode: DV RPU injection + MP4Box packaging (Tier 1) ──
-            #[cfg(feature = "dovi")]
-            if let Some(ref rpus) = extracted_rpus {
-                if temp_output_file.exists() {
-                    // Stage DV output to a separate temp file so the downstream
-                    // logic (size check, replace rename) works unchanged.
-                    let dv_staging = temp_output_file.with_extension("histv-dv.mp4");
-
-                    match dovi_pipeline::inject_and_package(
-                        &temp_output_file,
-                        &temp_output_file, // audio source: use encoded audio, not original
-                        &dv_staging,
-                        rpus,
-                        sink,
-                    )
-                    .await
-                    {
-                        Ok(result) if result.success => {
-                            sink.log(&format!("  {}", result.message));
-                            write_log(&mut log_writer, &format!("  {}", result.message));
-                            // Swap: remove the non-DV encode, put the DV MP4 in its place
-                            let _ = std::fs::remove_file(&temp_output_file);
-                            if let Err(e) = std::fs::rename(&dv_staging, &temp_output_file) {
-                                sink.log(&format!("  WARNING: Could not rename DV output: {e}"));
-                                // Try copy as fallback (cross-filesystem)
-                                let _ = std::fs::copy(&dv_staging, &temp_output_file);
-                                let _ = std::fs::remove_file(&dv_staging);
-                            }
-                        }
-                        Ok(result) => {
-                            // MP4Box failed — fall through with original encode (HDR10 fallback)
-                            sink.log(&format!("  {}", result.message));
-                            write_log(&mut log_writer, &format!("  {}", result.message));
-                            let _ = std::fs::remove_file(&dv_staging);
-                        }
-                        Err(e) => {
-                            sink.log(&format!(
-                                "  DV injection failed: {e} - output has HDR10 only"
-                            ));
-                            write_log(&mut log_writer, &format!("  DV injection failed: {e}"));
-                            let _ = std::fs::remove_file(&dv_staging);
-                        }
-                    }
-                }
-            }
-
-            // ── Post-encode: HDR10+ metadata injection (Tier 2) ──────
-            #[cfg(feature = "dovi")]
-            if let Some(ref meta) = extracted_hdr10plus {
-                if temp_output_file.exists() {
-                    let injected_output =
-                        temp_output_file.with_extension(format!("hdr10p.{}", ext));
-
-                    match hdr10plus_pipeline::inject_hdr10plus(
-                        &temp_output_file,
-                        &injected_output,
-                        meta,
-                        sink,
-                    )
-                    .await
-                    {
-                        Ok(result) if result.success => {
-                            sink.log(&format!("  {}", result.message));
-                            write_log(&mut log_writer, &format!("  {}", result.message));
-                            // Replace the encoded file with the injected version
-                            if injected_output.exists() {
-                                let _ = std::fs::remove_file(&temp_output_file);
-                                if let Err(e) = std::fs::rename(&injected_output, &temp_output_file)
-                                {
-                                    sink.log(&format!(
-                                        "  WARNING: Could not rename injected file: {e}"
-                                    ));
-                                }
-                            }
-                        }
-                        Ok(result) => {
-                            sink.log(&format!("  {}", result.message));
-                            write_log(&mut log_writer, &format!("  {}", result.message));
-                            let _ = std::fs::remove_file(&injected_output);
-                        }
-                        Err(e) => {
-                            sink.log(&format!(
-                                "  HDR10+ injection failed: {e} - output has static HDR10 only"
-                            ));
-                            write_log(&mut log_writer, &format!("  HDR10+ injection failed: {e}"));
-                            let _ = std::fs::remove_file(&injected_output);
-                        }
-                    }
-                }
-            }
-
-            // Post-encode size check
-            // In replace mode, ffmpeg wrote to temp_output_file; in other modes temp == final.
-            if temp_output_file.exists() {
-                let src_size = std::fs::metadata(&item_full_path)
-                    .map(|m| m.len())
-                    .unwrap_or(0);
-                let dst_size = std::fs::metadata(&temp_output_file)
-                    .map(|m| m.len())
-                    .unwrap_or(0);
-
-                if dst_size > src_size && src_size > 0 && !is_image_source {
-                    sink.log(&format!(
-                    "  WARNING: Output ({:.1}MB) larger than source ({:.1}MB) - remuxing source instead",
-                    dst_size as f64 / 1_000_000.0, src_size as f64 / 1_000_000.0,
-                ));
-                    write_log(&mut log_writer, "  Output larger than source - remuxing");
-                    let _ = std::fs::remove_file(&temp_output_file);
-
-                    let remux_output = ffbin::ffmpeg_command()
-                        .args([
-                            "-y",
-                            "-i",
-                            &item_full_path,
-                            "-map",
-                            "0",
-                            "-c",
-                            "copy",
-                            &output_str,
-                        ])
-                        .stdout(std::process::Stdio::null())
-                        .stderr(std::process::Stdio::piped())
-                        .spawn()
-                        .map(|child| child.wait_with_output())
-                        .ok();
-                    let remux_status = match remux_output {
-                        Some(fut) => fut.await.ok(),
-                        None => None,
-                    };
-
-                    match remux_status {
-                        Some(ref o) if o.status.success() => {
-                            sink.log(&format!(
-                                "  Remuxed source to {} → {}",
-                                ext.to_uppercase(),
-                                output_str
-                            ));
-                            write_log(
-                                &mut log_writer,
-                                &format!("  Remuxed to {}", ext.to_uppercase()),
-                            );
-                        }
-                        _ => {
-                            if let Some(ref o) = remux_status {
-                                let stderr = String::from_utf8_lossy(&o.stderr);
-                                sink.log(&format!("  Remux stderr: {stderr}"));
-                                write_log(&mut log_writer, &format!("  Remux stderr: {stderr}"));
-                            }
-                            sink.log("  ERROR: Remux failed");
-                            write_log(&mut log_writer, "  ERROR: Remux failed");
-                            if temp_output_file.exists() {
-                                let _ = std::fs::remove_file(&temp_output_file);
-                            }
-                            queue[idx].status = QueueItemStatus::Failed;
-                            sink.queue_item_updated(idx, "Failed");
-                            fail_count += 1;
-                            continue;
-                        }
-                    }
-                } else {
-                    sink.log(&format!(
-                        "  Done → {} ({:.1}MB from {:.1}MB)",
-                        final_output_str,
-                        dst_size as f64 / 1_000_000.0,
-                        src_size as f64 / 1_000_000.0,
-                    ));
-                    write_log(
-                        &mut log_writer,
-                        &format!(
-                            "  Done: {:.1}MB from {:.1}MB",
-                            dst_size as f64 / 1_000_000.0,
-                            src_size as f64 / 1_000_000.0,
-                        ),
-                    );
-                }
-
-                // Patch stale MKV stream statistics tags with the actual values.
-                // Only needed for MKV encodes (not copies, not MP4). Source muxers
-                // write BPS/NUMBER_OF_BYTES/DURATION tags that ffmpeg copies
-                // verbatim; after re-encoding these are wrong and mislead
-                // subsequent probes.
-                if ext == "mkv" && !matches!(decision, EncodeDecision::Copy) {
-                    let audio_total_bps: u64 = queue[idx]
-                        .audio_streams
-                        .iter()
-                        .map(|s| s.bitrate_kbps as u64 * 1000)
-                        .sum();
-
-                    let frames = final_frame_count.filter(|&f| f > 0);
-
-                    match crate::mkv_tags::lightweight_repair(
-                        &temp_output_file,
-                        dst_size,
-                        item_duration_secs,
-                        audio_total_bps,
-                        frames,
-                    ) {
-                        Ok((n, bps)) if n > 0 => {
-                            let mbps = bps as f64 / 1_000_000.0;
-                            sink.log(&format!(
-                                "  Updated {} MKV tag{} (video: {:.2}Mbps)",
-                                n,
-                                if n == 1 { "" } else { "s" },
-                                mbps
-                            ));
-                        }
-                        Ok(_) => {
-                            sink.log("  No MKV statistics tags to update");
-                        }
-                        Err(e) => {
-                            sink.log(&format!("  WARNING: Could not update MKV tags: {e}"));
-                        }
-                    }
-                }
-
-                // Replace mode: delete source, rename temp to final path
-                if is_replace_mode && temp_output_file.exists() {
-                    // Delete the original source file
-                    if let Err(e) = std::fs::remove_file(&item_full_path) {
-                        let warn =
-                            format!("  WARNING: Could not delete source for replacement: {e}");
-                        sink.log(&warn);
-                        write_log(&mut log_writer, &warn);
-                        // Don't fail - the encode succeeded, we just can't replace
-                    }
-                    // Rename temp to final
-                    if temp_output_file != output_file {
-                        if let Err(e) = std::fs::rename(&temp_output_file, &output_file) {
-                            let warn =
-                                format!("  WARNING: Could not rename temp to final path: {e}");
-                            sink.log(&warn);
-                            write_log(&mut log_writer, &warn);
-                        } else {
-                            let msg = format!("  Replaced source → {}", final_output_str);
-                            sink.log(&msg);
-                            write_log(&mut log_writer, &msg);
-                        }
-                    }
-                } else if settings.delete_source && temp_output_file.exists() {
-                    // Normal delete-source mode
-                    match std::fs::remove_file(&item_full_path) {
-                        Ok(_) => {
-                            sink.log("  Source file deleted");
-                            write_log(&mut log_writer, "  Source deleted");
-                        }
-                        Err(e) => {
-                            let warn = format!("  WARNING: Could not delete source: {e}");
-                            sink.log(&warn);
-                            write_log(&mut log_writer, &warn);
-                        }
-                    }
-                }
-
-                queue[idx].status = QueueItemStatus::Done;
-                sink.queue_item_updated(idx, "Done");
-                done_count += 1;
-            } else {
-                sink.log("  ERROR: Output file not found after encode");
-                write_log(&mut log_writer, "  ERROR: Output file not found");
-                queue[idx].status = QueueItemStatus::Failed;
-                sink.queue_item_updated(idx, "Failed");
-                fail_count += 1;
             }
         } // end per-file loop
 
@@ -2079,7 +2309,7 @@ pub async fn run_encode_loop(
                 let remote = std::path::Path::new(&original_path);
                 let remote_dir = remote.parent().unwrap_or(std::path::Path::new("."));
                 let base_name = remote.file_stem().unwrap_or_default().to_string_lossy();
-                let ext = &settings.output_container;
+                let ext = resolve_container(&original_path, &settings.output_container, false);
                 let is_replace = settings.output_mode == "replace";
 
                 let (local_output, final_remote) = if is_replace {
@@ -2226,6 +2456,12 @@ pub async fn run_encode_loop(
 
     sink.batch_finished(done_count, fail_count, skip_count, &dur_string);
 
+    // ── Stderr log cleanup ──
+    // Drop the shared handle so the file is fully flushed/closed.
+    drop(batch_stderr_log);
+    // Delete if empty, and enforce the 10-file cap.
+    cleanup_stderr_logs(output_dir, stderr_log_filename.as_deref(), 10);
+
     (done_count, fail_count, skip_count, was_cancelled)
 }
 
@@ -2293,11 +2529,17 @@ fn build_two_pass_args(
 /// Spawn ffmpeg with the given args, stream stderr for progress, handle
 /// pause/cancel, and return the result. Extracted to avoid duplicating the
 /// poll loop for two-pass encoding and software fallback.
+///
+/// `stderr_log` is an optional shared batch log file. When provided, all
+/// ffmpeg stderr output is appended there. `stderr_label` is written into
+/// the separator header (typically the filename being encoded).
 async fn run_ffmpeg_with_progress(
     args: &[String],
     file_duration: f64,
     pass: Option<(u8, u8)>,
     low_priority: bool,
+    stderr_log: Option<SharedStderrLog>,
+    stderr_label: &str,
     sink: &dyn EventSink,
     batch_control: &dyn BatchControl,
 ) -> Result<FfmpegRunResult, String> {
@@ -2338,11 +2580,10 @@ async fn run_ffmpeg_with_progress(
 
     // Stream stderr for progress using a blocking thread, with log capture
     let progress = FfmpegProgress::new();
-    let stderr_log = create_stderr_log("encode");
     let stderr_thread = child
         .stderr
         .take()
-        .map(|stderr| spawn_stderr_reader(stderr, &progress, stderr_log));
+        .map(|stderr| spawn_stderr_reader(stderr, &progress, stderr_log, stderr_label));
 
     // Poll for cancellation/pause while waiting for ffmpeg, and emit progress
     let mut last_progress_emit = std::time::Instant::now() - std::time::Duration::from_millis(500);
@@ -2525,17 +2766,17 @@ pub async fn probe_crf_viability(
     pix_fmt: &str,
     threads: u32,
     low_priority: bool,
+    stderr_log: Option<SharedStderrLog>,
     sink: &dyn EventSink,
     batch_control: &dyn BatchControl,
 ) -> Option<f64> {
-    // Skip probing for files under 2 minutes - not worth the overhead
-    if duration_secs < 120.0 {
+    if duration_secs < MIN_PROBE_DURATION_SECS {
         sink.log("  Precision probe: file too short, skipping viability check");
         return None;
     }
 
-    let sample_duration = 10.0;
-    let seek_points = [0.25, 0.50, 0.75];
+    let sample_duration = PROBE_SAMPLE_DURATION_SECS;
+    let seek_points = PROBE_SEEK_POINTS;
     let mut total_bits: f64 = 0.0;
     let mut total_sample_secs: f64 = 0.0;
 
@@ -2598,6 +2839,8 @@ pub async fn probe_crf_viability(
             sample_duration,
             Some((sample_num as u8, seek_points.len() as u8)),
             low_priority,
+            stderr_log.clone(),
+            &format!("probe_{}", sample_num),
             sink,
             batch_control,
         )
@@ -2780,7 +3023,8 @@ fn build_audio_args_from_probe(
     let mut output_idx: u32 = 0;
 
     for stream in audio_streams {
-        // Unknown codecs can't be decoded or muxed - skip entirely
+        // Unknown codecs can't be decoded or muxed - skip entirely.
+        // Do NOT increment output_idx for skipped streams.
         if stream.codec == "unknown" {
             sink.log(&format!(
                 "  WARNING: Audio {} has an unrecognised codec and will be excluded from the output",
@@ -2789,19 +3033,17 @@ fn build_audio_args_from_probe(
             continue;
         }
 
-        map_args.extend(vec!["-map".into(), format!("0:a:{}", stream.index)]);
+        map_args.extend(["-map".into(), format!("0:a:{}", stream.index)]);
 
         match strategy {
             AudioStrategy::CopyCapped { cap_kbps } => {
                 if stream.bitrate_kbps <= *cap_kbps {
-                    // Below cap - copy regardless of codec
-                    codec_args.extend(vec![format!("-c:a:{}", output_idx), "copy".into()]);
+                    codec_args.extend([format!("-c:a:{output_idx}"), "copy".into()]);
                     sink.log(&format!(
                         "  Audio {} : {} @ {}kbps - copying",
                         stream.index, stream.codec, stream.bitrate_kbps
                     ));
                 } else {
-                    // Above cap - re-encode
                     let (target_codec, target_br) = if has_ffmpeg_encoder(&stream.codec) {
                         let (enc_name, max_kbps) = ffmpeg_encoder_for_codec(&stream.codec);
                         let br = match max_kbps {
@@ -2816,11 +3058,11 @@ fn build_audio_args_from_probe(
                         ));
                         ("eac3".to_string(), *cap_kbps)
                     };
-                    codec_args.extend(vec![
-                        format!("-c:a:{}", output_idx),
+                    codec_args.extend([
+                        format!("-c:a:{output_idx}"),
                         target_codec.clone(),
-                        format!("-b:a:{}", output_idx),
-                        format!("{}k", target_br),
+                        format!("-b:a:{output_idx}"),
+                        format!("{target_br}k"),
                     ]);
                     sink.log(&format!(
                         "  Audio {} : {} @ {}kbps - encoding to {} @ {}kbps",
@@ -2830,20 +3072,18 @@ fn build_audio_args_from_probe(
             }
             AudioStrategy::CompatCapped { cap_kbps } => {
                 if stream.codec == "ac3" && stream.bitrate_kbps <= *cap_kbps {
-                    // Already AC3 and below cap - copy
-                    codec_args.extend(vec![format!("-c:a:{}", output_idx), "copy".into()]);
+                    codec_args.extend([format!("-c:a:{output_idx}"), "copy".into()]);
                     sink.log(&format!(
                         "  Audio {} : AC3 @ {}kbps - copying",
                         stream.index, stream.bitrate_kbps
                     ));
                 } else {
-                    // Re-encode to AC3
                     let target_br = stream.bitrate_kbps.min(*cap_kbps);
-                    codec_args.extend(vec![
-                        format!("-c:a:{}", output_idx),
+                    codec_args.extend([
+                        format!("-c:a:{output_idx}"),
                         "ac3".to_string(),
-                        format!("-b:a:{}", output_idx),
-                        format!("{}k", target_br),
+                        format!("-b:a:{output_idx}"),
+                        format!("{target_br}k"),
                     ]);
                     sink.log(&format!(
                         "  Audio {} : {} @ {}kbps - encoding to AC3 @ {}kbps",
@@ -2853,6 +3093,7 @@ fn build_audio_args_from_probe(
             }
         }
 
+        // Only increment after a stream is actually mapped (not skipped)
         output_idx += 1;
     }
 
@@ -2950,50 +3191,121 @@ fn tokio_stderr_to_std(tokio_stderr: tokio::process::ChildStderr) -> std::proces
     }
 }
 
-/// Create a timestamped ffmpeg stderr log file in the target directory.
-/// Returns the open file handle, or None if the directory doesn't exist or
-/// the file can't be created.
-pub fn create_stderr_log(label: &str) -> Option<std::fs::File> {
-    // Resolve target dir: CARGO_TARGET_DIR, or fall back to ./target
-    let target_dir = std::env::var("CARGO_TARGET_DIR")
-        .map(std::path::PathBuf::from)
-        .unwrap_or_else(|_| std::path::PathBuf::from("target"));
-    let log_dir = target_dir.join("ffmpeg_logs");
+/// Shared type for the per-batch stderr log that multiple stderr reader
+/// threads can write to concurrently.
+pub type SharedStderrLog = Arc<std::sync::Mutex<std::io::BufWriter<std::fs::File>>>;
+
+/// Open (or create) a single timestamped ffmpeg stderr log file in
+/// `output_dir/ffmpeg_logs/`. Intended to be called once per batch and
+/// shared across all ffmpeg invocations in that batch via `Arc<Mutex<…>>`.
+///
+/// Returns `None` if the directory can't be created or the file can't be
+/// opened.
+pub fn open_stderr_log(output_dir: &std::path::Path) -> Option<SharedStderrLog> {
+    let log_dir = output_dir.join("ffmpeg_logs");
     let _ = std::fs::create_dir_all(&log_dir);
     let filename = format!(
-        "ffmpeg_stderr_{}_{}.log",
-        label,
+        "ffmpeg_stderr_{}.log",
         chrono::Local::now().format("%Y%m%d_%H%M%S")
     );
-    std::fs::File::create(log_dir.join(filename)).ok()
+    let file = std::fs::File::create(log_dir.join(filename)).ok()?;
+    Some(Arc::new(std::sync::Mutex::new(std::io::BufWriter::new(
+        file,
+    ))))
+}
+
+/// Clean up the `ffmpeg_logs` directory under `output_dir`:
+///   1. Delete the file at `log_path` if it is empty (no stderr was captured).
+///   2. Keep at most `max_logs` log files — oldest are deleted first.
+pub fn cleanup_stderr_logs(
+    output_dir: &std::path::Path,
+    log_path: Option<&std::path::Path>,
+    max_logs: usize,
+) {
+    // Remove the file if it is empty
+    if let Some(p) = log_path {
+        if let Ok(meta) = std::fs::metadata(p) {
+            if meta.len() == 0 {
+                let _ = std::fs::remove_file(p);
+            }
+        }
+    }
+
+    let log_dir = output_dir.join("ffmpeg_logs");
+    if !log_dir.is_dir() {
+        return;
+    }
+
+    // Collect .log files sorted oldest-first by modified time
+    let mut entries: Vec<(std::time::SystemTime, std::path::PathBuf)> = std::fs::read_dir(&log_dir)
+        .into_iter()
+        .flatten()
+        .filter_map(|e| e.ok())
+        .filter(|e| {
+            e.path()
+                .extension()
+                .map(|ext| ext == "log")
+                .unwrap_or(false)
+        })
+        .filter_map(|e| {
+            let modified = e.metadata().ok()?.modified().ok()?;
+            Some((modified, e.path()))
+        })
+        .collect();
+    entries.sort_by_key(|(t, _)| *t);
+
+    // Delete oldest until at most max_logs remain
+    while entries.len() > max_logs {
+        let (_, path) = entries.remove(0);
+        let _ = std::fs::remove_file(path);
+    }
 }
 
 /// Spawn a blocking thread that reads ffmpeg stderr, updates the
-/// progress counters, and writes all output to a log file. Returns the
-/// thread join handle.
+/// progress counters, and appends all output to the shared batch log
+/// file. A separator header is written before the first byte so that
+/// each invocation's output is distinguishable in the combined log.
+///
+/// `label` is included in the separator (typically the filename being
+/// encoded).
 pub fn spawn_stderr_reader(
     tokio_stderr: tokio::process::ChildStderr,
     progress: &FfmpegProgress,
-    stderr_log: Option<std::fs::File>,
+    stderr_log: Option<SharedStderrLog>,
+    label: &str,
 ) -> std::thread::JoinHandle<()> {
     let std_stderr = tokio_stderr_to_std(tokio_stderr);
     let progress_secs = Arc::clone(&progress.progress_secs);
     let frames = Arc::clone(&progress.frame_count);
+    let label = label.to_owned();
 
     std::thread::spawn(move || {
         use std::io::{Read, Write};
         let mut reader = std::io::BufReader::new(std_stderr);
-        let mut log_writer = stderr_log.map(std::io::BufWriter::new);
         let mut buf = [0u8; 4096];
         let mut line_buf = Vec::<u8>::with_capacity(256);
+
+        // Write separator header into shared log
+        if let Some(ref log) = stderr_log {
+            if let Ok(mut w) = log.lock() {
+                let _ = writeln!(
+                    w,
+                    "\n=== ffmpeg stderr [{}] [{}] ===",
+                    label,
+                    chrono::Local::now().format("%Y-%m-%d %H:%M:%S"),
+                );
+            }
+        }
 
         loop {
             match reader.read(&mut buf) {
                 Ok(0) => break,
                 Ok(n) => {
-                    // Write raw bytes to log file
-                    if let Some(ref mut w) = log_writer {
-                        let _ = w.write_all(&buf[..n]);
+                    // Write raw bytes to shared log file
+                    if let Some(ref log) = stderr_log {
+                        if let Ok(mut w) = log.lock() {
+                            let _ = w.write_all(&buf[..n]);
+                        }
                     }
                     for &byte in &buf[..n] {
                         if byte == b'\r' || byte == b'\n' {
@@ -3039,8 +3351,10 @@ pub fn spawn_stderr_reader(
             }
         }
         // Flush on exit
-        if let Some(ref mut w) = log_writer {
-            let _ = w.flush();
+        if let Some(ref log) = stderr_log {
+            if let Ok(mut w) = log.lock() {
+                let _ = w.flush();
+            }
         }
     })
 }

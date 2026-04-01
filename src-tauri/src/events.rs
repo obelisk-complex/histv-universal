@@ -32,6 +32,62 @@ pub trait EventSink: Send + Sync {
     fn wave_time_estimate(&self, _elapsed_secs: f64, _remaining_secs: f64) {}
 }
 
+/// Blanket impl: `Arc<T>` delegates to the inner `T`, allowing shared
+/// ownership of sinks across async tasks without trait-object indirection.
+impl<T: EventSink> EventSink for std::sync::Arc<T> {
+    fn log(&self, message: &str) {
+        (**self).log(message)
+    }
+    fn file_progress(&self, p: f64, t: f64, d: f64, pass: Option<(u8, u8)>) {
+        (**self).file_progress(p, t, d, pass)
+    }
+    fn batch_progress(&self, current: u32, total: usize) {
+        (**self).batch_progress(current, total)
+    }
+    fn batch_status(&self, message: &str) {
+        (**self).batch_status(message)
+    }
+    fn queue_item_updated(&self, index: usize, status: &str) {
+        (**self).queue_item_updated(index, status)
+    }
+    fn queue_item_probed(&self, index: usize) {
+        (**self).queue_item_probed(index)
+    }
+    fn batch_started(&self) {
+        (**self).batch_started()
+    }
+    fn batch_finished(&self, d: u32, f: u32, s: u32, dur: &str) {
+        (**self).batch_finished(d, f, s, dur)
+    }
+    fn ffmpeg_stderr(&self, line: &str) {
+        (**self).ffmpeg_stderr(line)
+    }
+    fn batch_command(&self, cmd: &str) {
+        (**self).batch_command(cmd)
+    }
+    fn ffmpeg_download_progress(&self, message: &str) {
+        (**self).ffmpeg_download_progress(message)
+    }
+    fn toast(&self, message: &str) {
+        (**self).toast(message)
+    }
+    fn post_batch(&self, action: &str, countdown: u32) {
+        (**self).post_batch(action, countdown)
+    }
+    fn wave_progress(&self, w: u32, tw: u32, f: u32, ws: u32) {
+        (**self).wave_progress(w, tw, f, ws)
+    }
+    fn wave_status(&self, message: &str) {
+        (**self).wave_status(message)
+    }
+    fn batch_time_estimate(&self, e: f64, r: f64) {
+        (**self).batch_time_estimate(e, r)
+    }
+    fn wave_time_estimate(&self, e: f64, r: f64) {
+        (**self).wave_time_estimate(e, r)
+    }
+}
+
 /// Bidirectional batch control interface for cancellation, overwrite policy,
 /// and HW fallback policy. Unlike `EventSink` (one-way output), this trait
 /// handles interactive decisions and mutable state.

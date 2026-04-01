@@ -14,7 +14,6 @@ use dolby_vision::rpu::dovi_rpu::DoviRpu;
 use dolby_vision::rpu::ConversionMode;
 
 use std::path::{Path, PathBuf};
-use tempfile::TempDir;
 
 use crate::events::EventSink;
 use crate::ffmpeg as ffbin;
@@ -52,41 +51,11 @@ pub async fn extract_rpus(
     dovi_bl_compat_id: Option<u8>,
     sink: &dyn EventSink,
 ) -> Result<ExtractedRpus, String> {
-    let temp_dir = make_tempdir("histv_dovi_", source_path.parent())?;
+    let temp_dir = hevc_utils::make_tempdir("histv_dovi_", source_path.parent())?;
     let raw_hevc = temp_dir.path().join("source.h265");
 
     sink.log("  DV: Extracting HEVC bitstream from source...");
-    let demux_output = ffbin::ffmpeg_command()
-        .args([
-            "-y",
-            "-i",
-            &source_path.to_string_lossy(),
-            "-c:v",
-            "copy",
-            "-bsf:v",
-            "hevc_mp4toannexb",
-            "-an",
-            "-sn",
-            "-f",
-            "hevc",
-            &raw_hevc.to_string_lossy(),
-        ])
-        .stdout(std::process::Stdio::null())
-        .stderr(std::process::Stdio::piped())
-        .spawn()
-        .map_err(|e| format!("Failed to launch ffmpeg for demux: {e}"))?
-        .wait_with_output()
-        .await
-        .map_err(|e| format!("Failed to wait for ffmpeg demux: {e}"))?;
-
-    if !demux_output.status.success() {
-        let stderr = String::from_utf8_lossy(&demux_output.stderr);
-        sink.log(&format!("  DV demux stderr: {stderr}"));
-        return Err(format!(
-            "ffmpeg demux to raw HEVC failed (exit {})",
-            demux_output.status
-        ));
-    }
+    hevc_utils::demux_to_annexb(source_path, &raw_hevc, sink, "DV").await?;
 
     // Stream through the bitstream, collecting only RPU NAL units
     sink.log("  DV: Parsing RPU data from bitstream (streaming)...");
@@ -198,43 +167,12 @@ pub async fn inject_and_package(
         }
     }
 
-    let temp_dir = make_tempdir("histv_dovi_inject_", Some(near))?;
+    let temp_dir = hevc_utils::make_tempdir("histv_dovi_inject_", Some(near))?;
 
     // Step 1: Demux encoded output to raw HEVC
     let encoded_hevc = temp_dir.path().join("encoded.h265");
     sink.log("  DV: Extracting encoded HEVC bitstream...");
-
-    let demux_output = ffbin::ffmpeg_command()
-        .args([
-            "-y",
-            "-i",
-            &encoded_path.to_string_lossy(),
-            "-c:v",
-            "copy",
-            "-bsf:v",
-            "hevc_mp4toannexb",
-            "-an",
-            "-sn",
-            "-f",
-            "hevc",
-            &encoded_hevc.to_string_lossy(),
-        ])
-        .stdout(std::process::Stdio::null())
-        .stderr(std::process::Stdio::piped())
-        .spawn()
-        .map_err(|e| format!("Failed to demux encoded output: {e}"))?
-        .wait_with_output()
-        .await
-        .map_err(|e| format!("Failed to wait for ffmpeg demux: {e}"))?;
-
-    if !demux_output.status.success() {
-        let stderr = String::from_utf8_lossy(&demux_output.stderr);
-        sink.log(&format!("  DV inject demux stderr: {stderr}"));
-        return Err(format!(
-            "Could not demux encoded output to raw HEVC (exit {})",
-            demux_output.status
-        ));
-    }
+    hevc_utils::demux_to_annexb(encoded_path, &encoded_hevc, sink, "DV inject").await?;
 
     // Step 2: Stream through encoded bitstream, inject RPU NALUs
     //
@@ -273,17 +211,19 @@ pub async fn inject_and_package(
         return Err(format!("RPU injection failed: {e}"));
     }
 
-    // Inject trailing RPU if the stream ends mid-frame
+    // Inject any remaining RPUs if the stream ends mid-frame
     if in_frame && rpu_index < rpus_ref.len() {
         use std::io::Write;
         let mut f = std::fs::OpenOptions::new()
             .append(true)
             .open(&injected_hevc)
             .map_err(|e| format!("Could not append trailing RPU: {e}"))?;
-        f.write_all(&hevc_utils::START_CODE)
-            .and_then(|_| f.write_all(&rpus_ref[rpu_index]))
-            .map_err(|e| format!("Write error: {e}"))?;
-        rpu_index += 1;
+        while rpu_index < rpus_ref.len() {
+            f.write_all(&hevc_utils::START_CODE)
+                .and_then(|_| f.write_all(&rpus_ref[rpu_index]))
+                .map_err(|e| format!("Write error: {e}"))?;
+            rpu_index += 1;
+        }
     }
 
     // Delete the large intermediate encoded.h265 now that injection is done
@@ -422,23 +362,6 @@ pub async fn inject_and_package(
         success: true,
         message: format!("Dolby Vision preserved ({})", dv_profile_str),
     })
-}
-
-// ── Helpers ───────────────────────────────────────────────────────
-
-/// Create a secure temp directory. Prefers `near` (same partition as
-/// source/output) to avoid flatpak tmpfs space limits and cross-device copies.
-/// Falls back to the system temp directory if `near` fails.
-fn make_tempdir(prefix: &str, near: Option<&Path>) -> Result<TempDir, String> {
-    if let Some(dir) = near {
-        if let Ok(td) = tempfile::Builder::new().prefix(prefix).tempdir_in(dir) {
-            return Ok(td);
-        }
-    }
-    tempfile::Builder::new()
-        .prefix(prefix)
-        .tempdir()
-        .map_err(|e| format!("Could not create temp dir: {e}"))
 }
 
 // ── Stubs for non-dovi builds ─────────────────────────────────────
