@@ -22,7 +22,7 @@ jobs:
           ref: ${{ github.event.inputs.ref || github.ref }}
 
       - name: Install Rust stable
-        uses: dtolnay/rust-toolchain@stable
+        uses: dtolnay/rust-toolchain@1.93.1
         with:
           targets: aarch64-apple-darwin
 
