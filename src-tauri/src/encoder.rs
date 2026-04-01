@@ -1,6 +1,8 @@
+#[cfg(feature = "dovi")]
 use crate::dovi_pipeline;
 use crate::events::{BatchControl, EventSink};
 use crate::ffmpeg as ffbin;
+#[cfg(feature = "dovi")]
 use crate::hdr10plus_pipeline;
 use crate::queue::{QueueItem, QueueItemStatus};
 use crate::staging::{StagingContext, WaveItem};
@@ -1115,6 +1117,7 @@ pub async fn run_encode_loop(
             // where the original bitstream (and its DV/HDR10+ data) is preserved.
             let is_copy = matches!(decision, EncodeDecision::Copy);
 
+            #[cfg(feature = "dovi")]
             let extracted_rpus = if is_dovi_tier1 && !is_copy {
                 let profile = item_dovi_profile.unwrap();
                 sink.log(&format!(
@@ -1141,7 +1144,10 @@ pub async fn run_encode_loop(
             } else {
                 None
             };
+            #[cfg(not(feature = "dovi"))]
+            let extracted_rpus: Option<()> = None;
 
+            #[cfg(feature = "dovi")]
             let extracted_hdr10plus = if is_hdr10plus_tier2 && !is_copy {
                 sink.log("  HDR10+ detected - extracting dynamic metadata for preservation");
                 match hdr10plus_pipeline::extract_hdr10plus(
@@ -1162,6 +1168,8 @@ pub async fn run_encode_loop(
             } else {
                 None
             };
+            #[cfg(not(feature = "dovi"))]
+            let extracted_hdr10plus: Option<()> = None;
 
             // Build video args from the decision
             let mut video_args: Vec<String> = if matches!(decision, EncodeDecision::Copy) {
@@ -1798,6 +1806,7 @@ pub async fn run_encode_loop(
             }
 
             // ── Post-encode: DV RPU injection + MP4Box packaging (Tier 1) ──
+            #[cfg(feature = "dovi")]
             if let Some(ref rpus) = extracted_rpus {
                 if temp_output_file.exists() {
                     // Stage DV output to a separate temp file so the downstream
@@ -1843,6 +1852,7 @@ pub async fn run_encode_loop(
             }
 
             // ── Post-encode: HDR10+ metadata injection (Tier 2) ──────
+            #[cfg(feature = "dovi")]
             if let Some(ref meta) = extracted_hdr10plus {
                 if temp_output_file.exists() {
                     let injected_output =
@@ -1904,7 +1914,7 @@ pub async fn run_encode_loop(
                     write_log(&mut log_writer, "  Output larger than source - remuxing");
                     let _ = std::fs::remove_file(&temp_output_file);
 
-                    let remux_status = ffbin::ffmpeg_command()
+                    let remux_output = ffbin::ffmpeg_command()
                         .args([
                             "-y",
                             "-i",
@@ -1916,12 +1926,17 @@ pub async fn run_encode_loop(
                             &output_str,
                         ])
                         .stdout(std::process::Stdio::null())
-                        .stderr(std::process::Stdio::null())
-                        .status()
-                        .await;
+                        .stderr(std::process::Stdio::piped())
+                        .spawn()
+                        .map(|child| child.wait_with_output())
+                        .ok();
+                    let remux_status = match remux_output {
+                        Some(fut) => fut.await.ok(),
+                        None => None,
+                    };
 
                     match remux_status {
-                        Ok(s) if s.success() => {
+                        Some(ref o) if o.status.success() => {
                             sink.log(&format!(
                                 "  Remuxed source to {} → {}",
                                 ext.to_uppercase(),
@@ -1933,6 +1948,11 @@ pub async fn run_encode_loop(
                             );
                         }
                         _ => {
+                            if let Some(ref o) = remux_status {
+                                let stderr = String::from_utf8_lossy(&o.stderr);
+                                sink.log(&format!("  Remux stderr: {stderr}"));
+                                write_log(&mut log_writer, &format!("  Remux stderr: {stderr}"));
+                            }
                             sink.log("  ERROR: Remux failed");
                             write_log(&mut log_writer, "  ERROR: Remux failed");
                             if temp_output_file.exists() {
@@ -2316,12 +2336,13 @@ async fn run_ffmpeg_with_progress(
 
     sink.log(&format!("  ffmpeg PID: {}", child.id().unwrap_or(0)));
 
-    // Stream stderr for progress using a blocking thread
+    // Stream stderr for progress using a blocking thread, with log capture
     let progress = FfmpegProgress::new();
+    let stderr_log = create_stderr_log("encode");
     let stderr_thread = child
         .stderr
         .take()
-        .map(|stderr| spawn_stderr_reader(stderr, &progress));
+        .map(|stderr| spawn_stderr_reader(stderr, &progress, stderr_log));
 
     // Poll for cancellation/pause while waiting for ffmpeg, and emit progress
     let mut last_progress_emit = std::time::Instant::now() - std::time::Duration::from_millis(500);
@@ -2929,19 +2950,40 @@ fn tokio_stderr_to_std(tokio_stderr: tokio::process::ChildStderr) -> std::proces
     }
 }
 
-/// Spawn a blocking thread that reads ffmpeg stderr and updates the
-/// progress counters. Returns the thread join handle.
+/// Create a timestamped ffmpeg stderr log file in the target directory.
+/// Returns the open file handle, or None if the directory doesn't exist or
+/// the file can't be created.
+pub fn create_stderr_log(label: &str) -> Option<std::fs::File> {
+    // Resolve target dir: CARGO_TARGET_DIR, or fall back to ./target
+    let target_dir = std::env::var("CARGO_TARGET_DIR")
+        .map(std::path::PathBuf::from)
+        .unwrap_or_else(|_| std::path::PathBuf::from("target"));
+    let log_dir = target_dir.join("ffmpeg_logs");
+    let _ = std::fs::create_dir_all(&log_dir);
+    let filename = format!(
+        "ffmpeg_stderr_{}_{}.log",
+        label,
+        chrono::Local::now().format("%Y%m%d_%H%M%S")
+    );
+    std::fs::File::create(log_dir.join(filename)).ok()
+}
+
+/// Spawn a blocking thread that reads ffmpeg stderr, updates the
+/// progress counters, and writes all output to a log file. Returns the
+/// thread join handle.
 pub fn spawn_stderr_reader(
     tokio_stderr: tokio::process::ChildStderr,
     progress: &FfmpegProgress,
+    stderr_log: Option<std::fs::File>,
 ) -> std::thread::JoinHandle<()> {
     let std_stderr = tokio_stderr_to_std(tokio_stderr);
     let progress_secs = Arc::clone(&progress.progress_secs);
     let frames = Arc::clone(&progress.frame_count);
 
     std::thread::spawn(move || {
-        use std::io::Read;
+        use std::io::{Read, Write};
         let mut reader = std::io::BufReader::new(std_stderr);
+        let mut log_writer = stderr_log.map(std::io::BufWriter::new);
         let mut buf = [0u8; 4096];
         let mut line_buf = Vec::<u8>::with_capacity(256);
 
@@ -2949,6 +2991,10 @@ pub fn spawn_stderr_reader(
             match reader.read(&mut buf) {
                 Ok(0) => break,
                 Ok(n) => {
+                    // Write raw bytes to log file
+                    if let Some(ref mut w) = log_writer {
+                        let _ = w.write_all(&buf[..n]);
+                    }
                     for &byte in &buf[..n] {
                         if byte == b'\r' || byte == b'\n' {
                             if !line_buf.is_empty() {
@@ -2991,6 +3037,10 @@ pub fn spawn_stderr_reader(
                 }
                 Err(_) => break,
             }
+        }
+        // Flush on exit
+        if let Some(ref mut w) = log_writer {
+            let _ = w.flush();
         }
     })
 }

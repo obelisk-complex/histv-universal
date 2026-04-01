@@ -56,7 +56,7 @@ pub async fn extract_rpus(
     let raw_hevc = temp_dir.path().join("source.h265");
 
     sink.log("  DV: Extracting HEVC bitstream from source...");
-    let demux_status = ffbin::ffmpeg_command()
+    let demux_output = ffbin::ffmpeg_command()
         .args([
             "-y",
             "-i",
@@ -72,13 +72,20 @@ pub async fn extract_rpus(
             &raw_hevc.to_string_lossy(),
         ])
         .stdout(std::process::Stdio::null())
-        .stderr(std::process::Stdio::null())
-        .status()
+        .stderr(std::process::Stdio::piped())
+        .spawn()
+        .map_err(|e| format!("Failed to launch ffmpeg for demux: {e}"))?
+        .wait_with_output()
         .await
-        .map_err(|e| format!("Failed to launch ffmpeg for demux: {e}"))?;
+        .map_err(|e| format!("Failed to wait for ffmpeg demux: {e}"))?;
 
-    if !demux_status.success() {
-        return Err("ffmpeg demux to raw HEVC failed".to_string());
+    if !demux_output.status.success() {
+        let stderr = String::from_utf8_lossy(&demux_output.stderr);
+        sink.log(&format!("  DV demux stderr: {stderr}"));
+        return Err(format!(
+            "ffmpeg demux to raw HEVC failed (exit {})",
+            demux_output.status
+        ));
     }
 
     // Stream through the bitstream, collecting only RPU NAL units
@@ -197,7 +204,7 @@ pub async fn inject_and_package(
     let encoded_hevc = temp_dir.path().join("encoded.h265");
     sink.log("  DV: Extracting encoded HEVC bitstream...");
 
-    let demux_status = ffbin::ffmpeg_command()
+    let demux_output = ffbin::ffmpeg_command()
         .args([
             "-y",
             "-i",
@@ -213,13 +220,20 @@ pub async fn inject_and_package(
             &encoded_hevc.to_string_lossy(),
         ])
         .stdout(std::process::Stdio::null())
-        .stderr(std::process::Stdio::null())
-        .status()
+        .stderr(std::process::Stdio::piped())
+        .spawn()
+        .map_err(|e| format!("Failed to demux encoded output: {e}"))?
+        .wait_with_output()
         .await
-        .map_err(|e| format!("Failed to demux encoded output: {e}"))?;
+        .map_err(|e| format!("Failed to wait for ffmpeg demux: {e}"))?;
 
-    if !demux_status.success() {
-        return Err("Could not demux encoded output to raw HEVC".to_string());
+    if !demux_output.status.success() {
+        let stderr = String::from_utf8_lossy(&demux_output.stderr);
+        sink.log(&format!("  DV inject demux stderr: {stderr}"));
+        return Err(format!(
+            "Could not demux encoded output to raw HEVC (exit {})",
+            demux_output.status
+        ));
     }
 
     // Step 2: Stream through encoded bitstream, inject RPU NALUs
@@ -289,7 +303,7 @@ pub async fn inject_and_package(
 
     // Step 3: Extract audio from original source
     let audio_aac = temp_dir.path().join("audio.aac");
-    let has_audio = ffbin::ffmpeg_command()
+    let audio_output = ffbin::ffmpeg_command()
         .args([
             "-y",
             "-i",
@@ -301,11 +315,25 @@ pub async fn inject_and_package(
             &audio_aac.to_string_lossy(),
         ])
         .stdout(std::process::Stdio::null())
-        .stderr(std::process::Stdio::null())
-        .status()
-        .await
-        .map(|s| s.success())
-        .unwrap_or(false);
+        .stderr(std::process::Stdio::piped())
+        .spawn()
+        .and_then(|child| {
+            // Use a synchronous block to get the output since we just need success/fail
+            Ok(child)
+        });
+    let has_audio = match audio_output {
+        Ok(child) => match child.wait_with_output().await {
+            Ok(o) => {
+                if !o.status.success() {
+                    let stderr = String::from_utf8_lossy(&o.stderr);
+                    sink.log(&format!("  DV audio extract stderr: {stderr}"));
+                }
+                o.status.success()
+            }
+            Err(_) => false,
+        },
+        Err(_) => false,
+    };
 
     // Step 4: Package with MP4Box
     sink.log("  DV: Packaging with MP4Box (DV container flags)...");

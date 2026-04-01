@@ -51,6 +51,7 @@ fn main() {
 
     // Resolve ffmpeg/ffprobe binary paths (no resource dir for CLI)
     histv_lib::ffmpeg::init(None, None, &sink);
+    #[cfg(feature = "dovi")]
     histv_lib::dovi_tools::init(None, &sink);
 
     // Check ffmpeg availability
