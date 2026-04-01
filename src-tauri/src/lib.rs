@@ -1,9 +1,11 @@
 pub mod disk_monitor;
+#[cfg(feature = "dovi")]
 pub mod dovi_pipeline;
 pub mod dovi_tools;
 pub mod encoder;
 pub mod events;
 pub mod ffmpeg;
+#[cfg(feature = "dovi")]
 pub mod hdr10plus_pipeline;
 pub mod hevc_utils;
 pub mod mkv_tags;

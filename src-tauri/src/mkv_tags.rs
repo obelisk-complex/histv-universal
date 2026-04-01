@@ -760,7 +760,9 @@ async fn count_frames_with_progress(
 
     let stderr = child.stderr.take();
     let progress = crate::encoder::FfmpegProgress::new();
-    let stderr_thread = stderr.map(|stderr| crate::encoder::spawn_stderr_reader(stderr, &progress));
+    let stderr_log = crate::encoder::create_stderr_log("mkv_tags");
+    let stderr_thread =
+        stderr.map(|stderr| crate::encoder::spawn_stderr_reader(stderr, &progress, stderr_log));
 
     // Poll for progress updates
     let mut last_pct: i32 = -1;

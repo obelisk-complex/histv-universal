@@ -58,7 +58,7 @@ pub async fn extract_hdr10plus(
     let raw_hevc = temp_dir.path().join("source.h265");
 
     sink.log("  HDR10+: Extracting HEVC bitstream from source...");
-    let demux_status = ffbin::ffmpeg_command()
+    let demux_output = ffbin::ffmpeg_command()
         .args([
             "-y",
             "-i",
@@ -74,13 +74,20 @@ pub async fn extract_hdr10plus(
             &raw_hevc.to_string_lossy(),
         ])
         .stdout(std::process::Stdio::null())
-        .stderr(std::process::Stdio::null())
-        .status()
+        .stderr(std::process::Stdio::piped())
+        .spawn()
+        .map_err(|e| format!("Failed to launch ffmpeg for demux: {e}"))?
+        .wait_with_output()
         .await
-        .map_err(|e| format!("Failed to launch ffmpeg for demux: {e}"))?;
+        .map_err(|e| format!("Failed to wait for ffmpeg demux: {e}"))?;
 
-    if !demux_status.success() {
-        return Err("ffmpeg demux to raw HEVC failed".to_string());
+    if !demux_output.status.success() {
+        let stderr = String::from_utf8_lossy(&demux_output.stderr);
+        sink.log(&format!("  HDR10+ demux stderr: {stderr}"));
+        return Err(format!(
+            "ffmpeg demux to raw HEVC failed (exit {})",
+            demux_output.status
+        ));
     }
 
     // Stream through the bitstream, extracting HDR10+ payloads from SEI NALs
@@ -167,7 +174,7 @@ pub async fn inject_hdr10plus(
     let encoded_hevc = temp_dir.path().join("encoded.h265");
     sink.log("  HDR10+: Extracting encoded HEVC bitstream...");
 
-    let demux_status = ffbin::ffmpeg_command()
+    let demux_output = ffbin::ffmpeg_command()
         .args([
             "-y",
             "-i",
@@ -183,14 +190,20 @@ pub async fn inject_hdr10plus(
             &encoded_hevc.to_string_lossy(),
         ])
         .stdout(std::process::Stdio::null())
-        .stderr(std::process::Stdio::null())
-        .status()
-        .await;
+        .stderr(std::process::Stdio::piped())
+        .spawn()
+        .map_err(|e| format!("Failed to demux encoded output: {e}"))?
+        .wait_with_output()
+        .await
+        .map_err(|e| format!("Failed to wait for ffmpeg demux: {e}"))?;
 
-    let demux_status = demux_status.map_err(|e| format!("Failed to demux encoded output: {e}"))?;
-
-    if !demux_status.success() {
-        return Err("Could not demux encoded output to raw HEVC".to_string());
+    if !demux_output.status.success() {
+        let stderr = String::from_utf8_lossy(&demux_output.stderr);
+        sink.log(&format!("  HDR10+ inject demux stderr: {stderr}"));
+        return Err(format!(
+            "Could not demux encoded output to raw HEVC (exit {})",
+            demux_output.status
+        ));
     }
 
     // SEI NALUs were pre-encoded at extraction time — use directly
@@ -232,7 +245,7 @@ pub async fn inject_hdr10plus(
 
     // Step 3: Remux the injected bitstream with audio/subs from encoded output
     sink.log("  HDR10+: Remuxing with injected metadata...");
-    let remux_status = match ffbin::ffmpeg_command()
+    let remux_output = ffbin::ffmpeg_command()
         .args([
             "-y",
             "-i",
@@ -250,19 +263,18 @@ pub async fn inject_hdr10plus(
             &output_path.to_string_lossy(),
         ])
         .stdout(std::process::Stdio::null())
-        .stderr(std::process::Stdio::null())
-        .status()
+        .stderr(std::process::Stdio::piped())
+        .spawn()
+        .map_err(|e| format!("Failed to launch ffmpeg for remux: {e}"))?
+        .wait_with_output()
         .await
-    {
-        Ok(s) => s,
-        Err(e) => {
-            return Err(format!("Failed to remux: {e}"));
-        }
-    };
+        .map_err(|e| format!("Failed to remux: {e}"))?;
 
     drop(temp_dir); // clean up temp files
 
-    if !remux_status.success() {
+    if !remux_output.status.success() {
+        let stderr = String::from_utf8_lossy(&remux_output.stderr);
+        sink.log(&format!("  HDR10+ remux stderr: {stderr}"));
         return Ok(Hdr10PlusPipelineResult {
             success: false,
             message: "HDR10+ remux failed - output has static HDR10 only".to_string(),
