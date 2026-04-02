@@ -1202,8 +1202,6 @@ async fn encode_single_file(
 
     // ── DV/HDR10+ tier determination (Phase DV) ──────────────
     let item_dovi_profile = queue[idx].probe.dovi_profile;
-    let item_dovi_bl_compat_id = queue[idx].probe.dovi_bl_compat_id;
-    let item_has_hdr10plus = queue[idx].probe.has_hdr10plus;
     let caps = crate::dovi_tools::capabilities();
 
     // Tier 1: DV source + MP4Box available → full DV preservation
@@ -1213,8 +1211,13 @@ async fn encode_single_file(
         && preserve_hdr;
 
     // Tier 2: HDR10+ source + crate available → full metadata preservation
-    let is_hdr10plus_tier2 =
-        item_has_hdr10plus && caps.can_process_hdr10plus && preserve_hdr && !is_dovi_tier1; // DV takes priority if both are present
+    #[cfg(feature = "dovi")]
+    let item_dovi_bl_compat_id = queue[idx].probe.dovi_bl_compat_id;
+    #[cfg(feature = "dovi")]
+    let is_hdr10plus_tier2 = queue[idx].probe.has_hdr10plus
+        && caps.can_process_hdr10plus
+        && preserve_hdr
+        && !is_dovi_tier1;
 
     // Per-file codec/encoder/container resolution (§2.4.0)
     let source_ext = std::path::Path::new(&item_full_path)
@@ -1377,6 +1380,7 @@ async fn encode_single_file(
     // Only extract when actually re-encoding (not copy). Extraction is
     // expensive (demux + full bitstream parse) so we skip it for copies
     // where the original bitstream (and its DV/HDR10+ data) is preserved.
+    #[cfg(feature = "dovi")]
     let is_copy = matches!(decision, EncodeDecision::Copy);
 
     #[cfg(feature = "dovi")]
