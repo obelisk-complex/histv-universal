@@ -7,53 +7,59 @@ on:
 permissions:
   contents: write
 
+# ── Pinned dependency versions ──────────────────────────────────
+# Update these when upgrading ffmpeg, Tauri CLI, or appimagetool.
+# Windows ffmpeg: gyan.dev full build (matches local dev environment)
+# Linux ffmpeg:   BtbN GPL static build
+# macOS ffmpeg:   evermeet.cx universal build
+env:
+  FFMPEG_VERSION_GYAN: "8.0.1"
+  FFMPEG_BTBN_TAG: "autobuild-2026-04-01-13-13"
+  FFMPEG_BTBN_LINUX: "ffmpeg-n8.1-7-ga3475e2554-linux64-gpl-8.1.tar.xz"
+  FFMPEG_EVERMEET_VER: "8.1"
+  TAURI_CLI_VERSION: "=2.10.1"
+  APPIMAGETOOL_VERSION: "1.9.1"
+
 jobs:
   build:
     strategy:
       fail-fast: false
       matrix:
         include:
-          - os: windows-latest
+          - os: windows-2022
             target: x86_64-pc-windows-msvc
             label: windows
             cli-name: histv-cli.exe
             cli-artefact: histv-cli-windows.exe
-            ffmpeg-url: "https://github.com/BtbN/FFmpeg-Builds/releases/download/latest/ffmpeg-master-latest-win64-gpl.zip"
-            ffprobe-url: ""
           - os: ubuntu-22.04
             target: x86_64-unknown-linux-gnu
             label: linux
             bundles: appimage
             cli-name: histv-cli
             cli-artefact: histv-cli-linux
-            ffmpeg-url: "https://github.com/BtbN/FFmpeg-Builds/releases/download/latest/ffmpeg-master-latest-linux64-gpl.tar.xz"
-            ffprobe-url: ""
-          - os: macos-latest
+          - os: macos-14
             target: aarch64-apple-darwin
             label: macos-arm64
             bundles: dmg
             cli-name: histv-cli
             cli-artefact: histv-cli-macos-arm64
-            ffmpeg-url: "https://evermeet.cx/ffmpeg/get/zip"
-            ffprobe-url: "https://evermeet.cx/ffmpeg/get/ffprobe/zip"
           - os: macos-14
             target: x86_64-apple-darwin
             label: macos-x64
             bundles: dmg
             cli-name: histv-cli
             cli-artefact: histv-cli-macos-x64
-            ffmpeg-url: "https://evermeet.cx/ffmpeg/get/zip"
-            ffprobe-url: "https://evermeet.cx/ffmpeg/get/ffprobe/zip"
 
     runs-on: ${{ matrix.os }}
 
     steps:
       - name: Checkout
-        uses: actions/checkout@v4
+        uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4
 
       - name: Install Rust stable
-        uses: dtolnay/rust-toolchain@1.93.1
+        uses: dtolnay/rust-toolchain@3c5f7ea28cd621ae0bf5283f0e981fb97b8a7af9 # 1.93.1
         with:
+          toolchain: "1.93.1"
           targets: ${{ matrix.target }}
 
       - name: Install Linux dependencies
@@ -70,7 +76,7 @@ jobs:
             libjavascriptcoregtk-4.1-dev
 
       - name: Install Tauri CLI
-        run: cargo install tauri-cli --version "^2" --locked
+        run: cargo install tauri-cli --version "${{ env.TAURI_CLI_VERSION }}" --locked
 
       - name: Build GUI
         shell: bash
@@ -112,20 +118,23 @@ jobs:
         run: |
           mkdir -p ffmpeg-bin
 
-          echo "Downloading ffmpeg from ${{ matrix.ffmpeg-url }}"
-          curl -fSL --retry 3 -o ffmpeg-archive "${{ matrix.ffmpeg-url }}"
-
           case "${{ matrix.label }}" in
             windows)
-              unzip -q ffmpeg-archive -d ffmpeg-extract
+              URL="https://www.gyan.dev/ffmpeg/builds/packages/ffmpeg-${{ env.FFMPEG_VERSION_GYAN }}-full_build.7z"
+              echo "Downloading ffmpeg from $URL"
+              curl -fSL --retry 3 -o ffmpeg-archive.7z "$URL"
+              7z x ffmpeg-archive.7z -offmpeg-extract -y
               FFMPEG=$(find ffmpeg-extract -name "ffmpeg.exe" -type f | head -1)
               FFPROBE=$(find ffmpeg-extract -name "ffprobe.exe" -type f | head -1)
               cp "$FFMPEG" ffmpeg-bin/ffmpeg.exe
               cp "$FFPROBE" ffmpeg-bin/ffprobe.exe
               ;;
             linux)
+              URL="https://github.com/BtbN/FFmpeg-Builds/releases/download/${{ env.FFMPEG_BTBN_TAG }}/${{ env.FFMPEG_BTBN_LINUX }}"
+              echo "Downloading ffmpeg from $URL"
+              curl -fSL --retry 3 -o ffmpeg-archive.tar.xz "$URL"
               mkdir -p ffmpeg-extract
-              tar xf ffmpeg-archive -C ffmpeg-extract
+              tar xf ffmpeg-archive.tar.xz -C ffmpeg-extract
               FFMPEG=$(find ffmpeg-extract -name "ffmpeg" -not -name "ffprobe" -type f | head -1)
               FFPROBE=$(find ffmpeg-extract -name "ffprobe" -type f | head -1)
               cp "$FFMPEG" ffmpeg-bin/ffmpeg
@@ -133,11 +142,11 @@ jobs:
               chmod +x ffmpeg-bin/ffmpeg ffmpeg-bin/ffprobe
               ;;
             macos-*)
-              # evermeet.cx ships ffmpeg and ffprobe as separate downloads
-              unzip -q ffmpeg-archive -d ffmpeg-bin
-              echo "Downloading ffprobe from ${{ matrix.ffprobe-url }}"
-              curl -fSL --retry 3 -o ffprobe-archive "${{ matrix.ffprobe-url }}"
-              unzip -q ffprobe-archive -d ffmpeg-bin
+              echo "Downloading ffmpeg ${{ env.FFMPEG_EVERMEET_VER }} from evermeet.cx"
+              curl -fSL --retry 3 -o ffmpeg.zip "https://evermeet.cx/ffmpeg/ffmpeg-${{ env.FFMPEG_EVERMEET_VER }}.zip"
+              curl -fSL --retry 3 -o ffprobe.zip "https://evermeet.cx/ffmpeg/ffprobe-${{ env.FFMPEG_EVERMEET_VER }}.zip"
+              unzip -q ffmpeg.zip -d ffmpeg-bin
+              unzip -q ffprobe.zip -d ffmpeg-bin
               chmod +x ffmpeg-bin/ffmpeg ffmpeg-bin/ffprobe
               ;;
           esac
@@ -182,9 +191,9 @@ jobs:
           cp ffmpeg-bin/ffprobe squashfs-root/usr/bin/
           cp THIRD-PARTY-LICENCES squashfs-root/
 
-          # Get appimagetool to repack
+          # Get appimagetool to repack (pinned version)
           curl -fSL --retry 3 -o appimagetool \
-            "https://github.com/AppImage/appimagetool/releases/download/continuous/appimagetool-x86_64.AppImage"
+            "https://github.com/AppImage/appimagetool/releases/download/${{ env.APPIMAGETOOL_VERSION }}/appimagetool-x86_64.AppImage"
           chmod +x appimagetool
           ARCH=x86_64 ./appimagetool --appimage-extract-and-run squashfs-root/ artefacts/histv-linux-full.AppImage
 
@@ -233,18 +242,18 @@ jobs:
           tar czf "artefacts/histv-cli-${{ matrix.label }}-full.tar.gz" -C bundle-cli .
 
       - name: Upload artefacts
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
         with:
           name: histv-${{ matrix.label }}
           path: artefacts/*
 
   release:
     needs: build
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-22.04
 
     steps:
       - name: Download all artefacts
-        uses: actions/download-artifact@v4
+        uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4
         with:
           path: release-assets
           merge-multiple: true
@@ -253,7 +262,7 @@ jobs:
         run: find release-assets -type f
 
       - name: Create GitHub Release
-        uses: softprops/action-gh-release@v2
+        uses: softprops/action-gh-release@153bb8e04406b158c6c84fc1615b65b24149a1fe # v2
         with:
           files: release-assets/**/*
           generate_release_notes: true

@@ -11,19 +11,26 @@ on:
 permissions:
   contents: write
 
+# Pinned dependency versions (keep in sync with build-cli-gui.yml)
+env:
+  FFMPEG_BTBN_TAG: "autobuild-2026-04-01-13-13"
+  FFMPEG_BTBN_LINUX: "ffmpeg-n8.1-7-ga3475e2554-linux64-gpl-8.1.tar.xz"
+  TAURI_CLI_VERSION: "=2.10.1"
+
 jobs:
   build:
     runs-on: ubuntu-22.04
 
     steps:
       - name: Checkout
-        uses: actions/checkout@v4
+        uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4
         with:
           ref: ${{ github.event.inputs.ref || github.ref }}
 
       - name: Install Rust stable
-        uses: dtolnay/rust-toolchain@1.93.1
+        uses: dtolnay/rust-toolchain@3c5f7ea28cd621ae0bf5283f0e981fb97b8a7af9 # 1.93.1
         with:
+          toolchain: "1.93.1"
           targets: x86_64-unknown-linux-gnu
 
       - name: Install Linux dependencies
@@ -46,7 +53,7 @@ jobs:
           sudo flatpak install -y flathub org.gnome.Platform//46 org.gnome.Sdk//46
 
       - name: Install Tauri CLI
-        run: cargo install tauri-cli --version "^2" --locked
+        run: cargo install tauri-cli --version "${{ env.TAURI_CLI_VERSION }}" --locked
 
       - name: Build GUI (deb bundle)
         run: cargo tauri build --target x86_64-unknown-linux-gnu --bundles deb
@@ -62,8 +69,9 @@ jobs:
       - name: Download ffmpeg
         run: |
           mkdir -p ffmpeg-extract
-          # Pin to a specific release - update URL and SHA when upgrading
-          wget -q "https://github.com/BtbN/FFmpeg-Builds/releases/download/latest/ffmpeg-n7.1-latest-linux64-gpl-7.1.tar.xz" -O ffmpeg.tar.xz
+          URL="https://github.com/BtbN/FFmpeg-Builds/releases/download/${{ env.FFMPEG_BTBN_TAG }}/${{ env.FFMPEG_BTBN_LINUX }}"
+          echo "Downloading ffmpeg from $URL"
+          wget -q "$URL" -O ffmpeg.tar.xz
           tar xf ffmpeg.tar.xz --strip-components=1 -C ffmpeg-extract/
           ls -lh ffmpeg-extract/bin/
 
@@ -134,7 +142,7 @@ jobs:
           flatpak build-bundle flatpak-repo histv-linux.flatpak com.histv.encoder
 
       - name: Upload artefact
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
         with:
           name: histv-linux-flatpak
           path: histv-linux.flatpak
