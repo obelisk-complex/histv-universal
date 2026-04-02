@@ -1,7 +1,10 @@
 id: com.histv.encoder
 runtime: org.gnome.Platform
-runtime-version: '46'
+runtime-version: '47'
 sdk: org.gnome.Sdk
+sdk-extensions:
+  - org.freedesktop.Sdk.Extension.rust-stable
+
 command: histv
 
 finish-args:
@@ -9,36 +12,66 @@ finish-args:
   - --socket=fallback-x11
   - --share=ipc
   - --device=dri
+  - --filesystem=host
 
 modules:
-  # ── ffmpeg (static build, GPL for QSV support) ──
+  # ── FFmpeg (pre-built GPL static build from BtbN) ──
   - name: ffmpeg
     buildsystem: simple
     sources:
       - type: archive
-        url: https://github.com/BtbN/FFmpeg-Builds/releases/download/autobuild-2026-03-26-13-16/ffmpeg-n8.0.1-76-gfa4ee7ab3c-linux64-gpl-8.0.tar.xz
-        sha256: caafc66dde5057d9228d39dbc1667292df521b6a0ceb63c49d8046ba0ab4740c
+        url: https://github.com/BtbN/FFmpeg-Builds/releases/download/autobuild-2026-04-01-13-13/ffmpeg-n8.1-7-ga3475e2554-linux64-gpl-8.1.tar.xz
+        sha256: 57417a11d21fc9ec76b4a250f95754d99d0f272765ba62b2d0aaf87d02c32cd8
         strip-components: 1
     build-commands:
       - install -Dm755 bin/ffmpeg /app/bin/ffmpeg
       - install -Dm755 bin/ffprobe /app/bin/ffprobe
 
-  # ── HISTV binary + assets ──
+  # ── HISTV (built from source with vendored cargo deps) ──
   - name: histv
     buildsystem: simple
+    build-options:
+      append-path: /usr/lib/sdk/rust-stable/bin
+      env:
+        CARGO_HOME: /run/build/histv/cargo-home
     sources:
-      - type: file
-        path: histv-deb-extract/usr/bin/histv
-      - type: file
-        path: histv-deb-extract/usr/lib/histv/
-      - type: file
-        path: com.histv.encoder.desktop
-      - type: file
-        path: com.histv.encoder.metainfo.xml
-      - type: file
-        path: src-tauri/icons/128x128.png
+      # For local builds, use type: dir.  For Flathub, switch to:
+      #   type: git
+      #   url: https://github.com/obelisk-complex/histv-universal.git
+      #   tag: v2.5.2
+      - type: dir
+        path: .
+      - cargo-sources.json
+      - type: shell
+        commands:
+          # Unpack vendored crates and write checksum files
+          - >-
+            for f in cargo/vendor/*.crate; do
+            name=$(basename "$f" .crate);
+            checksum=$(sha256sum "$f" | cut -d' ' -f1);
+            tar xf "$f" -C cargo/vendor/;
+            printf '{"files":{},"package":"%s"}' "$checksum" > "cargo/vendor/$name/.cargo-checksum.json";
+            rm "$f";
+            done
+          # Configure cargo for offline vendored build
+          - mkdir -p cargo-home
+          - >-
+            printf '[source.crates-io]\nreplace-with = "vendored-sources"\n\n[source.vendored-sources]\ndirectory = "/run/build/histv/cargo/vendor"\n'
+            > cargo-home/config.toml
     build-commands:
-      - install -Dm755 histv /app/bin/histv
+      - >-
+        cargo build --offline --release
+        --manifest-path src-tauri/Cargo.toml
+        --no-default-features
+        --features custom-protocol,dovi
+      - install -Dm755 src-tauri/target/release/histv /app/bin/histv
+      # Themes (looked up adjacent to binary)
+      - install -d /app/bin/themes
+      - cp src-tauri/themes/*.json /app/bin/themes/
+      # Desktop integration
       - install -Dm644 com.histv.encoder.desktop /app/share/applications/com.histv.encoder.desktop
       - install -Dm644 com.histv.encoder.metainfo.xml /app/share/metainfo/com.histv.encoder.metainfo.xml
-      - install -Dm644 128x128.png /app/share/icons/hicolor/128x128/apps/com.histv.encoder.png
+      # Icons
+      - install -Dm644 src-tauri/icons/64x64.png /app/share/icons/hicolor/64x64/apps/com.histv.encoder.png
+      - install -Dm644 src-tauri/icons/128x128.png /app/share/icons/hicolor/128x128/apps/com.histv.encoder.png
+      - install -Dm644 src-tauri/icons/icon.png /app/share/icons/hicolor/512x512/apps/com.histv.encoder.png

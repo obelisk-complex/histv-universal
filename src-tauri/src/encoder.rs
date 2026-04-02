@@ -532,8 +532,8 @@ pub enum AudioStrategy {
     /// Default: copy if below cap; re-encode to same codec at cap;
     /// codecs with no ffmpeg encoder fall back to EAC3.
     CopyCapped { cap_kbps: u32 },
-    /// Compatibility: copy if below cap and already AC3;
-    /// otherwise re-encode to AC3 at cap.
+    /// Compatibility: copy if below cap and already AAC;
+    /// otherwise re-encode to AAC at cap.
     CompatCapped { cap_kbps: u32 },
 }
 
@@ -3077,22 +3077,22 @@ fn build_audio_args_from_probe(
                 }
             }
             AudioStrategy::CompatCapped { cap_kbps } => {
-                if stream.codec == "ac3" && stream.bitrate_kbps <= *cap_kbps {
+                if stream.codec == "aac" && stream.bitrate_kbps <= *cap_kbps {
                     codec_args.extend([format!("-c:a:{output_idx}"), "copy".into()]);
                     sink.log(&format!(
-                        "  Audio {} : AC3 @ {}kbps - copying",
+                        "  Audio {} : AAC @ {}kbps - copying",
                         stream.index, stream.bitrate_kbps
                     ));
                 } else {
                     let target_br = stream.bitrate_kbps.min(*cap_kbps);
                     codec_args.extend([
                         format!("-c:a:{output_idx}"),
-                        "ac3".to_string(),
+                        "aac".to_string(),
                         format!("-b:a:{output_idx}"),
                         format!("{target_br}k"),
                     ]);
                     sink.log(&format!(
-                        "  Audio {} : {} @ {}kbps - encoding to AC3 @ {}kbps",
+                        "  Audio {} : {} @ {}kbps - encoding to AAC @ {}kbps",
                         stream.index, stream.codec, stream.bitrate_kbps, target_br
                     ));
                 }

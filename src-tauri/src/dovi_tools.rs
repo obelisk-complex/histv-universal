@@ -546,7 +546,7 @@ fn extract_deb_manual(deb_path: &Path, dest: &Path) -> Result<bool, String> {
     Err("No data.tar.* found in .deb".to_string())
 }
 
-#[cfg(all(feature = "downloader", unix))]
+#[cfg(all(feature = "downloader", target_os = "linux"))]
 fn set_executable_mode(path: &Path) {
     use std::os::unix::fs::PermissionsExt;
     if let Ok(meta) = std::fs::metadata(path) {
@@ -557,7 +557,7 @@ fn set_executable_mode(path: &Path) {
 }
 
 /// Recursively find a file whose name starts with the given prefix.
-#[cfg(feature = "downloader")]
+#[cfg(all(feature = "downloader", target_os = "linux"))]
 fn find_file_recursive(dir: &Path, prefix: &str) -> Option<PathBuf> {
     if let Ok(entries) = std::fs::read_dir(dir) {
         for entry in entries.flatten() {

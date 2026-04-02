@@ -100,7 +100,7 @@ pub struct CliArgs {
     #[arg(long = "precision")]
     pub precision_mode: bool,
 
-    /// Convert all files to H.264/MP4 with AC3 audio for maximum device
+    /// Convert all files to H.264/MP4 with AAC audio for maximum device
     /// compatibility. Overrides --codec, --container, and --audio.
     #[arg(long = "compat", conflicts_with = "preserve_av1")]
     pub compat: bool,

@@ -7,3 +7,5 @@ Terminal=false
 Type=Application
 Categories=AudioVideo;Video;
 Keywords=video;encoder;batch;ffmpeg;transcode;
+StartupWMClass=com.histv.encoder
+StartupNotify=true

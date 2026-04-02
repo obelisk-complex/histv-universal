@@ -3,8 +3,12 @@
   <id>com.histv.encoder</id>
   <name>Honey, I Shrunk The Vids</name>
   <summary>Batch video encoder with smart bitrate decisions</summary>
+  <developer id="com.histv">
+    <name>obelisk-complex</name>
+  </developer>
   <metadata_license>CC0-1.0</metadata_license>
   <project_license>LicenseRef-proprietary=https://github.com/obelisk-complex/histv-universal/blob/main/LICENSE</project_license>
+
   <description>
     <p>
       A cross-platform batch video encoder that shrinks your video files to a
@@ -13,19 +17,67 @@
     </p>
     <p>
       Supports GPU-accelerated encoding (AMF, NVENC, QSV, VAAPI, VideoToolbox),
-      HDR preservation and tonemapping, animated WebP/GIF/APNG conversion,
-      precision mode with CRF quality targeting, and 25+ input formats.
+      HDR preservation and tonemapping, Dolby Vision and HDR10+ passthrough,
+      animated WebP/GIF/APNG conversion, AV1 encoding, precision mode with CRF
+      quality targeting, and 25+ input formats.
     </p>
   </description>
+
   <url type="homepage">https://github.com/obelisk-complex/histv-universal</url>
   <url type="bugtracker">https://github.com/obelisk-complex/histv-universal/issues</url>
+
   <launchable type="desktop-id">com.histv.encoder.desktop</launchable>
+
   <provides>
     <binary>histv</binary>
   </provides>
+
+  <branding>
+    <color type="primary" scheme_preference="light">#62a0ea</color>
+    <color type="primary" scheme_preference="dark">#1a5fb4</color>
+  </branding>
+
+  <!-- TODO: Add at least one screenshot before Flathub submission.
+       Recommended: 16:9 or 16:10 ratio, 1602x900 or similar.
+       Host images on a stable URL (e.g. raw.githubusercontent.com).
+
+  <screenshots>
+    <screenshot type="default">
+      <image>https://raw.githubusercontent.com/obelisk-complex/histv-universal/main/screenshots/main-window.png</image>
+      <caption>Main encoding queue with batch progress</caption>
+    </screenshot>
+  </screenshots>
+  -->
+
   <content_rating type="oars-1.1" />
+
   <releases>
-    <release version="2.3.4" date="2026-03-26">
+    <release version="2.5.2" date="2026-04-01">
+      <description>
+        <p>Code quality overhaul: 15 fixes across security, efficiency, and maintainability.</p>
+      </description>
+    </release>
+    <release version="2.5.1" date="2026-04-01">
+      <description>
+        <p>Feature-gate Dolby Vision and HDR10+ imports; add ffmpeg stderr logging.</p>
+      </description>
+    </release>
+    <release version="2.4.0" date="2026-03-30">
+      <description>
+        <p>AV1 encoding support, per-file codec resolution, code quality pass.</p>
+      </description>
+    </release>
+    <release version="2.3.6" date="2026-03-28">
+      <description>
+        <p>Auto-continue batches, queue progress fixes.</p>
+      </description>
+    </release>
+    <release version="2.3.5" date="2026-03-28">
+      <description>
+        <p>Initial Flatpak support with zero-permission sandbox via XDG portals.</p>
+      </description>
+    </release>
+    <release version="2.3.4" date="2026-03-25">
       <description>
         <p>Animated WebP support, theme overhaul, accessibility pass, expanded format support.</p>
       </description>
