@@ -295,46 +295,6 @@ pub fn decide_encode_strategy(
     }
 }
 
-/// Format a human-readable description of the encoding decision for a file.
-pub fn describe_decision(
-    decision: &EncodeDecision,
-    item_codec: &str,
-    item_width: u32,
-    item_height: u32,
-    item_bitrate_mbps: f64,
-    codec_family: &str,
-    threshold: f64,
-) -> String {
-    match decision {
-        EncodeDecision::Copy => {
-            format!(
-                "Already {} at {:.2}Mbps (at/below target) - copy",
-                display_codec_family(codec_family),
-                item_bitrate_mbps
-            )
-        }
-        EncodeDecision::Vbr { peak_bps, .. } => {
-            let peak_mbps = *peak_bps as f64 / 1_000_000.0;
-            format!(
-                "{:.2}Mbps [{}] {}x{} - VBR target {}Mbps peak {:.2}Mbps",
-                item_bitrate_mbps, item_codec, item_width, item_height, threshold, peak_mbps
-            )
-        }
-        EncodeDecision::Cqp { qi, qp } => {
-            format!(
-                "{:.2}Mbps [{}] {}x{} - CQP ({}/{})",
-                item_bitrate_mbps, item_codec, item_width, item_height, qi, qp
-            )
-        }
-        EncodeDecision::Crf { crf, .. } => {
-            format!(
-                "{:.2}Mbps [{}] {}x{} - CRF {}",
-                item_bitrate_mbps, item_codec, item_width, item_height, crf
-            )
-        }
-    }
-}
-
 // ── Encoder detection (§8) ──────────────────────────────────────
 
 /// Detect available encoders by running `ffmpeg -encoders`, then verifying
@@ -372,7 +332,14 @@ pub async fn detect_encoders(sink: &dyn EventSink) -> (Vec<EncoderInfo>, Vec<Str
         .flat_map(|line| line.split_whitespace())
         .collect();
 
-    // Check each video encoder in priority order
+    // Classify each video encoder: software encoders are added immediately,
+    // hardware candidates are collected for concurrent verification.
+    struct HwCandidate {
+        name: &'static str,
+        family: &'static str,
+    }
+    let mut hw_candidates: Vec<HwCandidate> = Vec::new();
+
     for &enc_name in HEVC_PRIORITY
         .iter()
         .chain(H264_PRIORITY.iter())
@@ -403,19 +370,49 @@ pub async fn detect_encoders(sink: &dyn EventSink) -> (Vec<EncoderInfo>, Vec<Str
             continue;
         }
 
-        // Hardware encoder - verify with a 1-frame test encode
-        sink.log(&format!("[detect] {enc_name} - testing..."));
-        if test_encode(enc_name).await {
-            sink.log(&format!("[detect] {enc_name} (HW) - works"));
-            video_encoders.push(EncoderInfo {
-                name: enc_name.to_string(),
-                codec_family: family.to_string(),
-                is_hardware: true,
+        sink.log(&format!("[detect] {enc_name} - queued for testing..."));
+        hw_candidates.push(HwCandidate {
+            name: enc_name,
+            family,
+        });
+    }
+
+    // Test all hardware encoder candidates concurrently. Each test
+    // encode is independent (own temp file), so parallelism is safe.
+    if !hw_candidates.is_empty() {
+        let mut join_set = tokio::task::JoinSet::new();
+        for candidate in &hw_candidates {
+            let name = candidate.name.to_string();
+            join_set.spawn(async move {
+                let ok = test_encode(&name).await;
+                (name, ok)
             });
-        } else {
-            sink.log(&format!(
-                "[detect] {enc_name} (HW) - not available (test encode failed)"
-            ));
+        }
+
+        // Collect results into a map for ordered insertion below.
+        let mut results = std::collections::HashMap::new();
+        while let Some(res) = join_set.join_next().await {
+            if let Ok((name, ok)) = res {
+                results.insert(name, ok);
+            }
+        }
+
+        // Insert in priority order (not arrival order) to preserve ranking.
+        for candidate in &hw_candidates {
+            let ok = results.get(candidate.name).copied().unwrap_or(false);
+            if ok {
+                sink.log(&format!("[detect] {} (HW) - works", candidate.name));
+                video_encoders.push(EncoderInfo {
+                    name: candidate.name.to_string(),
+                    codec_family: candidate.family.to_string(),
+                    is_hardware: true,
+                });
+            } else {
+                sink.log(&format!(
+                    "[detect] {} (HW) - not available (test encode failed)",
+                    candidate.name
+                ));
+            }
         }
     }
 
@@ -593,28 +590,33 @@ pub fn resolve_file_settings(
     settings: &BatchSettings,
     detected_encoders: &[EncoderInfo],
 ) -> ResolvedFileSettings {
-    // 1. Codec family
-    let codec_family = if settings.compatibility_mode {
-        "h264"
-    } else if source_video_codec == "h264" {
-        "h264"
-    } else if source_video_codec == "hevc" || source_video_codec == "h265" {
-        "hevc"
-    } else if settings.preserve_av1 && source_video_codec == "av1" {
-        "av1"
-    } else {
-        "hevc" // default conversion target
+    // 1. Codec family — explicit --codec override takes priority, then
+    //    compatibility mode, then per-file detection from the source codec.
+    let codec_family = match settings.codec_family.as_str() {
+        "h264" => "h264",
+        "hevc" => "hevc",
+        _ if settings.compatibility_mode => "h264",
+        _ if source_video_codec == "h264" => "h264",
+        _ if source_video_codec == "hevc" || source_video_codec == "h265" => "hevc",
+        _ if settings.preserve_av1 && source_video_codec == "av1" => "av1",
+        _ => "hevc", // default conversion target
     };
 
-    // 2. Encoder
-    let encoder_name = if settings.precision_mode {
-        software_fallback(codec_family).to_string()
-    } else {
-        detected_encoders
-            .iter()
-            .find(|e| e.codec_family == codec_family)
-            .map(|e| e.name.clone())
-            .unwrap_or_else(|| software_fallback(codec_family).to_string())
+    // 2. Encoder — explicit --encoder override takes priority, then
+    //    precision mode forces software, then auto-detect from detected list.
+    let encoder_name = match settings.video_encoder.as_str() {
+        "" | "auto" => {
+            if settings.precision_mode {
+                software_fallback(codec_family).to_string()
+            } else {
+                detected_encoders
+                    .iter()
+                    .find(|e| e.codec_family == codec_family)
+                    .map(|e| e.name.clone())
+                    .unwrap_or_else(|| software_fallback(codec_family).to_string())
+            }
+        }
+        forced => forced.to_string(),
     };
 
     // 3. Container - use the shared resolver
@@ -626,13 +628,23 @@ pub fn resolve_file_settings(
         resolve_container(&fake_path, &settings.output_container, false).to_string()
     };
 
-    // Legacy: the CLI encode loop still reads these directly.
-    // Remove once the CLI uses resolve_file_settings() per-file (v2.5).
-    // 4. Audio strategy
-    let audio_strategy = if settings.compatibility_mode {
-        AudioStrategy::CompatCapped { cap_kbps: 640 }
-    } else {
-        AudioStrategy::CopyCapped { cap_kbps: 640 }
+    // 4. Audio strategy — explicit --audio override takes priority,
+    //    then compat mode forces AAC, then default copy-capped.
+    let cap = settings.audio_cap;
+    let audio_strategy = match settings.audio_encoder.as_str() {
+        "copy" => AudioStrategy::CopyCapped { cap_kbps: cap },
+        "aac" => AudioStrategy::CompatCapped { cap_kbps: cap },
+        "" | "auto" => {
+            if settings.compatibility_mode {
+                AudioStrategy::CompatCapped { cap_kbps: cap }
+            } else {
+                AudioStrategy::CopyCapped { cap_kbps: cap }
+            }
+        }
+        // ac3, eac3, or any other codec: use CopyCapped so the
+        // fallback codec is resolved per-stream inside
+        // build_audio_args_from_probe.
+        _ => AudioStrategy::CopyCapped { cap_kbps: cap },
     };
 
     ResolvedFileSettings {
@@ -802,8 +814,8 @@ impl BatchRequest {
             crf_val: self.crf.min(51),
             rate_control_mode: self.rate_control_mode,
             video_encoder: "auto".to_string(),
-            codec_family: "hevc".to_string(),
-            audio_encoder: "ac3".to_string(),
+            codec_family: "auto".to_string(),
+            audio_encoder: "auto".to_string(),
             audio_cap: 640,
             pix_fmt: self.pix_fmt,
             delete_source: self.delete_source,
@@ -841,8 +853,6 @@ pub struct BatchSettings {
     pub compatibility_mode: bool,
     pub preserve_av1: bool,
     pub force_local: bool,
-    // Legacy fields kept for CLI compatibility until 2.5 refactor completes.
-    // The encode loop still reads these; resolve_file_settings will replace them.
     pub video_encoder: String,
     pub codec_family: String,
     pub audio_encoder: String,
@@ -1010,17 +1020,23 @@ async fn handle_post_encode(
             write_log(log_writer, "  Output larger than source - remuxing");
             let _ = std::fs::remove_file(temp_output_file);
 
+            // Remux with container-aware stream mapping: MP4 cannot hold
+            // bitmap subtitles (PGS, DVB) or some audio codecs, so we
+            // only map video + audio + text subs for MP4 output.
+            let mut remux_args = vec![
+                "-y", "-i", item_full_path,
+                "-map", "0:v", "-map", "0:a?",
+            ];
+            if ext == "mp4" {
+                // MP4: convert text subs to mov_text; ffmpeg silently
+                // skips bitmap subs (PGS, DVB) that can't be converted.
+                remux_args.extend(["-map", "0:s?", "-c", "copy", "-c:s", "mov_text"]);
+            } else {
+                remux_args.extend(["-map", "0:s?", "-c", "copy"]);
+            }
+            remux_args.push(output_str);
             let remux_output = ffbin::ffmpeg_command()
-                .args([
-                    "-y",
-                    "-i",
-                    item_full_path,
-                    "-map",
-                    "0",
-                    "-c",
-                    "copy",
-                    output_str,
-                ])
+                .args(&remux_args)
                 .stdout(std::process::Stdio::null())
                 .stderr(std::process::Stdio::piped())
                 .spawn()
@@ -1113,26 +1129,42 @@ async fn handle_post_encode(
             }
         }
 
-        // Replace mode: delete source, rename temp to final path
+        // Replace mode: safely swap source with encoded output.
+        // Rename source to .bak first so we can recover if the final
+        // rename fails (avoids TOCTOU data loss).
         if is_replace_mode && temp_output_file.exists() {
-            // Delete the original source file
-            if let Err(e) = std::fs::remove_file(item_full_path) {
-                let warn = format!("  WARNING: Could not delete source for replacement: {e}");
-                sink.log(&warn);
-                write_log(log_writer, &warn);
-                // Don't fail - the encode succeeded, we just can't replace
-            }
+            let backup = std::path::PathBuf::from(format!("{}.histv-bak", item_full_path));
+            let source_backed_up = match std::fs::rename(item_full_path, &backup) {
+                Ok(_) => true,
+                Err(e) => {
+                    let warn = format!("  WARNING: Could not back up source for replacement: {e}");
+                    sink.log(&warn);
+                    write_log(log_writer, &warn);
+                    false
+                }
+            };
             // Rename temp to final
             if temp_output_file != output_file {
                 if let Err(e) = std::fs::rename(temp_output_file, output_file) {
                     let warn = format!("  WARNING: Could not rename temp to final path: {e}");
                     sink.log(&warn);
                     write_log(log_writer, &warn);
+                    // Restore the backup so the source is not lost
+                    if source_backed_up {
+                        let _ = std::fs::rename(&backup, item_full_path);
+                    }
                 } else {
+                    // Success — remove the backup
+                    if source_backed_up {
+                        let _ = std::fs::remove_file(&backup);
+                    }
                     let msg = format!("  Replaced source → {}", final_output_str);
                     sink.log(&msg);
                     write_log(log_writer, &msg);
                 }
+            } else if source_backed_up {
+                // temp_output_file == output_file, just clean up backup
+                let _ = std::fs::remove_file(&backup);
             }
         } else if settings.delete_source && temp_output_file.exists() {
             // Normal delete-source mode
@@ -1310,7 +1342,30 @@ async fn encode_single_file(
             (out.clone(), out)
         }
     };
+    // On Windows, prepend the extended-length path prefix when the path
+    // exceeds 240 characters to avoid MAX_PATH (260) failures.
+    #[cfg(target_os = "windows")]
+    let output_str = {
+        let raw = temp_output_file.to_string_lossy();
+        if raw.len() > 240 && !raw.starts_with("\\\\?\\") {
+            format!("\\\\?\\{}", raw)
+        } else {
+            raw.to_string()
+        }
+    };
+    #[cfg(not(target_os = "windows"))]
     let output_str = temp_output_file.to_string_lossy().to_string();
+
+    #[cfg(target_os = "windows")]
+    let final_output_str = {
+        let raw = output_file.to_string_lossy();
+        if raw.len() > 240 && !raw.starts_with("\\\\?\\") {
+            format!("\\\\?\\{}", raw)
+        } else {
+            raw.to_string()
+        }
+    };
+    #[cfg(not(target_os = "windows"))]
     let final_output_str = output_file.to_string_lossy().to_string();
 
     let log_msg = format!("[{}/{}] {}", file_counter, total, item_file_name);
@@ -1620,6 +1675,7 @@ async fn encode_single_file(
         build_audio_args_from_probe(
             &queue[idx].probe.audio_streams,
             &resolved.audio_strategy,
+            &file_ext,
             sink,
         )
     };
@@ -1690,6 +1746,7 @@ async fn encode_single_file(
             is_image_source,
             settings.threads,
             tonemap_filter,
+            target_codec,
         );
 
         let cmd_line = format!("ffmpeg {}", ffmpeg_args.join(" "));
@@ -1938,6 +1995,7 @@ async fn encode_single_file(
                         is_image_source,
                         settings.threads,
                         tonemap_filter,
+                        target_codec,
                     );
 
                     let sw_cmd = format!("ffmpeg {}", sw_args.join(" "));
@@ -2076,6 +2134,7 @@ pub async fn run_encode_loop(
     settings: &BatchSettings,
     detected_encoders: &[EncoderInfo],
     wave_plan: Option<Vec<WaveItem>>,
+    disk_monitor: Option<&crate::disk_monitor::DiskMonitor>,
 ) -> (u32, u32, u32, bool) {
     let qi_str = settings.qp_i.to_string();
     let qp_str = settings.qp_p.to_string();
@@ -2247,7 +2306,9 @@ pub async fn run_encode_loop(
                     staging_dir,
                     idx,
                     sink,
-                ) {
+                )
+                .await
+                {
                     // Rewrite queue item path to the staged local copy
                     queue[idx].full_path = ctx.local_path().to_string_lossy().to_string();
                     wave_staging_contexts.push((idx, ctx, original_path));
@@ -2270,6 +2331,14 @@ pub async fn run_encode_loop(
                 break 'outer;
             }
             batch_control.clear_cancel_current();
+
+            // Disk-aware mode: check partition usage and wait if over the limit
+            if let Some(dm) = disk_monitor {
+                if !dm.check_and_wait(sink, batch_control).await {
+                    was_cancelled = true;
+                    break 'outer;
+                }
+            }
 
             file_counter += 1;
             sink.batch_progress(file_counter, total);
@@ -2344,16 +2413,29 @@ pub async fn run_encode_loop(
                     if is_replace {
                         let temp_remote =
                             remote_dir.join(format!("{}.histv-tmp.{}", base_name, ext));
-                        match std::fs::copy(&local_output, &temp_remote) {
+                        match tokio::fs::copy(&local_output, &temp_remote).await {
                             Ok(_) => {
-                                if remote.exists() {
-                                    let _ = std::fs::remove_file(remote);
-                                }
+                                // Backup-rename-delete pattern (mirrors local replace mode)
+                                let backup = remote_dir
+                                    .join(format!("{}.histv-bak.{}", base_name, ext));
+                                let backed_up = if remote.exists() {
+                                    std::fs::rename(remote, &backup).is_ok()
+                                } else {
+                                    false
+                                };
                                 if let Err(e) = std::fs::rename(&temp_remote, &final_remote) {
                                     sink.log(&format!(
                                         "  WARNING: Could not rename temp to final on remote: {e}"
                                     ));
+                                    // Restore the backup so the original is not lost
+                                    if backed_up {
+                                        let _ = std::fs::rename(&backup, remote);
+                                    }
                                 } else {
+                                    // Success — remove backup
+                                    if backed_up {
+                                        let _ = std::fs::remove_file(&backup);
+                                    }
                                     sink.log(&format!(
                                         "  Replaced remote source → {}",
                                         final_remote.display()
@@ -2373,7 +2455,7 @@ pub async fn run_encode_loop(
                             }
                         }
                     } else {
-                        match std::fs::copy(&local_output, &final_remote) {
+                        match tokio::fs::copy(&local_output, &final_remote).await {
                             Ok(_) => {
                                 let _ = std::fs::remove_file(&local_output);
                                 sink.log(&format!(
@@ -2742,21 +2824,10 @@ pub fn lookahead_for_ram_with_cache(ram_gb: u64) -> u32 {
     }
 }
 
-/// Convenience wrapper that queries system RAM and returns the lookahead.
-/// Used by callers outside the encoding loop (e.g. CLI dry-run display).
-pub fn lookahead_for_ram() -> u32 {
-    lookahead_for_ram_with_cache(get_system_ram_gb())
-}
-
 /// Returns true if the system has insufficient RAM for extended lookahead (#3).
 /// Accepts a pre-cached RAM value.
 pub fn precision_needs_two_pass_with_ram(ram_gb: u64) -> bool {
     ram_gb < 8
-}
-
-/// Convenience wrapper for callers outside the encoding loop.
-pub fn precision_needs_two_pass() -> bool {
-    precision_needs_two_pass_with_ram(get_system_ram_gb())
 }
 
 /// Probe CRF viability by encoding three 10-second samples from 25%, 50%,
@@ -2918,6 +2989,7 @@ fn assemble_ffmpeg_args(
     is_image_source: bool,
     threads: u32,
     tonemap_filter: Option<&str>,
+    codec_family: &str,
 ) -> Vec<String> {
     let mut args: Vec<String> = vec![
         "-err_detect".into(),
@@ -2949,14 +3021,9 @@ fn assemble_ffmpeg_args(
             "-pix_fmt".into(),
             "yuv420p".into(),
         ]);
-        // MP4: put moov atom at front for streaming
-        if output_path.ends_with(".mp4") {
-            args.extend(vec!["-movflags".into(), "+faststart".into()]);
-        }
     } else {
         // Normal video: per-stream audio maps + subtitle passthrough
         args.extend_from_slice(audio_map_args);
-        args.extend(vec!["-map".into(), "0:s?".into()]);
         args.extend(video_args.iter().map(|s| s.to_string()));
         // Tonemap filter for HDR→SDR conversion
         if let Some(filter) = tonemap_filter {
@@ -2964,12 +3031,33 @@ fn assemble_ffmpeg_args(
         }
         args.extend(vec!["-pix_fmt".into(), pix_fmt.to_string()]);
         args.extend_from_slice(audio_codec_args);
-        args.extend(vec![
-            "-c:s".into(),
-            "copy".into(),
-            "-disposition:s:0".into(),
-            "default".into(),
-        ]);
+        // Subtitle handling: MP4 only supports mov_text (timed text).
+        // Using `-c:s mov_text` converts text-based subs (SRT, ASS) and
+        // causes ffmpeg to silently skip bitmap subs (PGS, DVB) that
+        // cannot be converted. MKV supports all subtitle codecs as-is.
+        if output_path.ends_with(".mp4") {
+            args.extend(vec![
+                "-map".into(), "0:s?".into(),
+                "-c:s".into(), "mov_text".into(),
+            ]);
+        } else {
+            args.extend(vec![
+                "-map".into(), "0:s?".into(),
+                "-c:s".into(), "copy".into(),
+                "-disposition:s:0".into(), "default".into(),
+            ]);
+        }
+    }
+
+    // MP4-specific muxing flags
+    if output_path.ends_with(".mp4") {
+        args.extend(vec!["-movflags".into(), "+faststart".into()]);
+        // HEVC in MP4: force hvc1 tag (parameter sets out-of-band).
+        // ffmpeg defaults to hev1, which macOS/iOS/Safari refuse to play.
+        // Only apply when the codec is actually HEVC to avoid tag mismatches.
+        if codec_family == "hevc" {
+            args.extend(vec!["-tag:v".into(), "hvc1".into()]);
+        }
     }
 
     args.push(output_path.to_string());
@@ -3012,11 +3100,22 @@ fn ffmpeg_encoder_for_codec(codec: &str) -> (String, Option<u32>) {
     }
 }
 
+/// Returns true if the given audio codec can be muxed into an MP4 container.
+fn is_mp4_compatible_audio(codec: &str) -> bool {
+    matches!(
+        codec,
+        "aac" | "ac3" | "eac3" | "mp3" | "mp2" | "alac" | "pcm_s16le" | "pcm_s24le"
+    )
+}
+
 /// Build per-stream audio arguments from pre-probed audio stream data (§6.2).
 /// Uses AudioStrategy to determine copy/re-encode behaviour per stream.
+/// `container_ext` is used to prevent MP4-incompatible codecs from being
+/// copied or re-encoded into their original format (e.g. Opus in MP4).
 fn build_audio_args_from_probe(
     audio_streams: &[crate::queue::AudioStreamInfo],
     strategy: &AudioStrategy,
+    container_ext: &str,
     sink: &dyn EventSink,
 ) -> (Vec<String>, Vec<String>) {
     if audio_streams.is_empty() {
@@ -3041,16 +3140,20 @@ fn build_audio_args_from_probe(
 
         map_args.extend(["-map".into(), format!("0:a:{}", stream.index)]);
 
+        // Check if copying this codec into the output container would be valid.
+        let is_mp4 = container_ext == "mp4";
+        let copy_safe = !is_mp4 || is_mp4_compatible_audio(&stream.codec);
+
         match strategy {
             AudioStrategy::CopyCapped { cap_kbps } => {
-                if stream.bitrate_kbps <= *cap_kbps {
+                if stream.bitrate_kbps <= *cap_kbps && copy_safe {
                     codec_args.extend([format!("-c:a:{output_idx}"), "copy".into()]);
                     sink.log(&format!(
                         "  Audio {} : {} @ {}kbps - copying",
                         stream.index, stream.codec, stream.bitrate_kbps
                     ));
                 } else {
-                    let (target_codec, target_br) = if has_ffmpeg_encoder(&stream.codec) {
+                    let (target_codec, target_br) = if copy_safe && has_ffmpeg_encoder(&stream.codec) {
                         let (enc_name, max_kbps) = ffmpeg_encoder_for_codec(&stream.codec);
                         let br = match max_kbps {
                             Some(max) if *cap_kbps > max => max,
@@ -3058,11 +3161,20 @@ fn build_audio_args_from_probe(
                         };
                         (enc_name, br)
                     } else {
-                        sink.log(&format!(
-                            "  Audio {} : {} has no ffmpeg encoder, falling back to EAC3",
-                            stream.index, stream.codec
-                        ));
-                        ("eac3".to_string(), *cap_kbps)
+                        // Codec is either MP4-incompatible or has no ffmpeg encoder.
+                        let fallback = "eac3";
+                        if !copy_safe {
+                            sink.log(&format!(
+                                "  Audio {} : {} is not supported in MP4, falling back to EAC3",
+                                stream.index, stream.codec
+                            ));
+                        } else {
+                            sink.log(&format!(
+                                "  Audio {} : {} has no ffmpeg encoder, falling back to EAC3",
+                                stream.index, stream.codec
+                            ));
+                        }
+                        (fallback.to_string(), *cap_kbps)
                     };
                     codec_args.extend([
                         format!("-c:a:{output_idx}"),
@@ -3084,7 +3196,11 @@ fn build_audio_args_from_probe(
                         stream.index, stream.bitrate_kbps
                     ));
                 } else {
-                    let target_br = stream.bitrate_kbps.min(*cap_kbps);
+                    let target_br = if stream.bitrate_kbps == 0 {
+                        *cap_kbps
+                    } else {
+                        stream.bitrate_kbps.min(*cap_kbps)
+                    };
                     codec_args.extend([
                         format!("-c:a:{output_idx}"),
                         "aac".to_string(),
@@ -3184,16 +3300,22 @@ impl FfmpegProgress {
 }
 
 /// Convert a tokio async stderr to a std blocking stderr.
-fn tokio_stderr_to_std(tokio_stderr: tokio::process::ChildStderr) -> std::process::ChildStderr {
+fn tokio_stderr_to_std(
+    tokio_stderr: tokio::process::ChildStderr,
+) -> Result<std::process::ChildStderr, String> {
     #[cfg(windows)]
     {
-        let owned = tokio_stderr.into_owned_handle().unwrap();
-        std::process::ChildStderr::from(owned)
+        let owned = tokio_stderr
+            .into_owned_handle()
+            .map_err(|e| format!("Failed to take stderr handle: {e}"))?;
+        Ok(std::process::ChildStderr::from(owned))
     }
     #[cfg(unix)]
     {
-        let owned = tokio_stderr.into_owned_fd().unwrap();
-        std::process::ChildStderr::from(owned)
+        let owned = tokio_stderr
+            .into_owned_fd()
+            .map_err(|e| format!("Failed to take stderr fd: {e}"))?;
+        Ok(std::process::ChildStderr::from(owned))
     }
 }
 
@@ -3280,7 +3402,13 @@ pub fn spawn_stderr_reader(
     stderr_log: Option<SharedStderrLog>,
     label: &str,
 ) -> std::thread::JoinHandle<()> {
-    let std_stderr = tokio_stderr_to_std(tokio_stderr);
+    let std_stderr = match tokio_stderr_to_std(tokio_stderr) {
+        Ok(s) => s,
+        Err(e) => {
+            eprintln!("WARNING: Could not convert stderr for {label}: {e}");
+            return std::thread::spawn(|| {});
+        }
+    };
     let progress_secs = Arc::clone(&progress.progress_secs);
     let frames = Arc::clone(&progress.frame_count);
     let label = label.to_owned();
@@ -3410,5 +3538,905 @@ pub fn resolve_base_dir() -> std::path::PathBuf {
             }
         }
         std::env::current_dir().unwrap_or_else(|_| std::path::PathBuf::from("."))
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::queue::AudioStreamInfo;
+
+    // ── No-op EventSink for functions that require logging ────────
+
+    struct NoopSink;
+
+    impl crate::events::EventSink for NoopSink {
+        fn log(&self, _: &str) {}
+        fn file_progress(&self, _: f64, _: f64, _: f64, _: Option<(u8, u8)>) {}
+        fn batch_progress(&self, _: u32, _: usize) {}
+        fn batch_status(&self, _: &str) {}
+        fn queue_item_updated(&self, _: usize, _: &str) {}
+        fn queue_item_probed(&self, _: usize) {}
+        fn batch_started(&self) {}
+        fn batch_finished(&self, _: u32, _: u32, _: u32, _: &str) {}
+        fn ffmpeg_stderr(&self, _: &str) {}
+        fn batch_command(&self, _: &str) {}
+        fn ffmpeg_download_progress(&self, _: &str) {}
+        fn toast(&self, _: &str) {}
+        fn post_batch(&self, _: &str, _: u32) {}
+    }
+
+    // ── Helper to build default BatchSettings ─────────────────────
+
+    fn default_settings() -> BatchSettings {
+        BatchSettings {
+            output_folder: "output".to_string(),
+            output_mode: "folder".to_string(),
+            threshold: 4.0,
+            qp_i: 20,
+            qp_p: 22,
+            crf_val: 20,
+            rate_control_mode: "QP".to_string(),
+            pix_fmt: "yuv420p".to_string(),
+            delete_source: false,
+            save_log: false,
+            post_command: None,
+            peak_multiplier: 1.5,
+            threads: 0,
+            low_priority: false,
+            precision_mode: false,
+            compatibility_mode: false,
+            preserve_av1: false,
+            force_local: false,
+            video_encoder: "auto".to_string(),
+            codec_family: "auto".to_string(),
+            audio_encoder: "auto".to_string(),
+            audio_cap: 640,
+            output_container: "auto".to_string(),
+        }
+    }
+
+    fn default_encoders() -> Vec<EncoderInfo> {
+        vec![
+            EncoderInfo {
+                name: "hevc_nvenc".to_string(),
+                codec_family: "hevc".to_string(),
+                is_hardware: true,
+            },
+            EncoderInfo {
+                name: "h264_nvenc".to_string(),
+                codec_family: "h264".to_string(),
+                is_hardware: true,
+            },
+            EncoderInfo {
+                name: "libsvtav1".to_string(),
+                codec_family: "av1".to_string(),
+                is_hardware: false,
+            },
+        ]
+    }
+
+    // ══════════════════════════════════════════════════════════════
+    //  1. decide_encode_strategy
+    // ══════════════════════════════════════════════════════════════
+
+    #[test]
+    fn test_decide_strategy_copy_below_threshold() {
+        // File at 3.0 Mbps with a 4.0 Mbps threshold → Copy.
+        let d = decide_encode_strategy(3.0, 4.0, "hevc", "hevc", "QP", 20, 22, 20, 1.5);
+        assert!(matches!(d, EncodeDecision::Copy));
+    }
+
+    #[test]
+    fn test_decide_strategy_copy_at_threshold() {
+        // Exactly at the threshold → below-or-equal branch → Copy.
+        let d = decide_encode_strategy(4.0, 4.0, "hevc", "hevc", "QP", 20, 22, 20, 1.5);
+        assert!(matches!(d, EncodeDecision::Copy));
+    }
+
+    #[test]
+    fn test_decide_strategy_vbr_above_threshold() {
+        // 10 Mbps with a 4 Mbps threshold → VBR.
+        let d = decide_encode_strategy(10.0, 4.0, "hevc", "hevc", "QP", 20, 22, 20, 1.5);
+        match d {
+            EncodeDecision::Vbr {
+                target_bps,
+                peak_bps,
+            } => {
+                assert_eq!(target_bps, 4_000_000);
+                assert_eq!(peak_bps, 6_000_000); // 4M * 1.5
+            }
+            _ => panic!("Expected VBR, got {:?}", d),
+        }
+    }
+
+    #[test]
+    fn test_decide_strategy_vbr_custom_peak_multiplier() {
+        let d = decide_encode_strategy(10.0, 4.0, "hevc", "hevc", "QP", 20, 22, 20, 2.0);
+        match d {
+            EncodeDecision::Vbr {
+                target_bps,
+                peak_bps,
+            } => {
+                assert_eq!(target_bps, 4_000_000);
+                assert_eq!(peak_bps, 8_000_000); // 4M * 2.0
+            }
+            _ => panic!("Expected VBR, got {:?}", d),
+        }
+    }
+
+    #[test]
+    fn test_decide_strategy_vbr_peak_multiplier_below_one_uses_default() {
+        // peak_multiplier <= 1.0 should use the default 1.5.
+        let d = decide_encode_strategy(10.0, 4.0, "hevc", "hevc", "QP", 20, 22, 20, 0.5);
+        match d {
+            EncodeDecision::Vbr { peak_bps, .. } => {
+                assert_eq!(peak_bps, 6_000_000); // 4M * 1.5 (default)
+            }
+            _ => panic!("Expected VBR, got {:?}", d),
+        }
+    }
+
+    #[test]
+    fn test_decide_strategy_copy_hysteresis_same_codec() {
+        // File at 4.5 Mbps, threshold 4.0 → 4.5 <= 4.0 * 1.15 = 4.6 → Copy.
+        let d = decide_encode_strategy(4.5, 4.0, "hevc", "hevc", "QP", 20, 22, 20, 1.5);
+        assert!(matches!(d, EncodeDecision::Copy));
+    }
+
+    #[test]
+    fn test_decide_strategy_no_hysteresis_different_codec() {
+        // File at 4.5 Mbps, threshold 4.0, but source is h264 and target is hevc.
+        // Hysteresis only applies when source == target codec, so this should VBR.
+        let d = decide_encode_strategy(4.5, 4.0, "h264", "hevc", "QP", 20, 22, 20, 1.5);
+        assert!(matches!(d, EncodeDecision::Vbr { .. }));
+    }
+
+    #[test]
+    fn test_decide_strategy_above_hysteresis_same_codec() {
+        // File at 5.0 Mbps, threshold 4.0 → 5.0 > 4.0 * 1.15 = 4.6 → VBR.
+        let d = decide_encode_strategy(5.0, 4.0, "hevc", "hevc", "QP", 20, 22, 20, 1.5);
+        assert!(matches!(d, EncodeDecision::Vbr { .. }));
+    }
+
+    #[test]
+    fn test_decide_strategy_cqp_zero_bitrate() {
+        // bitrate_mbps == 0.0 → falls into below-threshold branch,
+        // but bitrate is not > 0.0 so cannot Copy. QP mode → CQP.
+        let d = decide_encode_strategy(0.0, 4.0, "hevc", "hevc", "QP", 20, 22, 20, 1.5);
+        match d {
+            EncodeDecision::Cqp { qi, qp } => {
+                assert_eq!(qi, 20);
+                assert_eq!(qp, 22);
+            }
+            _ => panic!("Expected CQP for zero bitrate, got {:?}", d),
+        }
+    }
+
+    #[test]
+    fn test_decide_strategy_crf_zero_bitrate() {
+        // CRF mode with zero bitrate → CRF decision.
+        let d = decide_encode_strategy(0.0, 4.0, "hevc", "hevc", "CRF", 20, 22, 18, 1.5);
+        match d {
+            EncodeDecision::Crf {
+                crf,
+                qi_fallback,
+                qp_fallback,
+            } => {
+                assert_eq!(crf, 18);
+                assert_eq!(qi_fallback, 20);
+                assert_eq!(qp_fallback, 22);
+            }
+            _ => panic!("Expected CRF, got {:?}", d),
+        }
+    }
+
+    #[test]
+    fn test_decide_strategy_crf_lowercase() {
+        // "crf" (lowercase) should also trigger CRF mode.
+        let d = decide_encode_strategy(0.0, 4.0, "hevc", "hevc", "crf", 20, 22, 18, 1.5);
+        assert!(matches!(d, EncodeDecision::Crf { .. }));
+    }
+
+    #[test]
+    fn test_decide_strategy_non_copyable_gif() {
+        // GIF cannot be stream-copied even if below threshold.
+        let d = decide_encode_strategy(1.0, 4.0, "gif", "hevc", "QP", 20, 22, 20, 1.5);
+        assert!(matches!(d, EncodeDecision::Cqp { .. }));
+    }
+
+    #[test]
+    fn test_decide_strategy_non_copyable_webp() {
+        let d = decide_encode_strategy(2.0, 4.0, "webp", "hevc", "QP", 20, 22, 20, 1.5);
+        assert!(matches!(d, EncodeDecision::Cqp { .. }));
+    }
+
+    #[test]
+    fn test_decide_strategy_non_copyable_apng() {
+        let d = decide_encode_strategy(2.0, 4.0, "apng", "hevc", "QP", 20, 22, 20, 1.5);
+        assert!(matches!(d, EncodeDecision::Cqp { .. }));
+    }
+
+    #[test]
+    fn test_decide_strategy_non_copyable_mjpeg() {
+        let d = decide_encode_strategy(2.0, 4.0, "mjpeg", "hevc", "QP", 20, 22, 20, 1.5);
+        assert!(matches!(d, EncodeDecision::Cqp { .. }));
+    }
+
+    #[test]
+    fn test_decide_strategy_copy_below_threshold_different_codec() {
+        // Below threshold → Copy, even when source != target.
+        // The function copies regardless of codec mismatch when below threshold.
+        let d = decide_encode_strategy(2.0, 4.0, "h264", "hevc", "QP", 20, 22, 20, 1.5);
+        assert!(matches!(d, EncodeDecision::Copy));
+    }
+
+    #[test]
+    fn test_decide_strategy_negative_bitrate() {
+        // Negative bitrate (edge case) → treated as below-or-equal to threshold.
+        // Not > 0.0, so goes to CQP.
+        let d = decide_encode_strategy(-1.0, 4.0, "hevc", "hevc", "QP", 20, 22, 20, 1.5);
+        assert!(matches!(d, EncodeDecision::Cqp { .. }));
+    }
+
+    // ══════════════════════════════════════════════════════════════
+    //  2. build_audio_args_from_probe
+    // ══════════════════════════════════════════════════════════════
+
+    #[test]
+    fn test_audio_copy_capped_below_cap() {
+        let streams = vec![AudioStreamInfo {
+            index: 0,
+            codec: "ac3".to_string(),
+            bitrate_kbps: 448,
+        }];
+        let strategy = AudioStrategy::CopyCapped { cap_kbps: 640 };
+        let sink = NoopSink;
+        let (map_args, codec_args) = build_audio_args_from_probe(&streams, &strategy, "mkv", &sink);
+        assert_eq!(map_args, vec!["-map", "0:a:0"]);
+        assert_eq!(codec_args, vec!["-c:a:0", "copy"]);
+    }
+
+    #[test]
+    fn test_audio_copy_capped_above_cap() {
+        let streams = vec![AudioStreamInfo {
+            index: 0,
+            codec: "ac3".to_string(),
+            bitrate_kbps: 768,
+        }];
+        let strategy = AudioStrategy::CopyCapped { cap_kbps: 640 };
+        let sink = NoopSink;
+        let (map_args, codec_args) = build_audio_args_from_probe(&streams, &strategy, "mkv", &sink);
+        assert_eq!(map_args, vec!["-map", "0:a:0"]);
+        // ac3 has an ffmpeg encoder, so re-encode to ac3 at cap.
+        assert_eq!(codec_args, vec!["-c:a:0", "ac3", "-b:a:0", "640k"]);
+    }
+
+    #[test]
+    fn test_audio_copy_capped_at_cap() {
+        // Exactly at the cap → copy (<=).
+        let streams = vec![AudioStreamInfo {
+            index: 0,
+            codec: "eac3".to_string(),
+            bitrate_kbps: 640,
+        }];
+        let strategy = AudioStrategy::CopyCapped { cap_kbps: 640 };
+        let sink = NoopSink;
+        let (_, codec_args) = build_audio_args_from_probe(&streams, &strategy, "mkv", &sink);
+        assert_eq!(codec_args, vec!["-c:a:0", "copy"]);
+    }
+
+    #[test]
+    fn test_audio_copy_capped_opus_above_cap_respects_max() {
+        // Opus has a max of 512 kbps via ffmpeg_encoder_for_codec.
+        // With cap at 640, the encoder should use min(640, 512) = 512.
+        let streams = vec![AudioStreamInfo {
+            index: 0,
+            codec: "opus".to_string(),
+            bitrate_kbps: 768,
+        }];
+        let strategy = AudioStrategy::CopyCapped { cap_kbps: 640 };
+        let sink = NoopSink;
+        let (_, codec_args) = build_audio_args_from_probe(&streams, &strategy, "mkv", &sink);
+        assert_eq!(
+            codec_args,
+            vec!["-c:a:0", "libopus", "-b:a:0", "512k"]
+        );
+    }
+
+    #[test]
+    fn test_audio_copy_capped_unknown_codec_no_encoder_fallback_eac3() {
+        // A codec without an ffmpeg encoder (e.g. truehd) falls back to EAC3.
+        let streams = vec![AudioStreamInfo {
+            index: 0,
+            codec: "truehd".to_string(),
+            bitrate_kbps: 4000,
+        }];
+        let strategy = AudioStrategy::CopyCapped { cap_kbps: 640 };
+        let sink = NoopSink;
+        let (_, codec_args) = build_audio_args_from_probe(&streams, &strategy, "mkv", &sink);
+        assert_eq!(codec_args, vec!["-c:a:0", "eac3", "-b:a:0", "640k"]);
+    }
+
+    #[test]
+    fn test_audio_compat_capped_aac_below_cap() {
+        let streams = vec![AudioStreamInfo {
+            index: 0,
+            codec: "aac".to_string(),
+            bitrate_kbps: 256,
+        }];
+        let strategy = AudioStrategy::CompatCapped { cap_kbps: 640 };
+        let sink = NoopSink;
+        let (_, codec_args) = build_audio_args_from_probe(&streams, &strategy, "mkv", &sink);
+        assert_eq!(codec_args, vec!["-c:a:0", "copy"]);
+    }
+
+    #[test]
+    fn test_audio_compat_capped_aac_above_cap() {
+        let streams = vec![AudioStreamInfo {
+            index: 0,
+            codec: "aac".to_string(),
+            bitrate_kbps: 768,
+        }];
+        let strategy = AudioStrategy::CompatCapped { cap_kbps: 640 };
+        let sink = NoopSink;
+        let (_, codec_args) = build_audio_args_from_probe(&streams, &strategy, "mkv", &sink);
+        // AAC above cap → re-encode to AAC at cap.
+        assert_eq!(codec_args, vec!["-c:a:0", "aac", "-b:a:0", "640k"]);
+    }
+
+    #[test]
+    fn test_audio_compat_capped_non_aac_reencode() {
+        // Non-AAC codec in compat mode → always re-encode to AAC.
+        let streams = vec![AudioStreamInfo {
+            index: 0,
+            codec: "ac3".to_string(),
+            bitrate_kbps: 448,
+        }];
+        let strategy = AudioStrategy::CompatCapped { cap_kbps: 640 };
+        let sink = NoopSink;
+        let (_, codec_args) = build_audio_args_from_probe(&streams, &strategy, "mkv", &sink);
+        // target_br = min(448, 640) = 448
+        assert_eq!(codec_args, vec!["-c:a:0", "aac", "-b:a:0", "448k"]);
+    }
+
+    #[test]
+    fn test_audio_compat_capped_non_aac_above_cap() {
+        // Non-AAC above cap → re-encode to AAC at cap.
+        let streams = vec![AudioStreamInfo {
+            index: 0,
+            codec: "eac3".to_string(),
+            bitrate_kbps: 768,
+        }];
+        let strategy = AudioStrategy::CompatCapped { cap_kbps: 640 };
+        let sink = NoopSink;
+        let (_, codec_args) = build_audio_args_from_probe(&streams, &strategy, "mkv", &sink);
+        assert_eq!(codec_args, vec!["-c:a:0", "aac", "-b:a:0", "640k"]);
+    }
+
+    #[test]
+    fn test_audio_empty_streams() {
+        let streams: Vec<AudioStreamInfo> = vec![];
+        let strategy = AudioStrategy::CopyCapped { cap_kbps: 640 };
+        let sink = NoopSink;
+        let (map_args, codec_args) = build_audio_args_from_probe(&streams, &strategy, "mkv", &sink);
+        assert!(map_args.is_empty());
+        assert!(codec_args.is_empty());
+    }
+
+    #[test]
+    fn test_audio_unknown_codec_skipped() {
+        // "unknown" codec streams are skipped entirely.
+        let streams = vec![AudioStreamInfo {
+            index: 0,
+            codec: "unknown".to_string(),
+            bitrate_kbps: 0,
+        }];
+        let strategy = AudioStrategy::CopyCapped { cap_kbps: 640 };
+        let sink = NoopSink;
+        let (map_args, codec_args) = build_audio_args_from_probe(&streams, &strategy, "mkv", &sink);
+        assert!(map_args.is_empty());
+        assert!(codec_args.is_empty());
+    }
+
+    #[test]
+    fn test_audio_multiple_streams_mixed() {
+        // Two streams: one below cap (copy), one above cap (re-encode).
+        let streams = vec![
+            AudioStreamInfo {
+                index: 0,
+                codec: "ac3".to_string(),
+                bitrate_kbps: 384,
+            },
+            AudioStreamInfo {
+                index: 1,
+                codec: "ac3".to_string(),
+                bitrate_kbps: 768,
+            },
+        ];
+        let strategy = AudioStrategy::CopyCapped { cap_kbps: 640 };
+        let sink = NoopSink;
+        let (map_args, codec_args) = build_audio_args_from_probe(&streams, &strategy, "mkv", &sink);
+        assert_eq!(map_args, vec!["-map", "0:a:0", "-map", "0:a:1"]);
+        assert_eq!(
+            codec_args,
+            vec!["-c:a:0", "copy", "-c:a:1", "ac3", "-b:a:1", "640k"]
+        );
+    }
+
+    // ══════════════════════════════════════════════════════════════
+    //  3. resolve_file_settings
+    // ══════════════════════════════════════════════════════════════
+
+    #[test]
+    fn test_resolve_compatibility_mode() {
+        let mut settings = default_settings();
+        settings.compatibility_mode = true;
+        let encoders = default_encoders();
+        let result = resolve_file_settings("hevc", "mkv", &settings, &encoders);
+        assert_eq!(result.codec_family, "h264");
+        assert_eq!(result.container_ext, "mp4");
+        assert!(matches!(result.audio_strategy, AudioStrategy::CompatCapped { .. }));
+    }
+
+    #[test]
+    fn test_resolve_source_h264_stays_h264() {
+        let settings = default_settings();
+        let encoders = default_encoders();
+        let result = resolve_file_settings("h264", "mkv", &settings, &encoders);
+        assert_eq!(result.codec_family, "h264");
+    }
+
+    #[test]
+    fn test_resolve_source_hevc_stays_hevc() {
+        let settings = default_settings();
+        let encoders = default_encoders();
+        let result = resolve_file_settings("hevc", "mkv", &settings, &encoders);
+        assert_eq!(result.codec_family, "hevc");
+    }
+
+    #[test]
+    fn test_resolve_source_h265_alias_stays_hevc() {
+        // "h265" is an alias for "hevc".
+        let settings = default_settings();
+        let encoders = default_encoders();
+        let result = resolve_file_settings("h265", "mkv", &settings, &encoders);
+        assert_eq!(result.codec_family, "hevc");
+    }
+
+    #[test]
+    fn test_resolve_preserve_av1_with_av1_source() {
+        let mut settings = default_settings();
+        settings.preserve_av1 = true;
+        let encoders = default_encoders();
+        let result = resolve_file_settings("av1", "mkv", &settings, &encoders);
+        assert_eq!(result.codec_family, "av1");
+    }
+
+    #[test]
+    fn test_resolve_av1_without_preserve_defaults_hevc() {
+        // Without preserve_av1, AV1 source defaults to HEVC.
+        let settings = default_settings();
+        let encoders = default_encoders();
+        let result = resolve_file_settings("av1", "mkv", &settings, &encoders);
+        assert_eq!(result.codec_family, "hevc");
+    }
+
+    #[test]
+    fn test_resolve_mpeg2_defaults_hevc() {
+        // Any unrecognised codec defaults to HEVC.
+        let settings = default_settings();
+        let encoders = default_encoders();
+        let result = resolve_file_settings("mpeg2video", "avi", &settings, &encoders);
+        assert_eq!(result.codec_family, "hevc");
+    }
+
+    #[test]
+    fn test_resolve_precision_mode_forces_software() {
+        let mut settings = default_settings();
+        settings.precision_mode = true;
+        let encoders = default_encoders();
+        let result = resolve_file_settings("hevc", "mkv", &settings, &encoders);
+        assert_eq!(result.encoder_name, "libx265");
+    }
+
+    #[test]
+    fn test_resolve_hw_encoder_preferred_when_available() {
+        let settings = default_settings();
+        let encoders = default_encoders();
+        let result = resolve_file_settings("hevc", "mkv", &settings, &encoders);
+        assert_eq!(result.encoder_name, "hevc_nvenc");
+    }
+
+    #[test]
+    fn test_resolve_container_auto_from_mp4() {
+        let settings = default_settings();
+        let encoders = default_encoders();
+        let result = resolve_file_settings("hevc", "mp4", &settings, &encoders);
+        assert_eq!(result.container_ext, "mp4");
+    }
+
+    #[test]
+    fn test_resolve_container_auto_from_avi() {
+        // AVI → auto → MKV (default for non-mp4/mkv containers).
+        let settings = default_settings();
+        let encoders = default_encoders();
+        let result = resolve_file_settings("hevc", "avi", &settings, &encoders);
+        assert_eq!(result.container_ext, "mkv");
+    }
+
+    #[test]
+    fn test_resolve_audio_strategy_default_copy_capped() {
+        let settings = default_settings();
+        let encoders = default_encoders();
+        let result = resolve_file_settings("hevc", "mkv", &settings, &encoders);
+        assert!(matches!(
+            result.audio_strategy,
+            AudioStrategy::CopyCapped { cap_kbps: 640 }
+        ));
+    }
+
+    // ══════════════════════════════════════════════════════════════
+    //  4. vbr_flags / cqp_flags / crf_flags
+    // ══════════════════════════════════════════════════════════════
+
+    #[test]
+    fn test_vbr_flags_libx265() {
+        let flags = vbr_flags("libx265", "4M", "6M");
+        assert!(flags.contains(&"-preset".to_string()));
+        assert!(flags.contains(&"slow".to_string()));
+        assert!(flags.contains(&"-b:v".to_string()));
+        assert!(flags.contains(&"4M".to_string()));
+        assert!(flags.contains(&"-maxrate".to_string()));
+        assert!(flags.contains(&"6M".to_string()));
+    }
+
+    #[test]
+    fn test_vbr_flags_libx264() {
+        let flags = vbr_flags("libx264", "3M", "4.5M");
+        assert!(flags.contains(&"-preset".to_string()));
+        assert!(flags.contains(&"slow".to_string()));
+        assert!(flags.contains(&"-b:v".to_string()));
+        assert!(flags.contains(&"3M".to_string()));
+    }
+
+    #[test]
+    fn test_vbr_flags_nvenc() {
+        let flags = vbr_flags("hevc_nvenc", "4M", "6M");
+        assert!(flags.contains(&"-preset".to_string()));
+        assert!(flags.contains(&"p7".to_string()));
+        assert!(flags.contains(&"-rc".to_string()));
+        assert!(flags.contains(&"vbr".to_string()));
+    }
+
+    #[test]
+    fn test_vbr_flags_amf() {
+        let flags = vbr_flags("hevc_amf", "4M", "6M");
+        assert!(flags.contains(&"-quality".to_string()));
+        assert!(flags.contains(&"quality".to_string()));
+        assert!(flags.contains(&"-rc".to_string()));
+        assert!(flags.contains(&"vbr_peak".to_string()));
+    }
+
+    #[test]
+    fn test_vbr_flags_qsv() {
+        let flags = vbr_flags("hevc_qsv", "4M", "6M");
+        assert!(flags.contains(&"-preset".to_string()));
+        assert!(flags.contains(&"veryslow".to_string()));
+    }
+
+    #[test]
+    fn test_vbr_flags_videotoolbox() {
+        let flags = vbr_flags("hevc_videotoolbox", "4M", "6M");
+        assert_eq!(flags, vec!["-b:v", "4M", "-maxrate", "6M"]);
+    }
+
+    #[test]
+    fn test_vbr_flags_vaapi() {
+        let flags = vbr_flags("hevc_vaapi", "4M", "6M");
+        assert!(flags.contains(&"-rc_mode".to_string()));
+        assert!(flags.contains(&"VBR".to_string()));
+    }
+
+    #[test]
+    fn test_vbr_flags_svtav1() {
+        let flags = vbr_flags("libsvtav1", "4M", "6M");
+        assert!(flags.contains(&"-preset".to_string()));
+        assert!(flags.contains(&"6".to_string()));
+    }
+
+    #[test]
+    fn test_vbr_flags_av1_nvenc() {
+        // AV1 HW encoders use the same flags as their H.264/HEVC counterparts.
+        let flags = vbr_flags("av1_nvenc", "4M", "6M");
+        assert!(flags.contains(&"p7".to_string()));
+    }
+
+    #[test]
+    fn test_vbr_flags_unknown_encoder() {
+        let flags = vbr_flags("some_unknown", "4M", "6M");
+        assert_eq!(flags, vec!["-b:v", "4M", "-maxrate", "6M"]);
+    }
+
+    #[test]
+    fn test_cqp_flags_libx265() {
+        let flags = cqp_flags("libx265", "20", "22");
+        assert!(flags.contains(&"-preset".to_string()));
+        assert!(flags.contains(&"slow".to_string()));
+        assert!(flags.contains(&"-qp".to_string()));
+        assert!(flags.contains(&"20".to_string()));
+    }
+
+    #[test]
+    fn test_cqp_flags_nvenc() {
+        let flags = cqp_flags("hevc_nvenc", "20", "22");
+        assert!(flags.contains(&"-rc".to_string()));
+        assert!(flags.contains(&"constqp".to_string()));
+        assert!(flags.contains(&"-qp".to_string()));
+        assert!(flags.contains(&"20".to_string()));
+    }
+
+    #[test]
+    fn test_cqp_flags_amf_uses_qi_and_qp() {
+        let flags = cqp_flags("hevc_amf", "20", "22");
+        assert!(flags.contains(&"-qp_i".to_string()));
+        assert!(flags.contains(&"20".to_string()));
+        assert!(flags.contains(&"-qp_p".to_string()));
+        assert!(flags.contains(&"22".to_string()));
+    }
+
+    #[test]
+    fn test_cqp_flags_qsv() {
+        let flags = cqp_flags("hevc_qsv", "20", "22");
+        assert!(flags.contains(&"-global_quality".to_string()));
+        assert!(flags.contains(&"20".to_string()));
+    }
+
+    #[test]
+    fn test_cqp_flags_videotoolbox() {
+        let flags = cqp_flags("hevc_videotoolbox", "20", "22");
+        assert_eq!(flags, vec!["-q:v", "20"]);
+    }
+
+    #[test]
+    fn test_cqp_flags_vaapi() {
+        let flags = cqp_flags("hevc_vaapi", "20", "22");
+        assert!(flags.contains(&"-rc_mode".to_string()));
+        assert!(flags.contains(&"CQP".to_string()));
+    }
+
+    #[test]
+    fn test_cqp_flags_svtav1() {
+        let flags = cqp_flags("libsvtav1", "20", "22");
+        assert!(flags.contains(&"-preset".to_string()));
+        assert!(flags.contains(&"6".to_string()));
+        assert!(flags.contains(&"-rc".to_string()));
+        assert!(flags.contains(&"0".to_string()));
+        assert!(flags.contains(&"-qp".to_string()));
+    }
+
+    #[test]
+    fn test_crf_flags_libx265() {
+        let flags = crf_flags("libx265", "18", "20", "22");
+        assert!(flags.contains(&"-preset".to_string()));
+        assert!(flags.contains(&"slow".to_string()));
+        assert!(flags.contains(&"-crf".to_string()));
+        assert!(flags.contains(&"18".to_string()));
+        // Should NOT contain -qp (CRF, not CQP).
+        assert!(!flags.contains(&"-qp".to_string()));
+    }
+
+    #[test]
+    fn test_crf_flags_libx264() {
+        let flags = crf_flags("libx264", "22", "20", "22");
+        assert!(flags.contains(&"-crf".to_string()));
+        assert!(flags.contains(&"22".to_string()));
+    }
+
+    #[test]
+    fn test_crf_flags_svtav1() {
+        let flags = crf_flags("libsvtav1", "30", "20", "22");
+        assert!(flags.contains(&"-crf".to_string()));
+        assert!(flags.contains(&"30".to_string()));
+    }
+
+    #[test]
+    fn test_crf_flags_hw_encoder_falls_back_to_cqp() {
+        // Hardware encoders do not support CRF; should fall back to CQP flags.
+        let flags = crf_flags("hevc_nvenc", "18", "20", "22");
+        // Should contain CQP-style flags, not CRF.
+        assert!(!flags.contains(&"-crf".to_string()));
+        assert!(flags.contains(&"-rc".to_string()));
+        assert!(flags.contains(&"constqp".to_string()));
+    }
+
+    #[test]
+    fn test_crf_flags_amf_falls_back_to_cqp() {
+        let flags = crf_flags("hevc_amf", "18", "20", "22");
+        assert!(!flags.contains(&"-crf".to_string()));
+        assert!(flags.contains(&"-rc".to_string()));
+        assert!(flags.contains(&"cqp".to_string()));
+    }
+
+    // ══════════════════════════════════════════════════════════════
+    //  5. build_audio_args_from_probe — MP4 container
+    // ══════════════════════════════════════════════════════════════
+
+    #[test]
+    fn test_audio_opus_below_cap_in_mp4_reencodes_eac3() {
+        // Opus is not MP4-compatible, so even below the cap it must be
+        // re-encoded. The fallback codec for MP4 is EAC3.
+        let streams = vec![AudioStreamInfo {
+            index: 0,
+            codec: "opus".to_string(),
+            bitrate_kbps: 200,
+        }];
+        let strategy = AudioStrategy::CopyCapped { cap_kbps: 640 };
+        let sink = NoopSink;
+        let (map_args, codec_args) =
+            build_audio_args_from_probe(&streams, &strategy, "mp4", &sink);
+        assert_eq!(map_args, vec!["-map", "0:a:0"]);
+        assert_eq!(codec_args, vec!["-c:a:0", "eac3", "-b:a:0", "640k"]);
+    }
+
+    #[test]
+    fn test_audio_vorbis_below_cap_in_mp4_reencodes_eac3() {
+        // Vorbis is not MP4-compatible, same behaviour as Opus above.
+        let streams = vec![AudioStreamInfo {
+            index: 0,
+            codec: "vorbis".to_string(),
+            bitrate_kbps: 300,
+        }];
+        let strategy = AudioStrategy::CopyCapped { cap_kbps: 640 };
+        let sink = NoopSink;
+        let (map_args, codec_args) =
+            build_audio_args_from_probe(&streams, &strategy, "mp4", &sink);
+        assert_eq!(map_args, vec!["-map", "0:a:0"]);
+        assert_eq!(codec_args, vec!["-c:a:0", "eac3", "-b:a:0", "640k"]);
+    }
+
+    #[test]
+    fn test_audio_aac_below_cap_in_mp4_copies() {
+        // AAC is MP4-compatible and below cap — should be copied.
+        let streams = vec![AudioStreamInfo {
+            index: 0,
+            codec: "aac".to_string(),
+            bitrate_kbps: 200,
+        }];
+        let strategy = AudioStrategy::CopyCapped { cap_kbps: 640 };
+        let sink = NoopSink;
+        let (map_args, codec_args) =
+            build_audio_args_from_probe(&streams, &strategy, "mp4", &sink);
+        assert_eq!(map_args, vec!["-map", "0:a:0"]);
+        assert_eq!(codec_args, vec!["-c:a:0", "copy"]);
+    }
+
+    #[test]
+    fn test_audio_ac3_above_cap_in_mp4_reencodes_ac3() {
+        // AC3 is MP4-compatible but above the cap — re-encode to AC3 at cap.
+        let streams = vec![AudioStreamInfo {
+            index: 0,
+            codec: "ac3".to_string(),
+            bitrate_kbps: 800,
+        }];
+        let strategy = AudioStrategy::CopyCapped { cap_kbps: 640 };
+        let sink = NoopSink;
+        let (map_args, codec_args) =
+            build_audio_args_from_probe(&streams, &strategy, "mp4", &sink);
+        assert_eq!(map_args, vec!["-map", "0:a:0"]);
+        assert_eq!(codec_args, vec!["-c:a:0", "ac3", "-b:a:0", "640k"]);
+    }
+
+    // ══════════════════════════════════════════════════════════════
+    //  6. assemble_ffmpeg_args
+    // ══════════════════════════════════════════════════════════════
+
+    #[test]
+    fn test_assemble_hevc_in_mp4_has_hvc1_and_faststart() {
+        let args = assemble_ffmpeg_args(
+            "input.mkv",
+            &["-c:v", "libx265"],
+            "yuv420p",
+            &[],
+            &[],
+            "output.mp4",
+            false,
+            0,
+            None,
+            "hevc",
+        );
+        assert!(args.contains(&"-tag:v".to_string()));
+        assert!(args.contains(&"hvc1".to_string()));
+        assert!(args.contains(&"-movflags".to_string()));
+        assert!(args.contains(&"+faststart".to_string()));
+    }
+
+    #[test]
+    fn test_assemble_h264_in_mp4_no_hvc1_tag() {
+        let args = assemble_ffmpeg_args(
+            "input.mkv",
+            &["-c:v", "libx264"],
+            "yuv420p",
+            &[],
+            &[],
+            "output.mp4",
+            false,
+            0,
+            None,
+            "h264",
+        );
+        assert!(!args.contains(&"-tag:v".to_string()));
+        assert!(!args.contains(&"hvc1".to_string()));
+        // Should still have faststart for MP4.
+        assert!(args.contains(&"-movflags".to_string()));
+        assert!(args.contains(&"+faststart".to_string()));
+    }
+
+    #[test]
+    fn test_assemble_hevc_in_mkv_no_hvc1_or_movflags() {
+        let args = assemble_ffmpeg_args(
+            "input.mkv",
+            &["-c:v", "libx265"],
+            "yuv420p",
+            &[],
+            &[],
+            "output.mkv",
+            false,
+            0,
+            None,
+            "hevc",
+        );
+        assert!(!args.contains(&"-tag:v".to_string()));
+        assert!(!args.contains(&"hvc1".to_string()));
+        assert!(!args.contains(&"-movflags".to_string()));
+        assert!(!args.contains(&"+faststart".to_string()));
+    }
+
+    #[test]
+    fn test_assemble_mp4_subtitles_use_mov_text() {
+        let args = assemble_ffmpeg_args(
+            "input.mkv",
+            &["-c:v", "libx265"],
+            "yuv420p",
+            &[],
+            &[],
+            "output.mp4",
+            false,
+            0,
+            None,
+            "hevc",
+        );
+        assert!(args.contains(&"-c:s".to_string()));
+        assert!(args.contains(&"mov_text".to_string()));
+        // The subtitle codec value following -c:s must not be "copy".
+        let cs_positions: Vec<usize> = args
+            .iter()
+            .enumerate()
+            .filter(|(_, a)| *a == "-c:s")
+            .map(|(i, _)| i)
+            .collect();
+        for pos in cs_positions {
+            assert_ne!(args[pos + 1], "copy");
+        }
+    }
+
+    #[test]
+    fn test_assemble_mkv_subtitles_use_copy() {
+        let args = assemble_ffmpeg_args(
+            "input.mkv",
+            &["-c:v", "libx265"],
+            "yuv420p",
+            &[],
+            &[],
+            "output.mkv",
+            false,
+            0,
+            None,
+            "hevc",
+        );
+        assert!(args.contains(&"-c:s".to_string()));
+        assert!(args.contains(&"copy".to_string()));
+        // Should not contain "mov_text".
+        assert!(!args.contains(&"mov_text".to_string()));
     }
 }

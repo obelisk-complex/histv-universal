@@ -1,69 +1,69 @@
-name: Build & Release CLI + GUI
+# Reusable workflow: build a single platform (GUI + CLI + full bundles)
+name: Build Platform
 
 on:
-  release:
-    types: [published]
+  workflow_call:
+    inputs:
+      os:
+        description: "Runner OS (e.g. ubuntu-22.04)"
+        required: true
+        type: string
+      target:
+        description: "Rust target triple"
+        required: true
+        type: string
+      label:
+        description: "Platform label (linux, windows, macos-arm64, macos-x64)"
+        required: true
+        type: string
+      bundles:
+        description: "Tauri bundle type (e.g. appimage, dmg)"
+        required: false
+        type: string
+        default: ""
+      ref:
+        description: "Git ref to build"
+        required: false
+        type: string
+        default: "main"
 
 permissions:
-  contents: write
+  contents: read
 
 # ── Pinned dependency versions ──────────────────────────────────
-# Update these when upgrading ffmpeg, Tauri CLI, or appimagetool.
-# Windows ffmpeg: gyan.dev full build (matches local dev environment)
-# Linux ffmpeg:   BtbN GPL static build
-# macOS ffmpeg:   evermeet.cx universal build
 env:
-  FFMPEG_VERSION_GYAN: "8.0.1"
+  RUST_VERSION: "1.93.1"
+  TAURI_CLI_VERSION: "=2.10.1"
   FFMPEG_BTBN_TAG: "autobuild-2026-04-01-13-13"
   FFMPEG_BTBN_LINUX: "ffmpeg-n8.1-7-ga3475e2554-linux64-gpl-8.1.tar.xz"
+  FFMPEG_BTBN_LINUX_SHA256: "57417a11d21fc9ec76b4a250f95754d99d0f272765ba62b2d0aaf87d02c32cd8"
+  FFMPEG_GYAN_VERSION: "8.0.1"
   FFMPEG_EVERMEET_VER: "8.1"
-  TAURI_CLI_VERSION: "=2.10.1"
   APPIMAGETOOL_VERSION: "1.9.1"
 
 jobs:
   build:
-    strategy:
-      fail-fast: false
-      matrix:
-        include:
-          - os: windows-2022
-            target: x86_64-pc-windows-msvc
-            label: windows
-            cli-name: histv-cli.exe
-            cli-artefact: histv-cli-windows.exe
-          - os: ubuntu-22.04
-            target: x86_64-unknown-linux-gnu
-            label: linux
-            bundles: appimage
-            cli-name: histv-cli
-            cli-artefact: histv-cli-linux
-          - os: macos-14
-            target: aarch64-apple-darwin
-            label: macos-arm64
-            bundles: dmg
-            cli-name: histv-cli
-            cli-artefact: histv-cli-macos-arm64
-          - os: macos-14
-            target: x86_64-apple-darwin
-            label: macos-x64
-            bundles: dmg
-            cli-name: histv-cli
-            cli-artefact: histv-cli-macos-x64
-
-    runs-on: ${{ matrix.os }}
+    runs-on: ${{ inputs.os }}
 
     steps:
       - name: Checkout
-        uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4
-
-      - name: Install Rust stable
-        uses: dtolnay/rust-toolchain@3c5f7ea28cd621ae0bf5283f0e981fb97b8a7af9 # 1.93.1
+        uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
         with:
-          toolchain: "1.93.1"
-          targets: ${{ matrix.target }}
+          ref: ${{ inputs.ref }}
+
+      - name: Install Rust ${{ env.RUST_VERSION }}
+        uses: dtolnay/rust-toolchain@3c5f7ea28cd621ae0bf5283f0e981fb97b8a7af9
+        with:
+          toolchain: ${{ env.RUST_VERSION }}
+          targets: ${{ inputs.target }}
+
+      - name: Rust cache
+        uses: Swatinem/rust-cache@c19371144df3bb44fab255c43d04cbc2ab54d1c4 # v2.9.1
+        with:
+          workspaces: src-tauri
 
       - name: Install Linux dependencies
-        if: matrix.label == 'linux'
+        if: inputs.label == 'linux'
         run: |
           sudo apt-get update
           sudo apt-get install -y \
@@ -78,37 +78,69 @@ jobs:
       - name: Install Tauri CLI
         run: cargo install tauri-cli --version "${{ env.TAURI_CLI_VERSION }}" --locked
 
+      - name: Run tests
+        working-directory: src-tauri
+        run: cargo test --features dovi,cli
+
       - name: Build GUI
         shell: bash
         run: |
-          if [ -n "${{ matrix.bundles }}" ]; then
-            cargo tauri build --target ${{ matrix.target }} --bundles ${{ matrix.bundles }}
+          set -e
+          BUNDLES="${{ inputs.bundles }}"
+          TARGET="${{ inputs.target }}"
+          if [ -n "$BUNDLES" ]; then
+            cargo tauri build --target "$TARGET" --bundles "$BUNDLES"
           else
-            cargo tauri build --target ${{ matrix.target }}
+            cargo tauri build --target "$TARGET"
           fi
 
       - name: Build CLI
         working-directory: src-tauri
-        run: cargo build --release --bin histv-cli --no-default-features --features cli --target ${{ matrix.target }}
+        shell: bash
+        run: |
+          set -e
+          cargo build --release --bin histv-cli --no-default-features --features cli --target "${{ inputs.target }}"
 
       - name: Collect artefacts
         shell: bash
         run: |
+          set -e
           mkdir -p artefacts
+          TARGET="${{ inputs.target }}"
+          LABEL="${{ inputs.label }}"
+
           # Portable Windows exe (GUI)
-          PORTABLE="$GITHUB_WORKSPACE/src-tauri/target/${{ matrix.target }}/release/histv.exe"
+          PORTABLE="$GITHUB_WORKSPACE/src-tauri/target/$TARGET/release/histv.exe"
           if [ -f "$PORTABLE" ]; then
-            cp "$PORTABLE" "artefacts/histv-${{ matrix.label }}.exe"
+            cp "$PORTABLE" "artefacts/histv-$LABEL.exe"
           fi
+
           # AppImage (Linux portable GUI)
           find "$GITHUB_WORKSPACE" -name "*.AppImage" -exec cp {} artefacts/ \;
+
           # DMG (macOS portable GUI)
           find "$GITHUB_WORKSPACE" -name "*.dmg" -exec cp {} artefacts/ \;
+
           # CLI binary
-          CLI_BIN="$GITHUB_WORKSPACE/src-tauri/target/${{ matrix.target }}/release/${{ matrix.cli-name }}"
-          if [ -f "$CLI_BIN" ]; then
-            cp "$CLI_BIN" "artefacts/${{ matrix.cli-artefact }}"
+          case "$LABEL" in
+            windows)
+              CLI_SRC="$GITHUB_WORKSPACE/src-tauri/target/$TARGET/release/histv-cli.exe"
+              CLI_DEST="artefacts/histv-cli-windows.exe"
+              ;;
+            linux)
+              CLI_SRC="$GITHUB_WORKSPACE/src-tauri/target/$TARGET/release/histv-cli"
+              CLI_DEST="artefacts/histv-cli-linux"
+              ;;
+            macos-*)
+              CLI_SRC="$GITHUB_WORKSPACE/src-tauri/target/$TARGET/release/histv-cli"
+              CLI_DEST="artefacts/histv-cli-$LABEL"
+              ;;
+          esac
+
+          if [ -f "$CLI_SRC" ]; then
+            cp "$CLI_SRC" "$CLI_DEST"
           fi
+
           ls -lh artefacts/
 
       # ── Download ffmpeg for -full variant builds ───────────────
@@ -116,13 +148,17 @@ jobs:
       - name: Download ffmpeg
         shell: bash
         run: |
+          set -e
           mkdir -p ffmpeg-bin
+          LABEL="${{ inputs.label }}"
 
-          case "${{ matrix.label }}" in
+          case "$LABEL" in
             windows)
-              URL="https://www.gyan.dev/ffmpeg/builds/packages/ffmpeg-${{ env.FFMPEG_VERSION_GYAN }}-full_build.7z"
+              URL="https://www.gyan.dev/ffmpeg/builds/packages/ffmpeg-${FFMPEG_GYAN_VERSION}-full_build.7z"
               echo "Downloading ffmpeg from $URL"
               curl -fSL --retry 3 -o ffmpeg-archive.7z "$URL"
+              # TODO: pin SHA-256 for gyan.dev ffmpeg
+              # echo "<SHA256>  ffmpeg-archive.7z" | sha256sum -c -
               7z x ffmpeg-archive.7z -offmpeg-extract -y
               FFMPEG=$(find ffmpeg-extract -name "ffmpeg.exe" -type f | head -1)
               FFPROBE=$(find ffmpeg-extract -name "ffprobe.exe" -type f | head -1)
@@ -130,9 +166,10 @@ jobs:
               cp "$FFPROBE" ffmpeg-bin/ffprobe.exe
               ;;
             linux)
-              URL="https://github.com/BtbN/FFmpeg-Builds/releases/download/${{ env.FFMPEG_BTBN_TAG }}/${{ env.FFMPEG_BTBN_LINUX }}"
+              URL="https://github.com/BtbN/FFmpeg-Builds/releases/download/${FFMPEG_BTBN_TAG}/${FFMPEG_BTBN_LINUX}"
               echo "Downloading ffmpeg from $URL"
               curl -fSL --retry 3 -o ffmpeg-archive.tar.xz "$URL"
+              echo "${FFMPEG_BTBN_LINUX_SHA256}  ffmpeg-archive.tar.xz" | sha256sum -c -
               mkdir -p ffmpeg-extract
               tar xf ffmpeg-archive.tar.xz -C ffmpeg-extract
               FFMPEG=$(find ffmpeg-extract -name "ffmpeg" -not -name "ffprobe" -type f | head -1)
@@ -142,9 +179,12 @@ jobs:
               chmod +x ffmpeg-bin/ffmpeg ffmpeg-bin/ffprobe
               ;;
             macos-*)
-              echo "Downloading ffmpeg ${{ env.FFMPEG_EVERMEET_VER }} from evermeet.cx"
-              curl -fSL --retry 3 -o ffmpeg.zip "https://evermeet.cx/ffmpeg/ffmpeg-${{ env.FFMPEG_EVERMEET_VER }}.zip"
-              curl -fSL --retry 3 -o ffprobe.zip "https://evermeet.cx/ffmpeg/ffprobe-${{ env.FFMPEG_EVERMEET_VER }}.zip"
+              echo "Downloading ffmpeg ${FFMPEG_EVERMEET_VER} from evermeet.cx"
+              curl -fSL --retry 3 -o ffmpeg.zip "https://evermeet.cx/ffmpeg/ffmpeg-${FFMPEG_EVERMEET_VER}.zip"
+              curl -fSL --retry 3 -o ffprobe.zip "https://evermeet.cx/ffmpeg/ffprobe-${FFMPEG_EVERMEET_VER}.zip"
+              # TODO: pin SHA-256 for evermeet.cx ffmpeg
+              # echo "<SHA256>  ffmpeg.zip" | shasum -a 256 -c -
+              # echo "<SHA256>  ffprobe.zip" | shasum -a 256 -c -
               unzip -q ffmpeg.zip -d ffmpeg-bin
               unzip -q ffprobe.zip -d ffmpeg-bin
               chmod +x ffmpeg-bin/ffmpeg ffmpeg-bin/ffprobe
@@ -153,15 +193,14 @@ jobs:
 
           echo "--- ffmpeg-bin contents ---"
           ls -lh ffmpeg-bin/
-          echo "--- version check ---"
-          ffmpeg-bin/ffmpeg$([ "${{ matrix.label }}" = "windows" ] && echo ".exe") -version | head -1 || true
 
       # ── Build -full variant bundles ────────────────────────────
 
       - name: Bundle full (Windows)
-        if: matrix.label == 'windows'
+        if: inputs.label == 'windows'
         shell: bash
         run: |
+          set -e
           # GUI full - zip with ffmpeg
           mkdir -p bundle-gui
           cp "artefacts/histv-windows.exe" bundle-gui/
@@ -179,9 +218,10 @@ jobs:
           cd bundle-cli && 7z a -tzip -mx=9 ../artefacts/histv-cli-windows-full.zip * && cd ..
 
       - name: Bundle full (Linux)
-        if: matrix.label == 'linux'
+        if: inputs.label == 'linux'
         shell: bash
         run: |
+          set -e
           # GUI full - repack the AppImage with ffmpeg inside
           APPIMAGE=$(find artefacts -name "*.AppImage" | head -1)
           chmod +x "$APPIMAGE"
@@ -192,8 +232,10 @@ jobs:
           cp THIRD-PARTY-LICENCES squashfs-root/
 
           # Get appimagetool to repack (pinned version)
-          curl -fSL --retry 3 -o appimagetool \
-            "https://github.com/AppImage/appimagetool/releases/download/${{ env.APPIMAGETOOL_VERSION }}/appimagetool-x86_64.AppImage"
+          APPIMAGETOOL_URL="https://github.com/AppImage/appimagetool/releases/download/${APPIMAGETOOL_VERSION}/appimagetool-x86_64.AppImage"
+          curl -fSL --retry 3 -o appimagetool "$APPIMAGETOOL_URL"
+          # TODO: pin SHA-256 for appimagetool
+          # echo "<SHA256>  appimagetool" | sha256sum -c -
           chmod +x appimagetool
           ARCH=x86_64 ./appimagetool --appimage-extract-and-run squashfs-root/ artefacts/histv-linux-full.AppImage
 
@@ -206,14 +248,21 @@ jobs:
           tar czf artefacts/histv-cli-linux-full.tar.gz -C bundle-cli .
 
       - name: Bundle full (macOS)
-        if: startsWith(matrix.label, 'macos')
+        if: startsWith(inputs.label, 'macos')
         shell: bash
         run: |
+          set -e
+          LABEL="${{ inputs.label }}"
+
           # GUI full - extract DMG, inject ffmpeg, create new DMG
           DMG=$(find artefacts -name "*.dmg" | head -1)
 
-          mkdir -p /tmp/dmg_src
-          hdiutil attach "$DMG" -mountpoint /tmp/dmg_src -nobrowse -readonly
+          # hdiutil can be flaky in CI; retry up to 3 times
+          for i in 1 2 3; do
+            hdiutil attach "$DMG" -mountpoint /tmp/dmg_src -nobrowse -readonly && break
+            echo "hdiutil attach failed, retrying in 5s..."
+            sleep 5
+          done
 
           mkdir -p dmg-contents
           cp -R /tmp/dmg_src/* dmg-contents/
@@ -229,42 +278,20 @@ jobs:
             -srcfolder dmg-contents \
             -format UDZO \
             -ov \
-            "artefacts/histv-${{ matrix.label }}-full.dmg"
+            "artefacts/histv-$LABEL-full.dmg"
 
           rm -rf dmg-contents
 
           # CLI full - tar.gz with ffmpeg
           mkdir -p bundle-cli
-          cp "artefacts/${{ matrix.cli-artefact }}" bundle-cli/
+          cp "artefacts/histv-cli-$LABEL" bundle-cli/
           cp ffmpeg-bin/ffmpeg bundle-cli/
           cp ffmpeg-bin/ffprobe bundle-cli/
           cp THIRD-PARTY-LICENCES bundle-cli/
-          tar czf "artefacts/histv-cli-${{ matrix.label }}-full.tar.gz" -C bundle-cli .
+          tar czf "artefacts/histv-cli-$LABEL-full.tar.gz" -C bundle-cli .
 
       - name: Upload artefacts
-        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
         with:
-          name: histv-${{ matrix.label }}
+          name: histv-${{ inputs.label }}
           path: artefacts/*
-
-  release:
-    needs: build
-    runs-on: ubuntu-22.04
-
-    steps:
-      - name: Download all artefacts
-        uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4
-        with:
-          path: release-assets
-          merge-multiple: true
-
-      - name: List assets
-        run: find release-assets -type f
-
-      - name: Create GitHub Release
-        uses: softprops/action-gh-release@153bb8e04406b158c6c84fc1615b65b24149a1fe # v2
-        with:
-          files: release-assets/**/*
-          generate_release_notes: true
-          draft: false
-          prerelease: false

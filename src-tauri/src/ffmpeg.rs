@@ -20,14 +20,24 @@
 //! - macOS 10.12 Sierra+ (x86_64 / ARM64) — Xcode CLT, Homebrew (Intel & AS), MacPorts
 //! - Linux (x86_64) — FHS paths, snap, flatpak, Nix, linuxbrew
 
+use std::ffi::OsString;
 use std::path::{Path, PathBuf};
-use std::sync::RwLock;
+use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::{OnceLock, RwLock};
 use tokio::process::Command;
 
 use crate::events::EventSink;
 
-static FFMPEG_PATH: RwLock<Option<PathBuf>> = RwLock::new(None);
-static FFPROBE_PATH: RwLock<Option<PathBuf>> = RwLock::new(None);
+// Fast path: OnceLock is set at init() and provides zero-overhead reads
+// (no lock acquisition, no PathBuf clone) for the entire lifetime of the
+// process. The rare reinit() case (after ffmpeg download) sets the
+// override RwLock and flips the AtomicBool so subsequent reads fall back
+// to the RwLock instead.
+static FFMPEG_INIT: OnceLock<OsString> = OnceLock::new();
+static FFPROBE_INIT: OnceLock<OsString> = OnceLock::new();
+static FFMPEG_OVERRIDE: RwLock<Option<OsString>> = RwLock::new(None);
+static FFPROBE_OVERRIDE: RwLock<Option<OsString>> = RwLock::new(None);
+static HAS_OVERRIDE: AtomicBool = AtomicBool::new(false);
 
 /// Platform-specific executable extension.
 #[cfg(target_os = "windows")]
@@ -112,15 +122,15 @@ pub fn init(resource_dir: Option<&Path>, _app_data_dir: Option<&Path>, sink: &dy
     log_resolved_path(sink, "ffmpeg", &ffmpeg);
     log_resolved_path(sink, "ffprobe", &ffprobe);
 
-    if let Ok(mut w) = FFMPEG_PATH.write() {
-        *w = Some(ffmpeg);
-    }
-    if let Ok(mut w) = FFPROBE_PATH.write() {
-        *w = Some(ffprobe);
-    }
+    // OnceLock::set returns Err if already set (idempotent; no panic).
+    let _ = FFMPEG_INIT.set(ffmpeg.into_os_string());
+    let _ = FFPROBE_INIT.set(ffprobe.into_os_string());
 }
 
 /// Re-resolve the binary paths after a download.
+/// This is a rare operation (only after auto-download). It stores the new
+/// paths in the override RwLock and flips the AtomicBool flag so that
+/// subsequent reads use the override instead of the OnceLock fast path.
 pub fn reinit(resource_dir: Option<&Path>, sink: &dyn EventSink) {
     let ffmpeg_name = format!("ffmpeg{EXE_EXT}");
     let ffprobe_name = format!("ffprobe{EXE_EXT}");
@@ -131,12 +141,13 @@ pub fn reinit(resource_dir: Option<&Path>, sink: &dyn EventSink) {
     log_resolved_path(sink, "ffmpeg", &ffmpeg);
     log_resolved_path(sink, "ffprobe", &ffprobe);
 
-    if let Ok(mut w) = FFMPEG_PATH.write() {
-        *w = Some(ffmpeg);
+    if let Ok(mut w) = FFMPEG_OVERRIDE.write() {
+        *w = Some(ffmpeg.into_os_string());
     }
-    if let Ok(mut w) = FFPROBE_PATH.write() {
-        *w = Some(ffprobe);
+    if let Ok(mut w) = FFPROBE_OVERRIDE.write() {
+        *w = Some(ffprobe.into_os_string());
     }
+    HAS_OVERRIDE.store(true, Ordering::Release);
 }
 
 /// Log which path was resolved for a binary (helps diagnose "not found" reports).
@@ -156,26 +167,52 @@ fn log_resolved_path(sink: &dyn EventSink, label: &str, path: &PathBuf) {
     }
 }
 
+/// Resolve the current ffmpeg path. Fast path (no lock) unless reinit has
+/// been called; fallback to the override RwLock otherwise.
+fn resolve_ffmpeg_os() -> OsString {
+    if !HAS_OVERRIDE.load(Ordering::Acquire) {
+        if let Some(p) = FFMPEG_INIT.get() {
+            return p.clone();
+        }
+    } else if let Ok(r) = FFMPEG_OVERRIDE.read() {
+        if let Some(ref p) = *r {
+            return p.clone();
+        }
+    }
+    // Fallback: OnceLock may have been set even if override is active
+    FFMPEG_INIT
+        .get()
+        .cloned()
+        .unwrap_or_else(|| "ffmpeg".into())
+}
+
+/// Resolve the current ffprobe path. Same pattern as `resolve_ffmpeg_os`.
+fn resolve_ffprobe_os() -> OsString {
+    if !HAS_OVERRIDE.load(Ordering::Acquire) {
+        if let Some(p) = FFPROBE_INIT.get() {
+            return p.clone();
+        }
+    } else if let Ok(r) = FFPROBE_OVERRIDE.read() {
+        if let Some(ref p) = *r {
+            return p.clone();
+        }
+    }
+    FFPROBE_INIT
+        .get()
+        .cloned()
+        .unwrap_or_else(|| "ffprobe".into())
+}
+
 /// Return a `Command` that will invoke ffmpeg (console window hidden on Windows).
 pub fn ffmpeg_command() -> Command {
-    let path = FFMPEG_PATH
-        .read()
-        .ok()
-        .and_then(|r| r.as_ref().map(|p| p.as_os_str().to_os_string()))
-        .unwrap_or_else(|| "ffmpeg".into());
-    let mut cmd = Command::new(path);
+    let mut cmd = Command::new(resolve_ffmpeg_os());
     hide_window(&mut cmd);
     cmd
 }
 
 /// Return a `Command` that will invoke ffprobe (console window hidden on Windows).
 pub fn ffprobe_command() -> Command {
-    let path = FFPROBE_PATH
-        .read()
-        .ok()
-        .and_then(|r| r.as_ref().map(|p| p.as_os_str().to_os_string()))
-        .unwrap_or_else(|| "ffprobe".into());
-    let mut cmd = Command::new(path);
+    let mut cmd = Command::new(resolve_ffprobe_os());
     hide_window(&mut cmd);
     cmd
 }
@@ -204,33 +241,60 @@ pub fn exe_dir() -> Option<PathBuf> {
 
 // ── Download URLs ───────────────────────────────────────────────
 
-/// Download URL for the platform-appropriate ffmpeg static build.
+/// Download URL candidates for the platform-appropriate ffmpeg static build.
+/// Returns a list of (url, archive_type) pairs to try in order.
+/// If the primary mirror is unreachable, the next candidate is tried.
 #[cfg(feature = "downloader")]
-fn download_url() -> Option<(&'static str, &'static str)> {
-    // Returns (url, archive_type)
+fn download_urls() -> Vec<(&'static str, &'static str)> {
+    // Each entry: (url, archive_type)
     #[cfg(all(target_os = "windows", target_arch = "x86_64"))]
     {
-        Some((
-            "https://github.com/BtbN/FFmpeg-Builds/releases/download/latest/ffmpeg-master-latest-win64-gpl.zip",
-            "zip",
-        ))
+        vec![
+            (
+                "https://github.com/BtbN/FFmpeg-Builds/releases/download/latest/ffmpeg-master-latest-win64-gpl.zip",
+                "zip",
+            ),
+            (
+                "https://github.com/BtbN/FFmpeg-Builds/releases/download/latest/ffmpeg-n7.1-latest-win64-gpl-7.1.zip",
+                "zip",
+            ),
+        ]
     }
     #[cfg(all(target_os = "linux", target_arch = "x86_64"))]
     {
-        Some((
-            "https://github.com/BtbN/FFmpeg-Builds/releases/download/latest/ffmpeg-master-latest-linux64-gpl.tar.xz",
-            "tar.xz",
-        ))
+        vec![
+            (
+                "https://github.com/BtbN/FFmpeg-Builds/releases/download/latest/ffmpeg-master-latest-linux64-gpl.tar.xz",
+                "tar.xz",
+            ),
+            (
+                "https://github.com/BtbN/FFmpeg-Builds/releases/download/latest/ffmpeg-n7.1-latest-linux64-gpl-7.1.tar.xz",
+                "tar.xz",
+            ),
+            (
+                "https://johnvansickle.com/ffmpeg/releases/ffmpeg-release-amd64-static.tar.xz",
+                "tar.xz",
+            ),
+        ]
     }
     #[cfg(all(target_os = "macos", target_arch = "x86_64"))]
     {
-        Some(("https://evermeet.cx/ffmpeg/get/zip", "zip"))
+        // BtbN does not publish macOS x86_64 builds; only the evermeet
+        // universal/x64 archive is available. If evermeet is down, users
+        // should install via Homebrew (`brew install ffmpeg`).
+        vec![("https://evermeet.cx/ffmpeg/get/zip", "zip")]
     }
     #[cfg(all(target_os = "macos", target_arch = "aarch64"))]
     {
-        Some(("https://evermeet.cx/ffmpeg/get/zip", "zip"))
+        vec![
+            ("https://evermeet.cx/ffmpeg/get/zip", "zip"),
+            (
+                "https://github.com/BtbN/FFmpeg-Builds/releases/download/latest/ffmpeg-master-latest-macosarm64-gpl.zip",
+                "zip",
+            ),
+        ]
     }
-    // Fallback for any other platform
+    // No known source for other platforms
     #[cfg(not(any(
         all(target_os = "windows", target_arch = "x86_64"),
         all(target_os = "linux", target_arch = "x86_64"),
@@ -238,58 +302,99 @@ fn download_url() -> Option<(&'static str, &'static str)> {
         all(target_os = "macos", target_arch = "aarch64"),
     )))]
     {
-        None
+        vec![]
     }
 }
 
-/// Download URL for ffprobe on platforms where it is bundled separately.
+/// Download URL candidates for ffprobe on platforms where it is bundled separately.
 /// On macOS (evermeet.cx), ffmpeg and ffprobe are separate downloads.
+/// The BtbN builds include ffprobe in the main archive so only evermeet needs this.
 #[cfg(all(feature = "downloader", target_os = "macos"))]
-fn ffprobe_download_url() -> Option<(&'static str, &'static str)> {
-    Some(("https://evermeet.cx/ffmpeg/get/ffprobe/zip", "zip"))
+fn ffprobe_download_urls() -> Vec<(&'static str, &'static str)> {
+    vec![("https://evermeet.cx/ffmpeg/get/ffprobe/zip", "zip")]
 }
 
 #[cfg(all(feature = "downloader", not(target_os = "macos")))]
-fn ffprobe_download_url() -> Option<(&'static str, &'static str)> {
+fn ffprobe_download_urls() -> Vec<(&'static str, &'static str)> {
     // On Windows/Linux, ffprobe is included in the main archive
-    None
+    vec![]
 }
 
 // ── Download & extraction ───────────────────────────────────────
 
 /// Download ffmpeg and ffprobe to the given directory.
 /// Uses reqwest for cross-platform HTTP with progress reporting.
+/// Tries each URL in the fallback chain until one succeeds.
 /// Returns Ok(()) on success.
 #[cfg(feature = "downloader")]
 pub async fn download_to_dir(
     target_dir: &std::path::Path,
     sink: &dyn EventSink,
 ) -> Result<(), String> {
-    let (url, archive_type) = download_url()
-        .ok_or_else(|| "Automatic download is not available for this platform. Please install ffmpeg manually (e.g. via Homebrew on macOS).".to_string())?;
+    let urls = download_urls();
+    if urls.is_empty() {
+        return Err("Automatic download is not available for this platform. \
+                     Please install ffmpeg manually (e.g. via Homebrew on macOS)."
+            .to_string());
+    }
 
     sink.ffmpeg_download_progress("Downloading ffmpeg... 0%");
 
-    // Stream-download a URL to a file, reporting progress
     let client = reqwest::Client::builder()
         .redirect(reqwest::redirect::Policy::limited(10))
         .build()
         .map_err(|e| format!("Failed to create HTTP client: {e}"))?;
 
-    download_file(&client, url, target_dir, archive_type, "ffmpeg", sink).await?;
+    // Try each URL in order; move to the next on failure.
+    let mut last_err = String::new();
+    let mut succeeded = false;
+    for (i, (url, archive_type)) in urls.iter().enumerate() {
+        match download_file(&client, url, target_dir, archive_type, "ffmpeg", sink).await {
+            Ok(()) => {
+                succeeded = true;
+                break;
+            }
+            Err(e) => {
+                last_err = e;
+                if i + 1 < urls.len() {
+                    sink.log(&format!(
+                        "[ffmpeg] Mirror {url} failed ({last_err}), trying next..."
+                    ));
+                }
+            }
+        }
+    }
+    if !succeeded {
+        return Err(format!("All download mirrors failed. Last error: {last_err}"));
+    }
 
     // On macOS, ffprobe is a separate download from evermeet.cx
-    if let Some((probe_url, probe_archive)) = ffprobe_download_url() {
+    let probe_urls = ffprobe_download_urls();
+    if !probe_urls.is_empty() {
         sink.ffmpeg_download_progress("Downloading ffprobe...");
-        download_file(
-            &client,
-            probe_url,
-            target_dir,
-            probe_archive,
-            "ffprobe",
-            sink,
-        )
-        .await?;
+        let mut probe_ok = false;
+        let mut probe_err = String::new();
+        for (i, (url, archive_type)) in probe_urls.iter().enumerate() {
+            match download_file(&client, url, target_dir, archive_type, "ffprobe", sink).await {
+                Ok(()) => {
+                    probe_ok = true;
+                    break;
+                }
+                Err(e) => {
+                    probe_err = e;
+                    if i + 1 < probe_urls.len() {
+                        sink.log(&format!(
+                            "[ffmpeg] ffprobe mirror {url} failed ({probe_err}), trying next..."
+                        ));
+                    }
+                }
+            }
+        }
+        if !probe_ok {
+            return Err(format!(
+                "All ffprobe download mirrors failed. Last error: {probe_err}"
+            ));
+        }
     }
 
     // Verify the binaries exist
@@ -443,16 +548,18 @@ fn extract_from_tar_xz(
     // GNU tar's --wildcards + --strip-components silently drops files on
     // some versions (observed on GNU tar 1.35 / Ubuntu 24.04). Instead,
     // extract the full archive to a temp directory, then move just the
-    // binaries we need.
-    let tmp_extract = target_dir.join("_extract_tmp");
-    let _ = std::fs::create_dir_all(&tmp_extract);
+    // binaries we need. Using tempfile::TempDir avoids race conditions
+    // when multiple instances download concurrently — each gets a unique
+    // directory that is automatically cleaned up on drop.
+    let tmp_extract = tempfile::tempdir_in(target_dir)
+        .map_err(|e| format!("Failed to create temp dir: {e}"))?;
 
     let mut extract_cmd = std::process::Command::new("tar");
     extract_cmd.args([
         "xf",
         &tar_path.to_string_lossy().as_ref(),
         "-C",
-        &tmp_extract.to_string_lossy().as_ref(),
+        &tmp_extract.path().to_string_lossy().as_ref(),
     ]);
     hide_window_std(&mut extract_cmd);
     let output = extract_cmd
@@ -461,13 +568,12 @@ fn extract_from_tar_xz(
 
     if !output.status.success() {
         let stderr = String::from_utf8_lossy(&output.stderr);
-        let _ = std::fs::remove_dir_all(&tmp_extract);
         return Err(format!("Extraction failed: {stderr}"));
     }
 
     // Find and move ffmpeg/ffprobe from the extracted tree
     let mut found = false;
-    if let Ok(entries) = std::fs::read_dir(&tmp_extract) {
+    if let Ok(entries) = std::fs::read_dir(tmp_extract.path()) {
         for entry in entries.flatten() {
             let bin_dir = entry.path().join("bin");
             if bin_dir.is_dir() {
@@ -478,7 +584,6 @@ fn extract_from_tar_xz(
                         if let Err(e) = std::fs::rename(&src, &dst) {
                             // rename may fail across filesystems; fall back to copy
                             if let Err(e2) = std::fs::copy(&src, &dst) {
-                                let _ = std::fs::remove_dir_all(&tmp_extract);
                                 return Err(format!(
                                     "Could not move {name} to target: rename={e}, copy={e2}"
                                 ));
@@ -491,7 +596,7 @@ fn extract_from_tar_xz(
         }
     }
 
-    let _ = std::fs::remove_dir_all(&tmp_extract);
+    // TempDir auto-cleans on drop; no manual removal needed.
 
     if !found {
         return Err("Extracted archive but could not find bin/ffmpeg or bin/ffprobe".to_string());
@@ -640,14 +745,21 @@ fn shell_path_dirs() -> Vec<PathBuf> {
     let shell = std::env::var("SHELL").unwrap_or_else(|_| default_shell.to_string());
 
     let output = std::process::Command::new(&shell)
-        .args(["-l", "-c", "echo $PATH"])
+        .args(["-l", "-c", "printenv PATH"])
         .stdout(std::process::Stdio::piped())
         .stderr(std::process::Stdio::null())
         .output();
 
     match output {
         Ok(o) if o.status.success() => {
-            let path_str = String::from_utf8_lossy(&o.stdout);
+            let raw = String::from_utf8_lossy(&o.stdout);
+            // Take only the last non-empty line as a safety measure
+            // against chatty shell profiles that emit extra output.
+            let path_str = raw
+                .lines()
+                .rev()
+                .find(|l| !l.trim().is_empty())
+                .unwrap_or("");
             path_str
                 .trim()
                 .split(':')

@@ -391,7 +391,6 @@ fn print_dry_run_plan(
                     compatibility_mode: args.compat,
                     preserve_av1: args.preserve_av1,
                     precision_mode: args.precision_mode,
-                    // Fields below don't affect resolve_file_settings
                     output_folder: String::new(),
                     output_mode: String::new(),
                     threshold: args.bitrate,
@@ -407,11 +406,11 @@ fn print_dry_run_plan(
                     threads: 0,
                     low_priority: false,
                     force_local: false,
-                    video_encoder: String::new(),
-                    codec_family: String::new(),
-                    audio_encoder: String::new(),
-                    audio_cap: 0,
-                    output_container: String::new(),
+                    video_encoder: args.encoder.clone().unwrap_or_else(|| "auto".to_string()),
+                    codec_family: args.codec.to_string(),
+                    audio_encoder: args.audio.to_string(),
+                    audio_cap: args.audio_cap,
+                    output_container: args.container.to_string(),
                 },
                 detected_encoders,
             );
@@ -876,13 +875,6 @@ fn run_batch(
     let batch_control =
         batch_control::CliBatchControl::new(args.overwrite.clone(), args.fallback.clone());
 
-    // Codec display label
-    let codec_display = match args.codec {
-        cli::CodecFamily::Hevc => "HEVC",
-        cli::CodecFamily::H264 => "H.264",
-        cli::CodecFamily::Auto => "auto",
-    };
-
     // Build settings struct
     let output_folder_str = args.output.to_string_lossy().to_string();
     let batch_settings = encoder::BatchSettings {
@@ -895,7 +887,7 @@ fn run_batch(
         crf_val: args.crf,
         rate_control_mode: args.rc.to_string().to_uppercase(),
         video_encoder: video_encoder.to_string(),
-        codec_family: codec_display.to_string(),
+        codec_family: args.codec.to_string(),
         audio_encoder: args.audio.to_string(),
         audio_cap: args.audio_cap,
         pix_fmt: if args.no_hdr {
@@ -995,6 +987,7 @@ fn run_batch(
         &batch_settings,
         detected_encoders,
         Some(wave_plan),
+        disk_monitor.as_ref(),
     ));
 
     // ── Exit code ─────────────────────────────────────────────
@@ -1127,10 +1120,19 @@ fn merge_job_into_args(args: &mut cli::CliArgs, job: &cli::JobFile) {
     if let Some(ref dl) = job.disk_limit {
         args.disk_limit = dl.clone();
     }
-    if let Some(ref pc) = job.post_command {
-        if !pc.is_empty() {
-            args.post_command = Some(pc.clone());
+    if let Some(ref dr) = job.disk_resume {
+        if let Ok(v) = dr.parse::<u8>() {
+            args.disk_resume = Some(v);
         }
+    }
+    if let Some(compat) = job.compat {
+        args.compat = compat;
+    }
+    if let Some(pav1) = job.preserve_av1 {
+        args.preserve_av1 = pav1;
+    }
+    if job.post_command.is_some() {
+        eprintln!("Warning: post_command in job files is ignored for security; use --post-command on the CLI instead");
     }
     if let Some(sl) = job.save_log {
         args.save_log = sl;

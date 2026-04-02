@@ -1,6 +1,6 @@
 id: com.histv.encoder
 runtime: org.gnome.Platform
-runtime-version: '47'
+runtime-version: '50'
 sdk: org.gnome.Sdk
 sdk-extensions:
   - org.freedesktop.Sdk.Extension.rust-stable
@@ -26,6 +26,7 @@ modules:
     build-commands:
       - install -Dm755 bin/ffmpeg /app/bin/ffmpeg
       - install -Dm755 bin/ffprobe /app/bin/ffprobe
+      - install -Dm644 LICENSE.txt /app/share/licenses/ffmpeg/LICENSE.txt
 
   # ── HISTV (built from source with vendored cargo deps) ──
   - name: histv
@@ -38,7 +39,7 @@ modules:
       # For local builds, use type: dir.  For Flathub, switch to:
       #   type: git
       #   url: https://github.com/obelisk-complex/histv-universal.git
-      #   tag: v2.5.2
+      #   tag: v2.5.3
       - type: dir
         path: .
       - cargo-sources.json

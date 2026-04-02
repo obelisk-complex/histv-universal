@@ -141,36 +141,97 @@ pub fn partition_free_space(path: &Path) -> Option<(u64, u64)> {
     }
 }
 
-#[cfg(unix)]
+// Linux x86_64: all statvfs fields are `unsigned long` (u64).
+#[cfg(target_os = "linux")]
 fn partition_free_space_unix(path: &Path) -> Option<(u64, u64)> {
-    // Use `df` which is available on all Unix systems and avoids
-    // platform-specific statvfs struct layout differences.
-    // `df -P` uses POSIX output format with 512-byte blocks.
-    // `df -k` uses 1024-byte blocks and is more widely consistent.
-    let output = std::process::Command::new("df")
-        .args(["-k", &path.to_string_lossy()])
-        .stdout(std::process::Stdio::piped())
-        .stderr(std::process::Stdio::null())
-        .output()
-        .ok()?;
+    use std::ffi::CString;
+    use std::mem::MaybeUninit;
+    use std::os::unix::ffi::OsStrExt;
 
-    if !output.status.success() {
+    extern "C" {
+        fn statvfs(path: *const std::ffi::c_char, buf: *mut Statvfs) -> std::ffi::c_int;
+    }
+
+    #[repr(C)]
+    struct Statvfs {
+        f_bsize: u64,   // unsigned long
+        f_frsize: u64,  // unsigned long
+        f_blocks: u64,  // fsblkcnt_t = unsigned long on Linux x86_64
+        f_bfree: u64,   // fsblkcnt_t
+        f_bavail: u64,  // fsblkcnt_t
+        _rest: [u8; 256],
+    }
+
+    let c_path = CString::new(path.as_os_str().as_bytes()).ok()?;
+    let mut buf = MaybeUninit::<Statvfs>::zeroed();
+
+    // Safety: `statvfs` is a well-defined POSIX syscall. We pass a valid
+    // NUL-terminated path and a properly-aligned buffer.
+    let ret = unsafe { statvfs(c_path.as_ptr(), buf.as_mut_ptr()) };
+    if ret != 0 {
         return None;
     }
 
-    let stdout = String::from_utf8_lossy(&output.stdout);
-    // Second line contains the data: Filesystem 1K-blocks Used Available Use% Mounted_on
-    let data_line = stdout.lines().nth(1)?;
-    let fields: Vec<&str> = data_line.split_whitespace().collect();
-    if fields.len() < 4 {
+    let stat = unsafe { buf.assume_init() };
+    let block_size = if stat.f_frsize > 0 {
+        stat.f_frsize
+    } else {
+        stat.f_bsize
+    };
+    let total = stat.f_blocks * block_size;
+    let avail = stat.f_bavail * block_size;
+
+    Some((total, avail))
+}
+
+// macOS: f_bsize/f_frsize are c_ulong (u64 on 64-bit), but
+// f_blocks/f_bfree/f_bavail are fsblkcnt_t = c_uint (u32).
+#[cfg(target_os = "macos")]
+fn partition_free_space_unix(path: &Path) -> Option<(u64, u64)> {
+    use std::ffi::CString;
+    use std::mem::MaybeUninit;
+    use std::os::unix::ffi::OsStrExt;
+
+    extern "C" {
+        fn statvfs(path: *const std::ffi::c_char, buf: *mut Statvfs) -> std::ffi::c_int;
+    }
+
+    // macOS statvfs layout (from <sys/statvfs.h>):
+    //   unsigned long  f_bsize
+    //   unsigned long  f_frsize
+    //   fsblkcnt_t     f_blocks   (unsigned int on macOS)
+    //   fsblkcnt_t     f_bfree    (unsigned int)
+    //   fsblkcnt_t     f_bavail   (unsigned int)
+    #[repr(C)]
+    struct Statvfs {
+        f_bsize: std::ffi::c_ulong,   // 64-bit on 64-bit macOS
+        f_frsize: std::ffi::c_ulong,
+        f_blocks: u32,                 // fsblkcnt_t = unsigned int
+        f_bfree: u32,
+        f_bavail: u32,
+        _rest: [u8; 256],
+    }
+
+    let c_path = CString::new(path.as_os_str().as_bytes()).ok()?;
+    let mut buf = MaybeUninit::<Statvfs>::zeroed();
+
+    // Safety: `statvfs` is a well-defined POSIX syscall. We pass a valid
+    // NUL-terminated path and a properly-aligned buffer.
+    let ret = unsafe { statvfs(c_path.as_ptr(), buf.as_mut_ptr()) };
+    if ret != 0 {
         return None;
     }
 
-    // fields[1] = total 1K-blocks, fields[3] = available 1K-blocks
-    let total_kb: u64 = fields[1].parse().ok()?;
-    let avail_kb: u64 = fields[3].parse().ok()?;
+    let stat = unsafe { buf.assume_init() };
+    let block_size = if stat.f_frsize > 0 {
+        stat.f_frsize as u64
+    } else {
+        stat.f_bsize as u64
+    };
+    let total = stat.f_blocks as u64 * block_size;
+    let avail = stat.f_bavail as u64 * block_size;
 
-    Some((total_kb * 1024, avail_kb * 1024))
+    Some((total, avail))
 }
 
 #[cfg(windows)]
@@ -224,13 +285,6 @@ pub fn format_bytes(bytes: u64) -> String {
     } else {
         format!("{:.1}MB", b / MB)
     }
-}
-
-/// Format a signed byte count (for net change estimates).
-pub fn format_bytes_signed(bytes: i64) -> String {
-    let prefix = if bytes >= 0 { "+" } else { "" };
-    let abs = bytes.unsigned_abs();
-    format!("{}{}", prefix, format_bytes(abs))
 }
 
 // ── Runtime disk monitoring ────────────────────────────────────

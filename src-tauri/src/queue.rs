@@ -113,6 +113,12 @@ fn collect_files(paths: &[String]) -> Vec<String> {
                         Ok(ft) if ft.is_dir() => work.push_back(entry.path()),
                         Ok(ft) if ft.is_file() => {
                             let p = entry.path();
+                            // Reject non-UTF-8 paths on Unix rather than
+                            // silently mangling them via to_string_lossy.
+                            #[cfg(unix)]
+                            if p.to_str().is_none() {
+                                continue;
+                            }
                             let path_str = p.to_string_lossy().to_string();
                             if is_supported_extension(&path_str) {
                                 result.push(path_str);
@@ -123,6 +129,12 @@ fn collect_files(paths: &[String]) -> Vec<String> {
                 }
             }
         } else if path.is_file() {
+            // Reject non-UTF-8 paths on Unix rather than silently
+            // mangling them via to_string_lossy.
+            #[cfg(unix)]
+            if path.to_str().is_none() {
+                continue;
+            }
             let path_str = path.to_string_lossy().to_string();
             if is_supported_extension(&path_str) {
                 result.push(path_str);

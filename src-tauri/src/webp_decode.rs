@@ -21,7 +21,7 @@ use std::path::Path;
 
 use crate::events::{BatchControl, EventSink};
 
-use tokio::io::AsyncWriteExt;
+use tokio::io::{AsyncReadExt, AsyncWriteExt};
 
 // ── Public types ───────────────────────────────────────────────
 
@@ -131,15 +131,15 @@ fn probe_metadata(path: &Path) -> Result<Option<WebpInfo>, String> {
                 file.seek(SeekFrom::Start(chunk_start + 12))
                     .map_err(|e| format!("seek: {e}"))?;
                 let dur = read_u24_le(&mut file)?;
-                total_duration_ms += dur;
+                total_duration_ms = total_duration_ms.saturating_add(dur);
                 frame_count += 1;
                 // Skip the rest - no frame data read
             }
             _ => {}
         }
 
-        let padded_size = chunk_size + (chunk_size & 1);
-        let next = chunk_start + padded_size as u64;
+        let padded_size = chunk_size as u64 + (chunk_size as u64 & 1);
+        let next = chunk_start + padded_size;
         file.seek(SeekFrom::Start(next))
             .map_err(|e| format!("seek: {e}"))?;
     }
@@ -220,12 +220,15 @@ fn extract_frames(path: &Path) -> Result<(WebpInfo, Vec<AnimFrame>), String> {
 
                 // Read the compressed frame data (rest of the ANMF chunk)
                 let header_bytes = 3 + 3 + 3 + 3 + 3 + 1; // 16 bytes of ANMF header
+                if (chunk_size as usize) < header_bytes {
+                    return Err(format!("ANMF chunk too small: {} bytes", chunk_size));
+                }
                 let data_size = chunk_size as usize - header_bytes;
                 let mut data = vec![0u8; data_size];
                 file.read_exact(&mut data)
                     .map_err(|e| format!("ANMF data: {e}"))?;
 
-                total_duration_ms += dur;
+                total_duration_ms = total_duration_ms.saturating_add(dur);
                 frames.push(AnimFrame {
                     x_offset: x,
                     y_offset: y,
@@ -240,8 +243,8 @@ fn extract_frames(path: &Path) -> Result<(WebpInfo, Vec<AnimFrame>), String> {
             _ => {}
         }
 
-        let padded_size = chunk_size + (chunk_size & 1);
-        let next = chunk_start + padded_size as u64;
+        let padded_size = chunk_size as u64 + (chunk_size as u64 & 1);
+        let next = chunk_start + padded_size;
         file.seek(SeekFrom::Start(next))
             .map_err(|e| format!("seek: {e}"))?;
     }
@@ -302,13 +305,16 @@ struct Canvas {
 }
 
 impl Canvas {
-    fn new(width: u32, height: u32) -> Self {
-        let size = (width * height * 4) as usize;
-        Self {
+    fn new(width: u32, height: u32) -> Result<Self, String> {
+        let size = (width as usize)
+            .checked_mul(height as usize)
+            .and_then(|v| v.checked_mul(4))
+            .ok_or_else(|| format!("Canvas dimensions too large: {}x{}", width, height))?;
+        Ok(Self {
             width,
             height,
             pixels: vec![0u8; size],
-        }
+        })
     }
 
     /// Clear the entire canvas to transparent black.
@@ -447,7 +453,10 @@ pub async fn transcode_animated_webp(
     // Pad to even dimensions (required by most encoders)
     let padded_w = (canvas_w + 1) & !1;
     let padded_h = (canvas_h + 1) & !1;
-    let frame_byte_size = (padded_w * padded_h * 4) as usize;
+    let frame_byte_size = (padded_w as usize)
+        .checked_mul(padded_h as usize)
+        .and_then(|v| v.checked_mul(4))
+        .ok_or_else(|| format!("Padded canvas dimensions too large: {}x{}", padded_w, padded_h))?;
 
     // ── Spawn the output encoder ──
     let mut enc_args: Vec<String> = vec![
@@ -519,8 +528,66 @@ pub async fn transcode_animated_webp(
         .take()
         .ok_or_else(|| "Could not open encoder stdin".to_string())?;
 
+    // ── Spawn a single decoder process for all frames ──
+    // Instead of spawning one ffmpeg process per frame, we use a single
+    // long-lived process with webp_pipe input. We write each frame's
+    // standalone WebP data to its stdin and read the decoded RGBA pixels
+    // from its stdout. A background task feeds stdin while the main loop
+    // reads stdout, avoiding pipe deadlocks.
+    let mut dec_cmd = crate::ffmpeg::ffmpeg_command();
+    dec_cmd
+        .args([
+            "-f",
+            "webp_pipe",
+            "-i",
+            "pipe:0",
+            "-f",
+            "rawvideo",
+            "-pix_fmt",
+            "rgba",
+            "-v",
+            "error",
+            "pipe:1",
+        ])
+        .stdin(std::process::Stdio::piped())
+        .stdout(std::process::Stdio::piped())
+        .stderr(std::process::Stdio::piped());
+
+    let mut decoder = dec_cmd
+        .spawn()
+        .map_err(|e| format!("Failed to launch decoder ffmpeg: {e}"))?;
+
+    let dec_stdin = decoder
+        .stdin
+        .take()
+        .ok_or_else(|| "Could not open decoder stdin".to_string())?;
+    let mut dec_stdout = decoder
+        .stdout
+        .take()
+        .ok_or_else(|| "Could not open decoder stdout".to_string())?;
+
+    // Prepare the frame payloads for the writer task. Each entry is the
+    // standalone-wrapped WebP data to write to the decoder's stdin.
+    let frame_payloads: Vec<Vec<u8>> = frames
+        .iter()
+        .map(|f| wrap_as_standalone_webp(&f.data))
+        .collect();
+
+    // Spawn a background task that feeds all frames to the decoder's stdin.
+    // This runs concurrently with the stdout reader to avoid deadlock.
+    let writer_handle = tokio::spawn(async move {
+        let mut stdin = dec_stdin;
+        for payload in &frame_payloads {
+            if stdin.write_all(payload).await.is_err() {
+                break;
+            }
+        }
+        // Dropping stdin sends EOF so the decoder knows we are done.
+        drop(stdin);
+    });
+
     // ── Compositing loop ──
-    let mut canvas = Canvas::new(padded_w, padded_h);
+    let mut canvas = Canvas::new(padded_w, padded_h)?;
     canvas.clear(); // WebP spec: canvas starts as transparent black
     let total_frames = frames.len();
     let mut decoded_count: u32 = 0;
@@ -533,17 +600,38 @@ pub async fn transcode_animated_webp(
             break;
         }
 
-        // Decode this frame: wrap as standalone WebP, pipe to a decoder
-        // ffmpeg instance, read back raw RGBA pixels.
-        let standalone = wrap_as_standalone_webp(&frame.data);
-        let decoded_rgba = decode_single_frame(standalone, frame.width, frame.height)
-            .await
-            .map_err(|e| format!("Frame {} decode failed: {e}", i + 1))?;
-
-        // Dispose previous frame if needed (from the *previous* frame's flag)
-        // WebP spec: disposal happens *before* rendering the current frame
-        // if the *previous* frame had dispose=true.
-        // (Handled below after composite for the current frame's flag)
+        // Read decoded RGBA pixels for this frame from the single decoder
+        // process. Each frame produces exactly width * height * 4 bytes.
+        let expected_size = (frame.width as usize)
+            .checked_mul(frame.height as usize)
+            .and_then(|v| v.checked_mul(4))
+            .ok_or_else(|| {
+                format!(
+                    "Frame {} dimensions too large: {}x{}",
+                    i + 1,
+                    frame.width,
+                    frame.height
+                )
+            })?;
+        let decoded_rgba = {
+            let mut buf = vec![0u8; expected_size];
+            let mut read_so_far = 0;
+            while read_so_far < expected_size {
+                match dec_stdout.read(&mut buf[read_so_far..]).await {
+                    Ok(0) => break, // EOF
+                    Ok(n) => read_so_far += n,
+                    Err(e) => {
+                        return Err(format!("Frame {} decode read failed: {e}", i + 1));
+                    }
+                }
+            }
+            if read_so_far < expected_size {
+                // Pad with zeros if the decoder produced fewer bytes than expected
+                buf.truncate(read_so_far);
+                buf.resize(expected_size, 0);
+            }
+            buf
+        };
 
         // Composite onto canvas
         if !frame.blend {
@@ -603,6 +691,13 @@ pub async fn transcode_animated_webp(
     // Close encoder stdin to signal EOF
     drop(enc_stdin);
 
+    // Ensure the decoder writer task finishes (it may already have)
+    let _ = writer_handle.await;
+
+    // Clean up the decoder process
+    drop(dec_stdout);
+    let _ = decoder.wait().await;
+
     // Wait for encoder to finish
     let enc_status = encoder
         .wait()
@@ -625,67 +720,32 @@ pub struct TranscodeResult {
     pub frame_count: u64,
 }
 
-// ── Single-frame decoder ───────────────────────────────────────
+#[cfg(test)]
+mod tests {
+    use super::*;
 
-/// Decode a single standalone WebP file (wrapped with RIFF header) to
-/// raw RGBA pixels using ffmpeg's static WebP decoder.
-///
-/// Spawns a short-lived ffmpeg process that reads from stdin and writes
-/// raw RGBA to stdout. This is fast for single frames (~10-50ms each).
-async fn decode_single_frame(
-    webp_data: Vec<u8>,
-    width: u32,
-    height: u32,
-) -> Result<Vec<u8>, String> {
-    let expected_size = (width * height * 4) as usize;
-
-    let mut cmd = crate::ffmpeg::ffmpeg_command();
-    cmd.args([
-        "-f",
-        "webp_pipe",
-        "-i",
-        "pipe:0",
-        "-f",
-        "rawvideo",
-        "-pix_fmt",
-        "rgba",
-        "-v",
-        "error",
-        "pipe:1",
-    ])
-    .stdin(std::process::Stdio::piped())
-    .stdout(std::process::Stdio::piped())
-    .stderr(std::process::Stdio::piped());
-
-    let mut child = cmd.spawn().map_err(|e| format!("decode spawn: {e}"))?;
-
-    // Write WebP data to stdin
-    if let Some(mut stdin) = child.stdin.take() {
-        let write_handle = tokio::spawn(async move {
-            let _ = stdin.write_all(&webp_data).await;
-            // stdin dropped here, closing the pipe
-        });
-        // Ensure write completes (and stdin closes) before reading output
-        let _ = write_handle.await;
+    #[test]
+    fn test_canvas_new_overflow_returns_err() {
+        // u32::MAX * u32::MAX * 4 overflows usize — must return Err.
+        let result = Canvas::new(u32::MAX, u32::MAX);
+        assert!(result.is_err());
     }
 
-    let output = child
-        .wait_with_output()
-        .await
-        .map_err(|e| format!("decode wait: {e}"))?;
-
-    if !output.status.success() {
-        let stderr = String::from_utf8_lossy(&output.stderr);
-        return Err(format!("decode failed: {}", stderr.trim()));
+    #[test]
+    fn test_canvas_new_valid_dimensions() {
+        let result = Canvas::new(100, 100);
+        assert!(result.is_ok());
+        let canvas = result.unwrap();
+        assert_eq!(canvas.width, 100);
+        assert_eq!(canvas.height, 100);
+        assert_eq!(canvas.pixels.len(), 100 * 100 * 4);
     }
 
-    if output.stdout.len() < expected_size {
-        // Frame may be smaller than expected (partial frame, padding needed)
-        let mut padded = vec![0u8; expected_size];
-        let copy_len = output.stdout.len().min(expected_size);
-        padded[..copy_len].copy_from_slice(&output.stdout[..copy_len]);
-        Ok(padded)
-    } else {
-        Ok(output.stdout[..expected_size].to_vec())
+    #[test]
+    fn test_canvas_new_zero_dimension() {
+        // Zero width or height produces a zero-length pixel buffer.
+        let result = Canvas::new(0, 100);
+        assert!(result.is_ok());
+        assert_eq!(result.unwrap().pixels.len(), 0);
     }
 }

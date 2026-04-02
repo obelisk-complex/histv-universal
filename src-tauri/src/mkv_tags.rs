@@ -116,6 +116,11 @@ fn read_element_header(r: &mut (impl Read + Seek)) -> Result<ElementHeader, Stri
 }
 
 fn read_string(r: &mut impl Read, len: u64) -> Result<String, String> {
+    // Cap at 1 MB to prevent OOM from malformed EBML size fields.
+    // MKV tag strings are typically under a few hundred bytes.
+    if len > 1_048_576 {
+        return Err(format!("EBML string size too large: {len} bytes"));
+    }
     let mut buf = vec![0u8; len as usize];
     r.read_exact(&mut buf)
         .map_err(|e| format!("read string: {e}"))?;
@@ -126,6 +131,9 @@ fn read_string(r: &mut impl Read, len: u64) -> Result<String, String> {
 }
 
 fn read_uint(r: &mut impl Read, len: u64) -> Result<u64, String> {
+    if len > 8 {
+        return Err(format!("EBML uint too long: {len} bytes"));
+    }
     let mut val: u64 = 0;
     for _ in 0..len {
         let mut b = [0u8; 1];
@@ -532,7 +540,11 @@ pub fn repair_after_probe(
     duration_secs: f64,
     audio_streams: &[crate::queue::AudioStreamInfo],
 ) -> Option<u64> {
-    if !file_path.ends_with(".mkv") || duration_secs <= 0.0 {
+    let ext = std::path::Path::new(file_path)
+        .extension()
+        .map(|e| e.to_string_lossy().to_lowercase())
+        .unwrap_or_default();
+    if ext != "mkv" || duration_secs <= 0.0 {
         return None;
     }
     let file_size = std::fs::metadata(file_path).map(|m| m.len()).ok()?;
@@ -550,25 +562,6 @@ pub fn repair_after_probe(
         Ok((n, bps)) if n > 0 => Some(bps),
         _ => None,
     }
-}
-
-/// Post-encode tag update. Convenience wrapper around `lightweight_repair`
-/// for use immediately after encoding, when file size and probe data are
-/// already available.
-pub fn update_video_stream_tags(
-    path: &Path,
-    video_bps: u64,
-    video_bytes: u64,
-) -> Result<u32, String> {
-    patch_first_statistics_tag(
-        path,
-        &TagValues {
-            bps: Some(video_bps),
-            number_of_bytes: Some(video_bytes),
-            duration_secs: None,
-            number_of_frames: None,
-        },
-    )
 }
 
 /// Deep tag repair: computes exact per-stream byte counts by scanning
@@ -623,16 +616,15 @@ pub async fn deep_repair(
     }
 
     // Scan subtitle stream bytes (fast - subs are tiny)
-    // Try up to 8 subtitle streams (generous upper bound)
-    for i in 0..8 {
+    let sub_count = probe.subtitle_stream_count as usize;
+    for i in 0..sub_count {
         let selector = format!("s:{}", i);
         match packet_scan_stream_bytes(path, &selector).await {
-            Ok(0) => break, // No more subtitle streams
             Ok(bytes) => {
                 sink.log(&format!("[repair] Subtitle stream {}: {} bytes", i, bytes));
                 non_video_bytes += bytes;
             }
-            Err(_) => break, // Stream doesn't exist
+            Err(e) => sink.log(&format!("[repair] WARNING: Subtitle {} scan failed: {}", i, e)),
         }
     }
 
@@ -707,6 +699,8 @@ pub async fn repair_file_tags(
 // ── ffprobe packet scanning helpers ────────────────────────────
 
 /// Sum all packet sizes for a given stream selector (e.g. "v:0", "a:0").
+/// Uses CSV output and line-by-line parsing to avoid building a multi-MB
+/// JSON DOM for large files.
 async fn packet_scan_stream_bytes(path: &Path, stream_selector: &str) -> Result<u64, String> {
     let raw = crate::probe::run_ffprobe_public(&[
         "-v",
@@ -716,21 +710,15 @@ async fn packet_scan_stream_bytes(path: &Path, stream_selector: &str) -> Result<
         "-show_entries",
         "packet=size",
         "-of",
-        "json",
+        "csv=p=0",
         &path.to_string_lossy(),
     ])
     .await?;
 
-    let json: serde_json::Value = serde_json::from_str(&raw).unwrap_or(serde_json::Value::Null);
-
-    let total: u64 = json["packets"]
-        .as_array()
-        .map(|arr| {
-            arr.iter()
-                .filter_map(|p| p["size"].as_str().and_then(|s| s.parse::<u64>().ok()))
-                .sum()
-        })
-        .unwrap_or(0);
+    let total: u64 = raw
+        .lines()
+        .filter_map(|line| line.trim().parse::<u64>().ok())
+        .sum();
 
     Ok(total)
 }
@@ -802,4 +790,127 @@ async fn count_frames_with_progress(
 
     let final_count = progress.frames();
     Ok(final_count)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    // ── format_mkv_duration ───────────────────────────────────────
+
+    #[test]
+    fn test_format_mkv_duration_zero() {
+        assert_eq!(format_mkv_duration(0.0), "00:00:00.000000000");
+    }
+
+    #[test]
+    fn test_format_mkv_duration_one_hour() {
+        assert_eq!(format_mkv_duration(3600.0), "01:00:00.000000000");
+    }
+
+    #[test]
+    fn test_format_mkv_duration_mixed() {
+        // 1h 23m 45.678s
+        let secs = 3600.0 + 23.0 * 60.0 + 45.678;
+        let result = format_mkv_duration(secs);
+        assert!(result.starts_with("01:23:45."));
+        // Verify the nanosecond portion is reasonable (floating-point rounding)
+        assert_eq!(result.len(), "00:00:00.000000000".len());
+    }
+
+    #[test]
+    fn test_format_mkv_duration_fractional_seconds() {
+        // 0.5 seconds = 500000000 nanoseconds
+        assert_eq!(format_mkv_duration(0.5), "00:00:00.500000000");
+    }
+
+    #[test]
+    fn test_format_mkv_duration_large_value() {
+        // 10 hours, 0 minutes, 0 seconds
+        assert_eq!(format_mkv_duration(36000.0), "10:00:00.000000000");
+    }
+
+    #[test]
+    fn test_format_mkv_duration_sub_millisecond() {
+        // 1.000000001 seconds (1 nanosecond past 1 second)
+        let result = format_mkv_duration(1.000000001);
+        assert!(result.starts_with("00:00:01."));
+    }
+
+    // ── lightweight_repair arithmetic ─────────────────────────────
+    //
+    // lightweight_repair calls patch_first_statistics_tag which needs
+    // a real MKV file. We test the arithmetic by verifying the
+    // audio_bytes and video_bytes calculations directly.
+
+    #[test]
+    fn test_lightweight_repair_arithmetic_basic() {
+        // File: 100 MB, duration: 100s, audio: 128 kbps
+        let file_size: u64 = 100_000_000;
+        let duration_secs: f64 = 100.0;
+        let audio_bps: u64 = 128_000;
+
+        // audio_bytes = 128000 * 100 / 8 = 1_600_000
+        let audio_bytes = (audio_bps as f64 * duration_secs / 8.0) as u64;
+        assert_eq!(audio_bytes, 1_600_000);
+
+        // video_bytes = 100_000_000 - 1_600_000 = 98_400_000
+        let video_bytes = file_size.saturating_sub(audio_bytes);
+        assert_eq!(video_bytes, 98_400_000);
+
+        // video_bps = 98_400_000 * 8 / 100 = 7_872_000
+        let video_bps = (video_bytes as f64 * 8.0 / duration_secs) as u64;
+        assert_eq!(video_bps, 7_872_000);
+    }
+
+    #[test]
+    fn test_lightweight_repair_arithmetic_audio_exceeds_file() {
+        // Edge case: estimated audio bytes exceed file size.
+        // saturating_sub should clamp video_bytes to zero.
+        let file_size: u64 = 1_000;
+        let duration_secs: f64 = 100.0;
+        let audio_bps: u64 = 1_000_000; // 1 Mbps audio
+
+        let audio_bytes = (audio_bps as f64 * duration_secs / 8.0) as u64;
+        // audio_bytes = 12_500_000, which far exceeds file_size
+        assert!(audio_bytes > file_size);
+
+        let video_bytes = file_size.saturating_sub(audio_bytes);
+        assert_eq!(video_bytes, 0);
+    }
+
+    #[test]
+    fn test_lightweight_repair_arithmetic_no_audio() {
+        // No audio streams: all bytes are video.
+        let file_size: u64 = 50_000_000;
+        let duration_secs: f64 = 60.0;
+        let audio_bps: u64 = 0;
+
+        let audio_bytes = (audio_bps as f64 * duration_secs / 8.0) as u64;
+        assert_eq!(audio_bytes, 0);
+
+        let video_bytes = file_size.saturating_sub(audio_bytes);
+        assert_eq!(video_bytes, file_size);
+
+        let video_bps = (video_bytes as f64 * 8.0 / duration_secs) as u64;
+        // 50_000_000 * 8 / 60 ≈ 6_666_666
+        assert_eq!(video_bps, 6_666_666);
+    }
+
+    #[test]
+    fn test_lightweight_repair_arithmetic_short_clip() {
+        // 1-second clip, 10 MB file, stereo AAC at 256 kbps
+        let file_size: u64 = 10_000_000;
+        let duration_secs: f64 = 1.0;
+        let audio_bps: u64 = 256_000;
+
+        let audio_bytes = (audio_bps as f64 * duration_secs / 8.0) as u64;
+        assert_eq!(audio_bytes, 32_000);
+
+        let video_bytes = file_size.saturating_sub(audio_bytes);
+        assert_eq!(video_bytes, 9_968_000);
+
+        let video_bps = (video_bytes as f64 * 8.0 / duration_secs) as u64;
+        assert_eq!(video_bps, 79_744_000);
+    }
 }

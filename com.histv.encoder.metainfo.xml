@@ -7,7 +7,7 @@
     <name>obelisk-complex</name>
   </developer>
   <metadata_license>CC0-1.0</metadata_license>
-  <project_license>LicenseRef-proprietary=https://github.com/obelisk-complex/histv-universal/blob/main/LICENSE</project_license>
+  <project_license>GPL-3.0-or-later</project_license>
 
   <description>
     <p>
@@ -37,21 +37,45 @@
     <color type="primary" scheme_preference="dark">#1a5fb4</color>
   </branding>
 
-  <!-- TODO: Add at least one screenshot before Flathub submission.
-       Recommended: 16:9 or 16:10 ratio, 1602x900 or similar.
-       Host images on a stable URL (e.g. raw.githubusercontent.com).
-
   <screenshots>
     <screenshot type="default">
-      <image>https://raw.githubusercontent.com/obelisk-complex/histv-universal/main/screenshots/main-window.png</image>
-      <caption>Main encoding queue with batch progress</caption>
+      <image>https://raw.githubusercontent.com/obelisk-complex/histv-universal/main/screenshots/flatpak-gui-6.png</image>
+      <caption>Batch encoding in progress with Dolby Vision passthrough</caption>
+    </screenshot>
+    <screenshot>
+      <image>https://raw.githubusercontent.com/obelisk-complex/histv-universal/main/screenshots/flatpak-gui-7.png</image>
+      <caption>Compatibility mode encoding with live log output</caption>
+    </screenshot>
+    <screenshot>
+      <image>https://raw.githubusercontent.com/obelisk-complex/histv-universal/main/screenshots/flatpak-gui-2.png</image>
+      <caption>Queue loaded with files showing size estimates and HDR badges</caption>
+    </screenshot>
+    <screenshot>
+      <image>https://raw.githubusercontent.com/obelisk-complex/histv-universal/main/screenshots/flatpak-gui-1.png</image>
+      <caption>Empty queue with settings panel</caption>
+    </screenshot>
+    <screenshot>
+      <image>https://raw.githubusercontent.com/obelisk-complex/histv-universal/main/screenshots/flatpak-gui-3.png</image>
+      <caption>Right-click context menu with per-file actions (Monokai theme)</caption>
+    </screenshot>
+    <screenshot>
+      <image>https://raw.githubusercontent.com/obelisk-complex/histv-universal/main/screenshots/flatpak-gui-4.png</image>
+      <caption>Precision mode tooltip explaining quality strategy (Solarised Dark theme)</caption>
+    </screenshot>
+    <screenshot>
+      <image>https://raw.githubusercontent.com/obelisk-complex/histv-universal/main/screenshots/flatpak-gui-5.png</image>
+      <caption>Pre-flight check offering to download Dolby Vision tools</caption>
     </screenshot>
   </screenshots>
-  -->
 
   <content_rating type="oars-1.1" />
 
   <releases>
+    <release version="2.5.3" date="2026-04-02">
+      <description>
+        <p>Flathub submission release: GPL-3.0 licence, GNOME 50 runtime, CSP hardening, 6 performance fixes, 89 new tests, and full pre-submission audit remediation.</p>
+      </description>
+    </release>
     <release version="2.5.2" date="2026-04-01">
       <description>
         <p>Code quality overhaul: 15 fixes across security, efficiency, and maintainability.</p>

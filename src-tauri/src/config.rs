@@ -143,6 +143,10 @@ pub fn load_config(app: &AppHandle) -> AppConfig {
 pub fn save_config(app: &AppHandle, config: &AppConfig) -> Result<(), Box<dyn std::error::Error>> {
     let path = config_path(app);
     let json = serde_json::to_string_pretty(config)?;
-    fs::write(path, json)?;
+    // Write to a temporary file then rename for atomicity. If the app
+    // crashes mid-write, only the temp file is corrupted.
+    let tmp = path.with_extension("json.tmp");
+    fs::write(&tmp, &json)?;
+    fs::rename(&tmp, &path)?;
     Ok(())
 }

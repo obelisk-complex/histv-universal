@@ -1,6 +1,6 @@
 # Honey, I Shrunk The Vids
 
-[![](https://raw.githubusercontent.com/qainsights/Quillx/main/badges/quillx-3.svg)](https://github.com/qainsights/Quillx)
+[![Quillx](https://raw.githubusercontent.com/qainsights/quillx/main/badges/quillx-4.svg)](https://github.com/qainsights/quillx) Architecture, integration decisions, and review are mine. Claude generated the implementation under close direction. Output reviewed line by line (but that doesn't mean I caught everything).
 
 A cross-platform batch video encoder that shrinks your video files to a target quality level. No need to babysit the queue or tweak settings per file - just pick a target bitrate, add your files, and hit start.
 
@@ -40,13 +40,13 @@ Available as a desktop app and a headless CLI for servers (see [CLI-README.md](C
 - **GIF/APNG/WebP support** - animated GIFs, APNGs, and WebPs are converted to proper video files automatically.
 - **Per-file codec resolution** - the app decides the codec, container, and audio handling for each file individually based on its source properties. H.264 stays H.264, HEVC stays HEVC, and everything else converts to HEVC. No manual codec selection needed.
 - **AV1 support** - first-class AV1 encoding via libsvtav1 and hardware AV1 encoders (AMF, NVENC, QSV, VideoToolbox, VAAPI). Enable Preserve AV1 to keep AV1 sources as AV1 instead of converting to HEVC.
-- **Compatibility Mode** - one checkbox to force H.264/MP4/AC3 output for maximum device compatibility.
+- **Compatibility Mode** - one checkbox to force H.264/MP4/AAC output for maximum device compatibility.
 - **Smart decisions** - the app figures out what to do with each file before you start. Files that are already small enough get copied untouched. Files that are too big get shrunk. The queue shows the plan in real time as you change settings.
 - **GPU encoding** - tests your GPU at startup and picks the fastest working encoder for each codec family (HEVC, H.264, AV1). Falls back to software automatically if the GPU encoder fails mid-file.
 - **QP / CRF quality modes** - two ways to control quality when files are below your target bitrate. QP gives predictable sizes; CRF gives better-looking results with less predictable sizes.
 - **Precision mode** - one checkbox for the best possible quality. Uses software encoding with smart analysis that adapts to your system's RAM. Tests a few short clips first to make sure it won't make the file bigger. Slower, but produces the smallest file that still looks great.
 - **VBR peak ceiling** - controls how much the bitrate can spike on action-heavy scenes (1.5x to 3x). Higher values look better on complex content.
-- **Audio handling** - each audio track is handled separately. Tracks already below 640kbps are copied as-is. Tracks above the cap are re-encoded to the same codec at the cap. Codecs with no ffmpeg encoder (DTS, TrueHD) fall back to EAC3. Compatibility Mode forces AC3.
+- **Audio handling** - each audio track is handled separately. Tracks already below 640kbps are copied as-is. Tracks above the cap are re-encoded to the same codec at the cap. Codecs with no ffmpeg encoder (DTS, TrueHD) fall back to EAC3. Compatibility Mode forces AAC.
 - **HDR support** - HDR videos are detected automatically and encoded in 10-bit. Dolby Vision and HDR10+ dynamic metadata are preserved automatically when tools are available (the app downloads MP4Box if needed for DV packaging). When preservation isn't possible, the app falls back gracefully to HDR10 and tells you why. Untick the HDR checkbox to convert HDR to SDR with industry-standard tonemapping so colours look right on a normal screen.
 - **Pre-flight checks** - before encoding starts, the app scans your queue and warns you if any files won't get their best-possible encode (e.g. DV files without MP4Box). Offers to download missing tools, encode anyway, or cancel.
 - **Subtitles** - all subtitle tracks are kept.
@@ -64,7 +64,7 @@ Available as a desktop app and a headless CLI for servers (see [CLI-README.md](C
 - **Log console** - colour-coded log with filters, optional file export.
 - **Notifications** - system notification when the batch finishes.
 - **Auto-clear** - optionally clears finished items from the queue.
-- **Flatpak support** - available as a sandboxed Flatpak bundle for Linux with zero filesystem permissions. All file access goes through XDG Desktop Portals.
+- **Flatpak support** - available as a Flatpak bundle for Linux with host filesystem access so ffmpeg subprocesses can reach your files directly.
 - **Themes** - six built-in themes (dark, light, and four community-inspired palettes). Create your own with just 6 colour values - the app derives everything else automatically. See [THEMES.md](THEMES.md).
 - **ffmpeg downloader** - offers to download ffmpeg for you if it's not installed.
 - **Remembers settings** - everything is saved to config.json in the same folder as the .exe, and restored on next launch.
@@ -102,7 +102,7 @@ Each platform has a standard build (you provide ffmpeg) and a **-full** build (f
 |----------|-----|
 | **Linux** | `histv-linux.flatpak` |
 
-The Flatpak uses XDG Desktop Portals for file access. Drag-and-drop and clipboard paste are disabled; use the Add button to select files. The CLI is not included in the Flatpak.
+The Flatpak bundles ffmpeg and has host filesystem access for encoding. The CLI is not included in the Flatpak.
 
 All binaries are portable - no installation needed. On Linux, mark the AppImage executable (`chmod +x`). On macOS, open the DMG and drag to Applications. On Windows, extract the zip to a folder.
 
@@ -194,8 +194,9 @@ People with a pile of video files at different sizes and formats who want to shr
 <summary><strong>Project structure</strong></summary>
 
 ```
-├── src/                        # Frontend (HTML + CSS + inline JS)
+├── src/                        # Frontend (HTML + CSS + JS)
 │   ├── index.html
+│   ├── js/app.js
 │   └── css/app.css
 ├── src-tauri/
 │   ├── Cargo.toml
@@ -237,7 +238,7 @@ People with a pile of video files at different sizes and formats who want to shr
 
 ### Licence
 
-[Do whatever you want.](LICENSE)
+[GPL-3.0-or-later](LICENSE)
 
 ### Third-party software
 

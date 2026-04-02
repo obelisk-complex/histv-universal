@@ -19,6 +19,7 @@ pub struct ProbeResult {
     pub dovi_profile: Option<u8>,
     pub dovi_bl_compat_id: Option<u8>,
     pub has_hdr10plus: bool,
+    pub subtitle_stream_count: u32,
 }
 
 /// Run ffprobe with the given arguments and return trimmed stdout.
@@ -98,6 +99,7 @@ pub async fn probe_file(file_path: &str, sink: &dyn EventSink) -> Result<ProbeRe
                 dovi_profile: None,
                 dovi_bl_compat_id: None,
                 has_hdr10plus: false,
+                subtitle_stream_count: 0,
             });
         }
         // Fall through to normal probe if RIFF parse fails
@@ -138,10 +140,14 @@ pub async fn probe_file(file_path: &str, sink: &dyn EventSink) -> Result<ProbeRe
     let mut dovi_profile: Option<u8> = None;
     let mut dovi_bl_compat_id: Option<u8> = None;
     let mut has_hdr10plus = false;
+    let mut subtitle_stream_count: u32 = 0;
 
     if let Some(streams_arr) = streams {
         for s in streams_arr {
             let codec_type = s["codec_type"].as_str().unwrap_or("");
+            if codec_type == "subtitle" {
+                subtitle_stream_count += 1;
+            }
 
             if codec_type == "video" && video_codec.is_empty() {
                 // First video stream
@@ -344,6 +350,7 @@ pub async fn probe_file(file_path: &str, sink: &dyn EventSink) -> Result<ProbeRe
         dovi_profile,
         dovi_bl_compat_id,
         has_hdr10plus,
+        subtitle_stream_count,
     })
 }
 
@@ -406,12 +413,16 @@ async fn packet_scan_duration(file_path: &str, sink: &dyn EventSink) -> f64 {
 /// This is the only case that requires a second ffprobe invocation - it's
 /// needed for files where neither stream headers, MKV tags, nor format
 /// metadata contain a usable bitrate (e.g. some older AVI files).
+///
+/// Uses two lightweight ffprobe calls with CSV output to avoid building a
+/// multi-hundred-MB JSON DOM for large files.
 async fn packet_count_bitrate(file_path: &str, sink: &dyn EventSink) -> f64 {
     sink.log(&format!(
         "[probe] Scanning packets for bitrate (this may take a moment)... {}",
         file_path
     ));
 
+    // Sum packet sizes using CSV output (one size per line).
     let raw = match run_ffprobe(&[
         "-v",
         "error",
@@ -419,12 +430,8 @@ async fn packet_count_bitrate(file_path: &str, sink: &dyn EventSink) -> f64 {
         "v:0",
         "-show_entries",
         "packet=size",
-        "-show_entries",
-        "stream=duration",
-        "-show_entries",
-        "format=duration",
         "-of",
-        "json",
+        "csv=p=0",
         file_path,
     ])
     .await
@@ -433,35 +440,150 @@ async fn packet_count_bitrate(file_path: &str, sink: &dyn EventSink) -> f64 {
         Err(_) => return 0.0,
     };
 
-    let json: serde_json::Value = serde_json::from_str(&raw).unwrap_or(serde_json::Value::Null);
-
-    // Sum packet sizes
-    let total_bytes: f64 = json["packets"]
-        .as_array()
-        .map(|arr| {
-            arr.iter()
-                .filter_map(|p| p["size"].as_str().and_then(|s| s.parse::<f64>().ok()))
-                .sum()
-        })
-        .unwrap_or(0.0);
+    let total_bytes: f64 = raw
+        .lines()
+        .filter_map(|line| line.trim().parse::<f64>().ok())
+        .sum();
 
     if total_bytes <= 0.0 {
         return 0.0;
     }
 
-    // Try stream duration first, then format duration
-    let duration = json["streams"]
-        .as_array()
-        .and_then(|arr| {
-            arr.iter()
-                .find_map(|s| s["duration"].as_str().and_then(parse_numeric))
-        })
-        .or_else(|| json["format"]["duration"].as_str().and_then(parse_numeric))
+    // Fetch duration separately (tiny response, no DOM needed).
+    let dur_raw = match run_ffprobe(&[
+        "-v",
+        "error",
+        "-select_streams",
+        "v:0",
+        "-show_entries",
+        "stream=duration",
+        "-show_entries",
+        "format=duration",
+        "-of",
+        "default=noprint_wrappers=1:nokey=1",
+        file_path,
+    ])
+    .await
+    {
+        Ok(r) => r,
+        Err(_) => return 0.0,
+    };
+
+    // The output contains one or two lines (stream duration, format duration).
+    // Take the first valid numeric value.
+    let duration = dur_raw
+        .lines()
+        .filter_map(|line| parse_numeric(line.trim()))
+        .find(|&v| v > 0.0)
         .unwrap_or(0.0);
 
     if duration > 0.0 {
         (total_bytes * 8.0) / duration
     } else {
         0.0
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    // ── parse_duration_tag ────────────────────────────────────────
+
+    #[test]
+    fn test_parse_duration_standard_format() {
+        // 1 hour 30 minutes 45.5 seconds = 5445.5
+        let result = parse_duration_tag("01:30:45.500").unwrap();
+        assert!((result - 5445.5).abs() < 0.001);
+    }
+
+    #[test]
+    fn test_parse_duration_zero() {
+        let result = parse_duration_tag("00:00:00.000").unwrap();
+        assert!((result - 0.0).abs() < 0.001);
+    }
+
+    #[test]
+    fn test_parse_duration_whole_seconds() {
+        // No fractional component: "01:00:30" = 3630.0
+        let result = parse_duration_tag("01:00:30").unwrap();
+        assert!((result - 3630.0).abs() < 0.001);
+    }
+
+    #[test]
+    fn test_parse_duration_nanosecond_precision() {
+        // MKV tags often use "00:42:17.123456789"
+        let result = parse_duration_tag("00:42:17.123456789").unwrap();
+        let expected = 42.0 * 60.0 + 17.123456789;
+        assert!((result - expected).abs() < 1e-6);
+    }
+
+    #[test]
+    fn test_parse_duration_no_colons() {
+        // Just a plain number with no colons should return None.
+        assert!(parse_duration_tag("12345").is_none());
+    }
+
+    #[test]
+    fn test_parse_duration_only_two_parts() {
+        // "MM:SS" format — fewer than three colon-separated parts.
+        assert!(parse_duration_tag("30:45").is_none());
+    }
+
+    #[test]
+    fn test_parse_duration_non_numeric() {
+        assert!(parse_duration_tag("ab:cd:ef").is_none());
+    }
+
+    #[test]
+    fn test_parse_duration_empty_string() {
+        assert!(parse_duration_tag("").is_none());
+    }
+
+    #[test]
+    fn test_parse_duration_extra_parts_ignored() {
+        // Four colon-separated parts — only the first three are used.
+        // "01:02:03:04" → h=1, m=2, s=3 → 3723.0 (the ":04" is ignored)
+        let result = parse_duration_tag("01:02:03:04").unwrap();
+        assert!((result - 3723.0).abs() < 0.001);
+    }
+
+    // ── parse_numeric ─────────────────────────────────────────────
+
+    #[test]
+    fn test_parse_numeric_valid() {
+        assert_eq!(parse_numeric("12345.67"), Some(12345.67));
+    }
+
+    #[test]
+    fn test_parse_numeric_whitespace() {
+        assert_eq!(parse_numeric("  100  "), Some(100.0));
+    }
+
+    #[test]
+    fn test_parse_numeric_empty() {
+        assert!(parse_numeric("").is_none());
+    }
+
+    #[test]
+    fn test_parse_numeric_na() {
+        assert!(parse_numeric("N/A").is_none());
+    }
+
+    #[test]
+    fn test_parse_numeric_zero() {
+        // Zero is filtered out (must be > 0.0).
+        assert!(parse_numeric("0").is_none());
+    }
+
+    #[test]
+    fn test_parse_numeric_negative() {
+        // Negative values are filtered out (must be > 0.0).
+        assert!(parse_numeric("-5.0").is_none());
+    }
+
+    #[test]
+    fn test_parse_numeric_non_numeric() {
+        assert!(parse_numeric("abc").is_none());
     }
 }

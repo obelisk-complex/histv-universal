@@ -179,14 +179,14 @@ mod gui_commands {
     pub async fn get_encoder_detection_status(
         state: tauri::State<'_, Arc<AppState>>,
     ) -> Result<bool, String> {
-        Ok(state.encoder_detection_done.load(Ordering::Relaxed))
+        Ok(state.encoder_detection_done.load(Ordering::Acquire))
     }
 
     #[tauri::command]
     pub async fn get_ffmpeg_missing_status(
         state: tauri::State<'_, Arc<AppState>>,
     ) -> Result<bool, String> {
-        Ok(state.ffmpeg_missing.load(Ordering::Relaxed))
+        Ok(state.ffmpeg_missing.load(Ordering::Acquire))
     }
 
     #[tauri::command]
@@ -269,8 +269,14 @@ mod gui_commands {
 
     #[tauri::command]
     pub async fn reveal_file(path: String) -> Result<(), String> {
+        let p = std::path::Path::new(&path);
+        if !p.exists() {
+            return Err(format!("Path does not exist: {path}"));
+        }
         #[cfg(target_os = "windows")]
         {
+            // Use explorer.exe directly with /select, — safe because explorer
+            // treats the argument as a file path, not a shell command.
             tokio::process::Command::new("explorer")
                 .args(["/select,", &path])
                 .spawn()
@@ -285,7 +291,7 @@ mod gui_commands {
         }
         #[cfg(target_os = "linux")]
         {
-            if let Some(parent) = std::path::Path::new(&path).parent() {
+            if let Some(parent) = p.parent() {
                 tokio::process::Command::new("xdg-open")
                     .arg(parent.to_string_lossy().as_ref())
                     .spawn()
@@ -297,10 +303,21 @@ mod gui_commands {
 
     #[tauri::command]
     pub async fn open_file(path: String) -> Result<(), String> {
+        let p = std::path::Path::new(&path);
+        if !p.exists() {
+            return Err(format!("Path does not exist: {path}"));
+        }
+        // Reject UNC paths on Windows to prevent NTLM relay attacks.
+        #[cfg(target_os = "windows")]
+        if path.starts_with("\\\\") {
+            return Err("UNC paths are not supported".to_string());
+        }
         #[cfg(target_os = "windows")]
         {
-            tokio::process::Command::new("cmd")
-                .args(["/C", "start", "", &path])
+            // Use ShellExecuteW semantics via explorer — avoids cmd.exe shell
+            // parsing which is vulnerable to argument injection.
+            tokio::process::Command::new("explorer")
+                .arg(&path)
                 .spawn()
                 .map_err(|e| format!("Could not open file: {e}"))?;
         }
@@ -661,6 +678,7 @@ mod gui_commands {
                 &batch_settings,
                 &detected_encoders_for_task,
                 Some(wave_plan),
+                None, // GUI does not use disk monitoring
             )
             .await;
 
@@ -799,8 +817,8 @@ mod gui_commands {
             let mut ae = state.detected_audio_encoders.write().await;
             *ae = audio;
         }
-        state.encoder_detection_done.store(true, Ordering::Relaxed);
-        state.ffmpeg_missing.store(false, Ordering::Relaxed);
+        state.encoder_detection_done.store(true, Ordering::Release);
+        state.ffmpeg_missing.store(false, Ordering::Release);
         let _ = app.emit("encoder-detection-done", ());
         Ok(())
     }

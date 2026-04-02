@@ -53,14 +53,17 @@ impl StagingContext {
     /// Returns the `StagingContext` (for cleanup) and the local path to
     /// use as ffmpeg's input. Returns `None` if staging fails (caller
     /// should fall back to in-place encoding).
-    pub fn stage_file(
+    ///
+    /// Uses `tokio::fs::copy` so the Tokio runtime worker thread is not
+    /// blocked during large file copies on slow storage.
+    pub async fn stage_file(
         source_path: &Path,
         staging_dir: &Path,
         queue_index: usize,
         sink: &dyn EventSink,
     ) -> Option<Self> {
         // Ensure staging directory exists
-        if let Err(e) = std::fs::create_dir_all(staging_dir) {
+        if let Err(e) = tokio::fs::create_dir_all(staging_dir).await {
             sink.log(&format!(
                 "  WARNING: Could not create staging directory '{}': {e} - encoding in-place",
                 staging_dir.display()
@@ -93,7 +96,7 @@ impl StagingContext {
         let staged_name = format!("{}_{}", queue_index, file_name);
         let staged_path = staging_dir.join(staged_name);
 
-        // Copy the file
+        // Copy the file using async I/O to avoid blocking the runtime
         let size_str = crate::disk_monitor::format_bytes(source_size);
         sink.log(&format!(
             "  Staging input to {} ({})...",
@@ -102,7 +105,7 @@ impl StagingContext {
         ));
 
         let start = std::time::Instant::now();
-        match std::fs::copy(source_path, &staged_path) {
+        match tokio::fs::copy(source_path, &staged_path).await {
             Ok(_) => {
                 let elapsed = start.elapsed().as_secs();
                 sink.log(&format!("  Staged in {}s", elapsed));
@@ -116,7 +119,7 @@ impl StagingContext {
                     "  WARNING: Staging failed: {e} - encoding in-place"
                 ));
                 // Clean up partial copy
-                let _ = std::fs::remove_file(&staged_path);
+                let _ = tokio::fs::remove_file(&staged_path).await;
                 None
             }
         }

@@ -4,6 +4,11 @@
 //! All output goes to stderr so stdout remains clean for piped usage.
 //! Log level filtering controls verbosity: quiet (errors only),
 //! normal (key events), verbose (everything including ffmpeg stderr).
+//!
+//! Mutex locks use `unwrap_or_else(|e| e.into_inner())` throughout this
+//! module to recover from poisoned mutexes rather than cascade-panicking.
+//! A poisoned mutex means another thread panicked while holding the lock,
+//! but the inner data (a progress bar handle) is still safe to use.
 
 use std::io::Write;
 use std::sync::Mutex;
@@ -51,7 +56,7 @@ impl CliSink {
     /// Write a line to stderr, suspending any active progress bar first
     /// so the output doesn't collide with the bar rendering.
     fn eprintln(&self, msg: &str) {
-        let pb = self.progress_bar.lock().unwrap();
+        let pb = self.progress_bar.lock().unwrap_or_else(|e| e.into_inner());
         if let Some(ref bar) = *pb {
             bar.suspend(|| {
                 eprintln!("{}", msg);
@@ -63,7 +68,7 @@ impl CliSink {
 
     /// Clear and drop the current progress bar, if any.
     fn clear_progress(&self) {
-        let mut pb = self.progress_bar.lock().unwrap();
+        let mut pb = self.progress_bar.lock().unwrap_or_else(|e| e.into_inner());
         if let Some(bar) = pb.take() {
             bar.finish_and_clear();
         }
@@ -71,7 +76,7 @@ impl CliSink {
 
     /// Get the cached pass label, updating it only if the pass value changed (#17).
     fn pass_label(&self, pass: Option<(u8, u8)>) -> String {
-        let mut cached = self.cached_pass_label.lock().unwrap();
+        let mut cached = self.cached_pass_label.lock().unwrap_or_else(|e| e.into_inner());
         if cached.0 != pass {
             cached.1 = match pass {
                 Some((cur, tot)) => format!(" (pass {}/{})", cur, tot),
@@ -115,7 +120,7 @@ impl EventSink for CliSink {
 
         if self.is_tty {
             // Rich mode: update indicatif progress bar
-            let mut pb = self.progress_bar.lock().unwrap();
+            let mut pb = self.progress_bar.lock().unwrap_or_else(|e| e.into_inner());
             if pb.is_none() {
                 let bar = ProgressBar::new(1000);
                 bar.set_style(
@@ -137,7 +142,7 @@ impl EventSink for CliSink {
             // Simple mode: print at 10% increments, skip duplicates
             let pct = percent.round() as u32;
             if pct % 10 == 0 {
-                let mut last = self.last_simple_pct.lock().unwrap();
+                let mut last = self.last_simple_pct.lock().unwrap_or_else(|e| e.into_inner());
                 if *last != pct {
                     *last = pct;
                     let _ = writeln!(std::io::stderr(), "  {}%{}", pct, pass_label);
@@ -160,7 +165,7 @@ impl EventSink for CliSink {
         }
         // Clear any existing per-file progress bar before the new file header
         self.clear_progress();
-        *self.last_simple_pct.lock().unwrap() = u32::MAX; // reset for new file
+        *self.last_simple_pct.lock().unwrap_or_else(|e| e.into_inner()) = u32::MAX; // reset for new file
         self.eprintln(message);
     }
 
@@ -230,7 +235,7 @@ impl EventSink for CliSink {
         }
         if self.is_tty {
             // Update status in-line
-            let pb = self.progress_bar.lock().unwrap();
+            let pb = self.progress_bar.lock().unwrap_or_else(|e| e.into_inner());
             if let Some(ref bar) = *pb {
                 bar.set_message(format!(
                     "Wave {}/{} [{}/{}]",

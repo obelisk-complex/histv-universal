@@ -479,12 +479,97 @@ macro_rules! impl_fromstr_for_enum {
     };
 }
 
-impl_fromstr_for_enum!(CodecFamily, "hevc" => CodecFamily::Hevc, "h264" => CodecFamily::H264);
+impl_fromstr_for_enum!(CodecFamily, "hevc" => CodecFamily::Hevc, "h264" => CodecFamily::H264, "auto" => CodecFamily::Auto);
 impl_fromstr_for_enum!(RateControl, "qp" => RateControl::Qp, "crf" => RateControl::Crf);
-impl_fromstr_for_enum!(AudioCodec, "ac3" => AudioCodec::Ac3, "eac3" => AudioCodec::Eac3, "aac" => AudioCodec::Aac, "copy" => AudioCodec::Copy);
+impl_fromstr_for_enum!(AudioCodec, "auto" => AudioCodec::Auto, "ac3" => AudioCodec::Ac3, "eac3" => AudioCodec::Eac3, "aac" => AudioCodec::Aac, "copy" => AudioCodec::Copy);
 impl_fromstr_for_enum!(ContainerFormat, "auto" => ContainerFormat::Auto, "mkv" => ContainerFormat::Mkv, "mp4" => ContainerFormat::Mp4);
 impl_fromstr_for_enum!(OutputMode, "folder" => OutputMode::Folder, "beside" => OutputMode::Beside, "replace" => OutputMode::Replace);
 impl_fromstr_for_enum!(OverwritePolicy, "ask" => OverwritePolicy::Ask, "yes" => OverwritePolicy::Yes, "skip" => OverwritePolicy::Skip);
 impl_fromstr_for_enum!(FallbackPolicy, "ask" => FallbackPolicy::Ask, "yes" => FallbackPolicy::Yes, "no" => FallbackPolicy::No);
 impl_fromstr_for_enum!(RemotePolicy, "auto" => RemotePolicy::Auto, "always" => RemotePolicy::Always, "never" => RemotePolicy::Never);
 impl_fromstr_for_enum!(LogLevel, "quiet" => LogLevel::Quiet, "normal" => LogLevel::Normal, "verbose" => LogLevel::Verbose);
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// Helper to call the manually-implemented FromStr (not the
+    /// clap-derived one) without ambiguity.
+    fn parse<T: std::str::FromStr>(s: &str) -> Result<T, T::Err> {
+        s.parse()
+    }
+
+    // ── CodecFamily ──────────────────────────────────────────────
+
+    #[test]
+    fn test_codec_family_fromstr_valid() {
+        for input in &["hevc", "h264", "auto"] {
+            assert!(
+                parse::<CodecFamily>(input).is_ok(),
+                "expected Ok for '{input}'"
+            );
+        }
+    }
+
+    #[test]
+    fn test_codec_family_fromstr_invalid() {
+        assert!(parse::<CodecFamily>("invalid").is_err());
+    }
+
+    #[test]
+    fn test_codec_family_fromstr_case_insensitive() {
+        assert!(parse::<CodecFamily>("HEVC").is_ok());
+        assert!(parse::<CodecFamily>("H264").is_ok());
+    }
+
+    // ── AudioCodec ───────────────────────────────────────────────
+
+    #[test]
+    fn test_audio_codec_fromstr_valid() {
+        for input in &["auto", "ac3", "eac3", "aac", "copy"] {
+            assert!(
+                parse::<AudioCodec>(input).is_ok(),
+                "expected Ok for '{input}'"
+            );
+        }
+    }
+
+    #[test]
+    fn test_audio_codec_fromstr_invalid() {
+        assert!(parse::<AudioCodec>("invalid").is_err());
+    }
+
+    // ── RateControl ──────────────────────────────────────────────
+
+    #[test]
+    fn test_rate_control_fromstr_valid() {
+        for input in &["qp", "crf"] {
+            assert!(
+                parse::<RateControl>(input).is_ok(),
+                "expected Ok for '{input}'"
+            );
+        }
+    }
+
+    #[test]
+    fn test_rate_control_fromstr_invalid() {
+        assert!(parse::<RateControl>("invalid").is_err());
+    }
+
+    // ── ContainerFormat ──────────────────────────────────────────
+
+    #[test]
+    fn test_container_format_fromstr_valid() {
+        for input in &["auto", "mkv", "mp4"] {
+            assert!(
+                parse::<ContainerFormat>(input).is_ok(),
+                "expected Ok for '{input}'"
+            );
+        }
+    }
+
+    #[test]
+    fn test_container_format_fromstr_invalid() {
+        assert!(parse::<ContainerFormat>("invalid").is_err());
+    }
+}

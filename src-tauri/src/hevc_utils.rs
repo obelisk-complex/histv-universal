@@ -101,8 +101,9 @@ impl<R: Read> NalReader<R> {
                 } else {
                     let len = available.len();
                     let mut pos = len; // default: consume everything
+                    let mut i = 0;
 
-                    for i in 0..len {
+                    while i < len {
                         let byte = available[i];
 
                         if byte == 0 {
@@ -110,6 +111,7 @@ impl<R: Read> NalReader<R> {
                             if self.started {
                                 self.buf.push(byte);
                             }
+                            i += 1;
                             continue;
                         }
 
@@ -129,14 +131,24 @@ impl<R: Read> NalReader<R> {
                             // First start code found
                             self.started = true;
                             self.zeros = 0;
+                            i += 1;
                             continue;
                         }
 
-                        // Regular byte
-                        if self.started {
-                            self.buf.push(byte);
-                        }
+                        // Non-special byte: batch contiguous non-zero bytes
+                        // into a single extend_from_slice call.
                         self.zeros = 0;
+                        if self.started {
+                            let run_start = i;
+                            i += 1;
+                            while i < len && available[i] != 0 {
+                                i += 1;
+                            }
+                            self.buf.extend_from_slice(&available[run_start..i]);
+                        } else {
+                            i += 1;
+                        }
+                        continue;
                     }
 
                     consumed = pos;

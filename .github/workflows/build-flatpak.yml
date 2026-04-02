@@ -1,21 +1,20 @@
-name: Build Linux Flatpak
+# Build a Flathub-grade Flatpak from source using the real manifest
+name: Build Flatpak
 
 on:
   workflow_dispatch:
     inputs:
       ref:
-        description: 'Git ref to build (branch, tag, or SHA)'
+        description: "Git ref to build (branch, tag, or SHA)"
         required: false
-        default: 'main'
+        default: "main"
 
 permissions:
-  contents: write
+  contents: read
 
-# Pinned dependency versions (keep in sync with build-cli-gui.yml)
 env:
-  FFMPEG_BTBN_TAG: "autobuild-2026-04-01-13-13"
-  FFMPEG_BTBN_LINUX: "ffmpeg-n8.1-7-ga3475e2554-linux64-gpl-8.1.tar.xz"
-  TAURI_CLI_VERSION: "=2.10.1"
+  GNOME_RUNTIME_VERSION: "50"
+  RUST_EXT_VERSION: "25.08"
 
 jobs:
   build:
@@ -23,126 +22,47 @@ jobs:
 
     steps:
       - name: Checkout
-        uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4
+        uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
         with:
           ref: ${{ github.event.inputs.ref || github.ref }}
 
-      - name: Install Rust stable
-        uses: dtolnay/rust-toolchain@3c5f7ea28cd621ae0bf5283f0e981fb97b8a7af9 # 1.93.1
+      - name: Cache Flatpak SDK
+        uses: actions/cache@0400d5f644dc74513175e3cd8d07132dd4860809 # v4.2.4
         with:
-          toolchain: "1.93.1"
-          targets: x86_64-unknown-linux-gnu
+          path: /var/lib/flatpak
+          key: flatpak-sdk-gnome-${{ env.GNOME_RUNTIME_VERSION }}-rust-${{ env.RUST_EXT_VERSION }}
 
-      - name: Install Linux dependencies
+      - name: Install Flatpak and flatpak-builder
         run: |
+          set -e
           sudo apt-get update
-          sudo apt-get install -y \
-            libwebkit2gtk-4.1-dev \
-            libappindicator3-dev \
-            librsvg2-dev \
-            patchelf \
-            libgtk-3-dev \
-            libsoup-3.0-dev \
-            libjavascriptcoregtk-4.1-dev \
-            flatpak \
-            flatpak-builder
+          sudo apt-get install -y flatpak flatpak-builder
 
-      - name: Install Flatpak runtime and SDK
+      - name: Add Flathub remote
         run: |
+          set -e
           sudo flatpak remote-add --if-not-exists flathub https://dl.flathub.org/repo/flathub.flatpakrepo
-          sudo flatpak install -y flathub org.gnome.Platform//46 org.gnome.Sdk//46
 
-      - name: Install Tauri CLI
-        run: cargo install tauri-cli --version "${{ env.TAURI_CLI_VERSION }}" --locked
-
-      - name: Build GUI (deb bundle)
-        run: cargo tauri build --target x86_64-unknown-linux-gnu --bundles deb
-
-      - name: Extract deb contents
+      - name: Install GNOME SDK, Platform, and Rust extension
         run: |
-          mkdir -p histv-deb-extract
-          DEB_FILE=$(find . -name "*.deb" -path "*/release/bundle/*" | head -1)
-          echo "Found deb: $DEB_FILE"
-          dpkg-deb -x "$DEB_FILE" histv-deb-extract/
-          ls -lhR histv-deb-extract/
+          set -e
+          sudo flatpak install -y flathub \
+            org.gnome.Platform//${{ env.GNOME_RUNTIME_VERSION }} \
+            org.gnome.Sdk//${{ env.GNOME_RUNTIME_VERSION }} \
+            org.freedesktop.Sdk.Extension.rust-stable//${{ env.RUST_EXT_VERSION }}
 
-      - name: Download ffmpeg
+      - name: Build Flatpak from source manifest
         run: |
-          mkdir -p ffmpeg-extract
-          URL="https://github.com/BtbN/FFmpeg-Builds/releases/download/${{ env.FFMPEG_BTBN_TAG }}/${{ env.FFMPEG_BTBN_LINUX }}"
-          echo "Downloading ffmpeg from $URL"
-          wget -q "$URL" -O ffmpeg.tar.xz
-          tar xf ffmpeg.tar.xz --strip-components=1 -C ffmpeg-extract/
-          ls -lh ffmpeg-extract/bin/
-
-      - name: Prepare Flatpak sources
-        run: |
-          # The manifest references local paths, so assemble them
-          mkdir -p flatpak-build-sources
-
-          # Binary
-          HISTV_BIN=$(find histv-deb-extract -name "histv" -type f -executable | head -1)
-          cp "$HISTV_BIN" flatpak-build-sources/histv
-
-          # WebKit resources (if any)
-          if [ -d "histv-deb-extract/usr/lib/histv" ]; then
-            cp -r histv-deb-extract/usr/lib/histv flatpak-build-sources/histv-lib
-          fi
-
-          # Theme files
-          if [ -d "histv-deb-extract/usr/lib/histv/themes" ]; then
-            cp -r histv-deb-extract/usr/lib/histv/themes flatpak-build-sources/themes
-          fi
-
-          # ffmpeg binaries
-          cp ffmpeg-extract/bin/ffmpeg flatpak-build-sources/ffmpeg
-          cp ffmpeg-extract/bin/ffprobe flatpak-build-sources/ffprobe
-
-          # Desktop file, metainfo, icon
-          cp com.histv.encoder.desktop flatpak-build-sources/
-          cp com.histv.encoder.metainfo.xml flatpak-build-sources/
-          cp src-tauri/icons/128x128.png flatpak-build-sources/
-
-          ls -lhR flatpak-build-sources/
-
-      - name: Build Flatpak
-        run: |
-          # Use a simplified inline manifest for CI that references local files
-          cat > com.histv.encoder.ci.yml << 'MANIFEST'
-          id: com.histv.encoder
-          runtime: org.gnome.Platform
-          runtime-version: '46'
-          sdk: org.gnome.Sdk
-          command: histv
-          finish-args:
-            - --socket=wayland
-            - --socket=fallback-x11
-            - --share=ipc
-            - --device=dri
-          modules:
-            - name: histv
-              buildsystem: simple
-              sources:
-                - type: dir
-                  path: flatpak-build-sources
-              build-commands:
-                - install -Dm755 histv /app/bin/histv
-                - install -Dm755 ffmpeg /app/bin/ffmpeg
-                - install -Dm755 ffprobe /app/bin/ffprobe
-                - install -Dm644 com.histv.encoder.desktop /app/share/applications/com.histv.encoder.desktop
-                - install -Dm644 com.histv.encoder.metainfo.xml /app/share/metainfo/com.histv.encoder.metainfo.xml
-                - install -Dm644 128x128.png /app/share/icons/hicolor/128x128/apps/com.histv.encoder.png
-          MANIFEST
-
-          flatpak-builder --force-clean --user --disable-cache flatpak-build com.histv.encoder.ci.yml
+          set -e
+          flatpak-builder --force-clean --repo=flatpak-repo flatpak-build com.histv.encoder.yml
 
       - name: Export Flatpak bundle
         run: |
-          flatpak-builder --force-clean --repo=flatpak-repo flatpak-build com.histv.encoder.ci.yml
+          set -e
           flatpak build-bundle flatpak-repo histv-linux.flatpak com.histv.encoder
 
       - name: Upload artefact
-        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
         with:
           name: histv-linux-flatpak
           path: histv-linux.flatpak

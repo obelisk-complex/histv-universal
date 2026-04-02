@@ -6,6 +6,7 @@
 
 use std::collections::HashMap;
 use std::path::{Path, PathBuf};
+use std::time::Duration;
 
 /// Information about a filesystem mount point.
 #[derive(Debug, Clone)]
@@ -73,6 +74,28 @@ const REMOTE_FS_TYPES: &[&str] = &[
     "fuse.s3fs",
 ];
 
+/// Filesystem types reported by macFUSE/osxfuse on macOS. These do not
+/// encode the underlying protocol, so we must inspect the device field
+/// to distinguish remote mounts (sshfs, rclone) from local ones (ext4fuse).
+#[cfg(target_os = "macos")]
+const MACFUSE_FS_TYPES: &[&str] = &["macfuse", "osxfuse"];
+
+/// Canonicalise a path with a 5-second timeout. On dead network mounts,
+/// `std::fs::canonicalize` can block indefinitely (it calls `realpath()`
+/// which stats every path component). Falls back to the original path
+/// if the call times out or fails.
+fn canonicalize_with_timeout(dir: &Path) -> PathBuf {
+    let dir_owned = dir.to_path_buf();
+    let (tx, rx) = std::sync::mpsc::channel();
+    let _handle = std::thread::spawn(move || {
+        let result = std::fs::canonicalize(&dir_owned).unwrap_or(dir_owned);
+        // Receiver may have been dropped on timeout; ignore send error.
+        let _ = tx.send(result);
+    });
+    rx.recv_timeout(Duration::from_secs(5))
+        .unwrap_or_else(|_| dir.to_path_buf())
+}
+
 impl MountCache {
     pub fn new() -> Self {
         Self {
@@ -117,8 +140,10 @@ impl MountCache {
     /// Canonicalise a path using the directory-level cache (#19).
     /// For a file path, canonicalises the parent directory once and
     /// appends the file name. For a directory, canonicalises directly.
+    /// Uses a purely syntactic check (file_name + parent presence) instead
+    /// of `is_file()` to avoid a stat syscall before the cache lookup.
     fn canonicalize_cached(&mut self, path: &Path) -> PathBuf {
-        let (dir, file_name) = if path.is_file() {
+        let (dir, file_name) = if path.file_name().is_some() && path.parent().is_some() {
             let parent = path.parent().unwrap_or(path);
             let name = path.file_name();
             (parent.to_path_buf(), name.map(|n| n.to_os_string()))
@@ -129,7 +154,7 @@ impl MountCache {
         let canonical_dir = if let Some(cached) = self.dir_canon_cache.get(&dir) {
             cached.clone()
         } else {
-            let resolved = std::fs::canonicalize(&dir).unwrap_or_else(|_| dir.clone());
+            let resolved = canonicalize_with_timeout(&dir);
             self.dir_canon_cache.insert(dir, resolved.clone());
             resolved
         };
@@ -268,11 +293,24 @@ fn is_remote_fuse(fs_type: &str) -> bool {
     matches!(fs_type, "fuse.sshfs" | "fuse.rclone" | "fuse.s3fs")
 }
 
-/// Unescape octal sequences in /proc/mounts paths (e.g. \040 for space).
+/// Unescape octal sequences in /proc/mounts paths (e.g. `\040` for space,
+/// `\303\251` for UTF-8 'e' with acute accent). Accumulates raw bytes from
+/// consecutive octal escapes and decodes them as UTF-8 so that multi-byte
+/// characters are not corrupted.
 #[cfg(target_os = "linux")]
 fn unescape_mount_path(s: &str) -> String {
     let mut result = String::with_capacity(s.len());
+    let mut byte_buf: Vec<u8> = Vec::new();
     let mut chars = s.chars();
+
+    /// Flush accumulated raw bytes as UTF-8 into the result string.
+    fn flush_bytes(buf: &mut Vec<u8>, out: &mut String) {
+        if !buf.is_empty() {
+            out.push_str(&String::from_utf8_lossy(buf));
+            buf.clear();
+        }
+    }
+
     while let Some(c) = chars.next() {
         if c == '\\' {
             // Try to read 3 octal digits
@@ -288,19 +326,23 @@ fn unescape_mount_path(s: &str) -> String {
             }
             if octal.len() == 3 {
                 if let Ok(byte) = u8::from_str_radix(&octal, 8) {
-                    result.push(byte as char);
+                    byte_buf.push(byte);
                 } else {
+                    flush_bytes(&mut byte_buf, &mut result);
                     result.push('\\');
                     result.push_str(&octal);
                 }
             } else {
+                flush_bytes(&mut byte_buf, &mut result);
                 result.push('\\');
                 result.push_str(&octal);
             }
         } else {
+            flush_bytes(&mut byte_buf, &mut result);
             result.push(c);
         }
     }
+    flush_bytes(&mut byte_buf, &mut result);
     result
 }
 
@@ -332,10 +374,16 @@ fn parse_mount_table() -> Vec<MountEntry> {
             let mount_point = &line[on_idx + 4..paren_idx];
             let opts_str = &line[paren_idx + 2..line.len().saturating_sub(1)];
             let fs_type = opts_str.split(',').next().unwrap_or("").trim().to_string();
-            // macOS: treat all FUSE mounts as remote (no way to distinguish
-            // local FUSE like NTFS-3G from remote FUSE like sshfs reliably)
-            let is_remote =
-                REMOTE_FS_TYPES.iter().any(|rt| *rt == fs_type) || fs_type.starts_with("fuse.");
+            // macOS: treat FUSE mounts as remote unless the mount source
+            // starts with /dev/, which indicates a local block device
+            // (e.g. NTFS-3G mounting a USB drive via macFUSE).
+            // macfuse/osxfuse types need device-field heuristics to
+            // distinguish sshfs/rclone from local FUSE (e.g. ext4fuse).
+            let device = &line[..on_idx];
+            let is_macfuse = MACFUSE_FS_TYPES.iter().any(|ft| *ft == fs_type);
+            let is_remote = REMOTE_FS_TYPES.iter().any(|rt| *rt == fs_type)
+                || (fs_type.starts_with("fuse.") && !device.starts_with("/dev/"))
+                || (is_macfuse && is_remote_macfuse_device(device));
             Some(MountEntry {
                 mount_point: PathBuf::from(mount_point),
                 fs_type,
@@ -352,6 +400,17 @@ fn parse_mount_table() -> Vec<MountEntry> {
     });
 
     entries
+}
+
+/// Check whether a macfuse/osxfuse device field indicates a remote mount.
+/// SSHFS mounts appear as `sshfs#user@host:path`, rclone as `remote:path`
+/// or `rclone://...`. Local FUSE mounts (e.g. ext4fuse) use `/dev/` paths
+/// or bare local paths.
+#[cfg(target_os = "macos")]
+fn is_remote_macfuse_device(device: &str) -> bool {
+    device.starts_with("sshfs#")
+        || device.starts_with("rclone:")
+        || device.contains("://")
 }
 
 // ── Windows drive type check ───────────────────────────────────

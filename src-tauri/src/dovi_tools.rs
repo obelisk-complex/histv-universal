@@ -15,6 +15,9 @@ static MP4BOX_PATH: RwLock<Option<PathBuf>> = RwLock::new(None);
 /// Whether the discovered MP4Box supports the `:dvp=` DV profile syntax (GPAC >= 2.2).
 /// Set during init() after running `MP4Box -version`.
 static MP4BOX_DVP_OK: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
+/// Cached result of `path.exists()` for the resolved MP4Box path,
+/// matching the `MP4BOX_DVP_OK` pattern to avoid per-call stat syscalls.
+static MP4BOX_EXISTS: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
 
 #[cfg(target_os = "windows")]
 const EXE_EXT: &str = ".exe";
@@ -33,12 +36,10 @@ pub struct DoviCapabilities {
 }
 
 /// Query current capabilities based on compiled features and discovered tools.
+/// Uses cached `AtomicBool` flags set at `init()`/`reinit()` time to avoid
+/// per-call stat syscalls.
 pub fn capabilities() -> DoviCapabilities {
-    let has_mp4box = MP4BOX_PATH
-        .read()
-        .ok()
-        .and_then(|r| r.as_ref().map(|p| p.exists()))
-        .unwrap_or(false);
+    let has_mp4box = MP4BOX_EXISTS.load(std::sync::atomic::Ordering::Relaxed);
     let dvp_ok = MP4BOX_DVP_OK.load(std::sync::atomic::Ordering::Relaxed);
 
     DoviCapabilities {
@@ -69,6 +70,7 @@ pub fn init(resource_dir: Option<&Path>, sink: &dyn EventSink) {
         false
     };
     MP4BOX_DVP_OK.store(dvp_ok, std::sync::atomic::Ordering::Relaxed);
+    MP4BOX_EXISTS.store(found, std::sync::atomic::Ordering::Relaxed);
 
     if let Ok(mut w) = MP4BOX_PATH.write() {
         *w = Some(path);
@@ -123,23 +125,6 @@ fn check_mp4box_version(path: &Path, sink: &dyn EventSink) -> bool {
             false
         }
     }
-}
-
-/// Check if MP4Box is actually usable (can run `MP4Box -version`).
-pub async fn is_mp4box_available() -> bool {
-    let path = match MP4BOX_PATH.read().ok().and_then(|r| r.clone()) {
-        Some(p) => p,
-        None => return false,
-    };
-
-    tokio::process::Command::new(&path)
-        .arg("-version")
-        .stdout(std::process::Stdio::null())
-        .stderr(std::process::Stdio::null())
-        .status()
-        .await
-        .map(|s| s.success())
-        .unwrap_or(false)
 }
 
 /// Parse the GPAC major version from `MP4Box -version` output.
@@ -262,31 +247,31 @@ fn resolve_mp4box(resource_dir: Option<&Path>, name: &str) -> PathBuf {
 
 // ── Download ──────────────────────────────────────────────────────
 
-/// GPAC stable release download URLs and SHA-256 checksums.
-/// Linux: .deb package (extract MP4Box from it)
-/// Windows: .exe installer (extract via 7z)
-/// macOS: .pkg (extract via pkgutil)
+/// GPAC download metadata: URL and optional SHA-256 checksum.
+/// When `sha256` is empty, the downloaded archive is validated by checking
+/// its magic bytes instead (see `validate_archive_header`).
 #[cfg(feature = "downloader")]
 struct GpacDownload {
-    url: &'static str,
-    sha256: &'static str,
+    url: String,
+    sha256: String,
 }
 
+/// Hardcoded fallback download info for GPAC 26.02.
 #[cfg(feature = "downloader")]
-fn mp4box_download_info() -> Option<GpacDownload> {
+fn mp4box_fallback_info() -> Option<GpacDownload> {
     #[cfg(all(target_os = "linux", target_arch = "x86_64"))]
     {
         Some(GpacDownload {
-        url: "https://download.tsi.telecom-paristech.fr/gpac/release/26.02/gpac_26.02-rev0-g118e60a9-master_amd64.deb",
-        sha256: "48b6ec3a04f8b4fb8b933885d11706c149f5f9c3c3c00b3df550dafd6a19d09e",
-    })
+            url: "https://download.tsi.telecom-paristech.fr/gpac/release/26.02/gpac_26.02-rev0-g118e60a9-master_amd64.deb".to_string(),
+            sha256: "48b6ec3a04f8b4fb8b933885d11706c149f5f9c3c3c00b3df550dafd6a19d09e".to_string(),
+        })
     }
     #[cfg(all(target_os = "windows", target_arch = "x86_64"))]
     {
         Some(GpacDownload {
-        url: "https://download.tsi.telecom-paristech.fr/gpac/release/26.02/gpac-26.02-rev0-g118e60a9-master-x64.exe",
-        sha256: "", // TODO: compute and pin when Windows build is tested
-    })
+            url: "https://download.tsi.telecom-paristech.fr/gpac/release/26.02/gpac-26.02-rev0-g118e60a9-master-x64.exe".to_string(),
+            sha256: String::new(),
+        })
     }
     #[cfg(all(
         target_os = "macos",
@@ -294,9 +279,9 @@ fn mp4box_download_info() -> Option<GpacDownload> {
     ))]
     {
         Some(GpacDownload {
-        url: "https://download.tsi.telecom-paristech.fr/gpac/release/26.02/gpac-26.02-rev0-g118e60a9-master.pkg",
-        sha256: "", // TODO: compute and pin when macOS build is tested
-    })
+            url: "https://download.tsi.telecom-paristech.fr/gpac/release/26.02/gpac-26.02-rev0-g118e60a9-master.pkg".to_string(),
+            sha256: String::new(),
+        })
     }
     #[cfg(not(any(
         all(target_os = "linux", target_arch = "x86_64"),
@@ -311,27 +296,180 @@ fn mp4box_download_info() -> Option<GpacDownload> {
     }
 }
 
+/// The asset filename suffix we look for in GPAC GitHub releases.
+#[cfg(feature = "downloader")]
+fn gpac_asset_suffix() -> Option<&'static str> {
+    #[cfg(all(target_os = "linux", target_arch = "x86_64"))]
+    {
+        Some("_amd64.deb")
+    }
+    #[cfg(all(target_os = "windows", target_arch = "x86_64"))]
+    {
+        Some("-x64.exe")
+    }
+    #[cfg(all(
+        target_os = "macos",
+        any(target_arch = "x86_64", target_arch = "aarch64")
+    ))]
+    {
+        Some(".pkg")
+    }
+    #[cfg(not(any(
+        all(target_os = "linux", target_arch = "x86_64"),
+        all(target_os = "windows", target_arch = "x86_64"),
+        all(
+            target_os = "macos",
+            any(target_arch = "x86_64", target_arch = "aarch64")
+        ),
+    )))]
+    {
+        None
+    }
+}
+
+/// Query the GitHub Releases API for the latest GPAC release and return a
+/// download URL for the current platform. This avoids pinning to a specific
+/// GPAC version whose download URL may rot over time. Falls back to `None`
+/// on any error (rate-limit, network failure, missing asset, etc.), letting
+/// the caller use hardcoded fallback URLs instead.
+#[cfg(feature = "downloader")]
+async fn discover_gpac_release(
+    client: &reqwest::Client,
+    sink: &dyn EventSink,
+) -> Option<GpacDownload> {
+    let suffix = gpac_asset_suffix()?;
+
+    let api_url = "https://api.github.com/repos/gpac/gpac/releases/latest";
+    sink.log("[dovi] Querying GitHub API for latest GPAC release...");
+
+    let resp = client
+        .get(api_url)
+        .header("User-Agent", "histv-encoder/2.5")
+        .header("Accept", "application/vnd.github+json")
+        .send()
+        .await
+        .ok()?;
+
+    if !resp.status().is_success() {
+        sink.log(&format!(
+            "[dovi] GitHub API returned HTTP {} — will use hardcoded fallback",
+            resp.status()
+        ));
+        return None;
+    }
+
+    let text = resp.text().await.ok()?;
+    let body: serde_json::Value = serde_json::from_str(&text).ok()?;
+    let assets = body.get("assets").and_then(|v| v.as_array())?;
+
+    for asset in assets {
+        let name = asset.get("name").and_then(|v| v.as_str())?;
+        if name.ends_with(suffix) {
+            let url = asset
+                .get("browser_download_url")
+                .and_then(|v| v.as_str())?
+                .to_string();
+            let tag = body
+                .get("tag_name")
+                .and_then(|v: &serde_json::Value| v.as_str())
+                .unwrap_or("unknown");
+            sink.log(&format!(
+                "[dovi] Found GPAC release {tag}: {name}"
+            ));
+            return Some(GpacDownload {
+                url,
+                // Dynamic releases have no pre-computed checksum; integrity
+                // is verified via HTTPS transport + archive header validation.
+                sha256: String::new(),
+            });
+        }
+    }
+
+    sink.log("[dovi] No matching asset found in latest GitHub release");
+    None
+}
+
+/// Validate that `bytes` looks like a genuine archive for the current platform
+/// by checking file header magic bytes. Returns `Ok(())` or an error message.
+#[cfg(feature = "downloader")]
+fn validate_archive_header(bytes: &[u8]) -> Result<(), String> {
+    if bytes.len() < 8 {
+        return Err("Downloaded file is too small to be a valid archive".to_string());
+    }
+
+    // .deb  — starts with "!<arch>\n"
+    #[cfg(target_os = "linux")]
+    {
+        if &bytes[..8] != b"!<arch>\n" {
+            return Err(
+                "Downloaded file does not appear to be a valid .deb archive \
+                 (bad magic bytes)"
+                    .to_string(),
+            );
+        }
+    }
+
+    // .pkg (xar archive) — starts with "xar!" (0x78617221)
+    #[cfg(target_os = "macos")]
+    {
+        if &bytes[..4] != b"xar!" {
+            return Err(
+                "Downloaded file does not appear to be a valid .pkg archive \
+                 (bad magic bytes)"
+                    .to_string(),
+            );
+        }
+    }
+
+    // .exe (PE) — starts with "MZ"
+    #[cfg(target_os = "windows")]
+    {
+        if &bytes[..2] != b"MZ" {
+            return Err(
+                "Downloaded file does not appear to be a valid .exe \
+                 (bad magic bytes)"
+                    .to_string(),
+            );
+        }
+    }
+
+    Ok(())
+}
+
 /// Download MP4Box to the app-data bin directory.
+///
+/// Strategy:
+/// 1. Query the GitHub Releases API for the latest GPAC version.
+/// 2. If that fails, fall back to hardcoded URLs (GPAC 26.02).
+/// 3. For pinned URLs, verify the SHA-256 checksum; for dynamic URLs,
+///    validate the archive header magic bytes instead.
 #[cfg(feature = "downloader")]
 pub async fn download_mp4box(sink: &dyn EventSink) -> Result<(), String> {
-    let info = mp4box_download_info().ok_or_else(|| {
-        "Automatic MP4Box download is not available for this platform.".to_string()
-    })?;
-    let url = info.url;
-
     let target_dir = crate::ffmpeg::app_data_bin_dir()
         .ok_or_else(|| "Could not determine app data directory".to_string())?;
 
     std::fs::create_dir_all(&target_dir)
         .map_err(|e| format!("Could not create directory {}: {e}", target_dir.display()))?;
 
-    sink.log(&format!("[dovi] Downloading GPAC (MP4Box) from {url}..."));
-    sink.ffmpeg_download_progress("Downloading MP4Box...");
-
     let client = reqwest::Client::builder()
         .redirect(reqwest::redirect::Policy::limited(10))
         .build()
         .map_err(|e| format!("Failed to create HTTP client: {e}"))?;
+
+    // Try GitHub API first, then fall back to hardcoded URLs.
+    let info = match discover_gpac_release(&client, sink).await {
+        Some(info) => info,
+        None => {
+            sink.log("[dovi] Falling back to hardcoded GPAC download URL");
+            mp4box_fallback_info().ok_or_else(|| {
+                "Automatic MP4Box download is not available for this platform.".to_string()
+            })?
+        }
+    };
+    let url = &info.url;
+
+    sink.log(&format!("[dovi] Downloading GPAC (MP4Box) from {url}..."));
+    sink.ffmpeg_download_progress("Downloading MP4Box...");
 
     let response = client
         .get(url)
@@ -348,27 +486,26 @@ pub async fn download_mp4box(sink: &dyn EventSink) -> Result<(), String> {
         .await
         .map_err(|e| format!("Failed to read download: {e}"))?;
 
-    // Verify SHA-256 checksum if one is pinned for this platform
-    {
+    // Verify integrity: use SHA-256 if a checksum is pinned, otherwise
+    // validate the archive header magic bytes.
+    if !info.sha256.is_empty() {
         use sha2::{Digest, Sha256};
         let mut hasher = Sha256::new();
         hasher.update(&bytes);
         let actual = format!("{:x}", hasher.finalize());
-        if !info.sha256.is_empty() {
-            if actual != info.sha256 {
-                return Err(format!(
-                    "Checksum mismatch: expected {}, got {}. Download may be corrupted or tampered with.",
-                    info.sha256, actual,
-                ));
-            }
-            sink.log("[dovi] SHA-256 checksum verified");
-        } else {
-            sink.log(&format!(
-                "[dovi] WARNING: No pinned checksum for this platform (SHA-256: {}). \
-                 Pin this hash in dovi_tools.rs for verified downloads.",
-                actual,
+        if actual != info.sha256 {
+            return Err(format!(
+                "Checksum mismatch: expected {}, got {}. Download may be corrupted or tampered with.",
+                info.sha256, actual,
             ));
         }
+        sink.log("[dovi] SHA-256 checksum verified");
+    } else {
+        validate_archive_header(&bytes)?;
+        sink.log(
+            "[dovi] WARNING: No pinned checksum for this release. \
+             Archive header validated; integrity relies on HTTPS transport.",
+        );
     }
 
     sink.ffmpeg_download_progress("Extracting MP4Box...");
@@ -410,10 +547,12 @@ fn extract_from_deb(
     target_dir: &Path,
     sink: &dyn EventSink,
 ) -> Result<(), String> {
-    let tmp_dir = target_dir.join("_gpac_extract_tmp");
-    let _ = std::fs::create_dir_all(&tmp_dir);
+    // Use tempfile::TempDir to avoid race conditions when multiple
+    // instances attempt to download concurrently.
+    let tmp_dir = tempfile::tempdir_in(target_dir)
+        .map_err(|e| format!("Failed to create temp dir: {e}"))?;
 
-    let deb_path = tmp_dir.join("gpac.deb");
+    let deb_path = tmp_dir.path().join("gpac.deb");
     std::fs::write(&deb_path, deb_bytes).map_err(|e| format!("Failed to write .deb: {e}"))?;
 
     // Strategy 1: try dpkg -i for a full system install
@@ -432,7 +571,7 @@ fn extract_from_deb(
                     .args(["install", "-f", "-y"])
                     .output();
             }
-            let _ = std::fs::remove_dir_all(&tmp_dir);
+            // TempDir auto-cleans on drop
             sink.log("[dovi] GPAC installed system-wide via dpkg");
             return Ok(());
         }
@@ -440,7 +579,7 @@ fn extract_from_deb(
 
     // Strategy 2: extract the .deb contents and copy MP4Box + libgpac
     sink.log("[dovi] System install failed (no root?), extracting locally...");
-    let deb_extract = tmp_dir.join("deb_contents");
+    let deb_extract = tmp_dir.path().join("deb_contents");
     let _ = std::fs::create_dir_all(&deb_extract);
 
     let output = std::process::Command::new("dpkg-deb")
@@ -460,7 +599,6 @@ fn extract_from_deb(
     };
 
     if !extracted {
-        let _ = std::fs::remove_dir_all(&tmp_dir);
         return Err("Could not extract .deb package".to_string());
     }
 
@@ -472,7 +610,6 @@ fn extract_from_deb(
         }
         set_executable_mode(&real_dst);
     } else {
-        let _ = std::fs::remove_dir_all(&tmp_dir);
         return Err("MP4Box binary not found in GPAC .deb package".to_string());
     }
 
@@ -480,11 +617,14 @@ fn extract_from_deb(
     let lib_dir = target_dir.join("lib");
     let _ = std::fs::create_dir_all(&lib_dir);
     if let Some(libgpac) = find_file_recursive(&deb_extract, "libgpac.so") {
-        let _ = std::fs::copy(&libgpac, lib_dir.join(libgpac.file_name().unwrap()));
-        let soname = libgpac.file_name().unwrap().to_string_lossy();
+        let _ = std::fs::copy(&libgpac, lib_dir.join(libgpac.file_name().unwrap_or_default()));
+        let soname = libgpac.file_name().unwrap_or_default().to_string_lossy();
         if soname.contains(".so.") {
             let base = soname.split('.').take(3).collect::<Vec<_>>().join(".");
-            let _ = std::os::unix::fs::symlink(libgpac.file_name().unwrap(), lib_dir.join(&base));
+            let _ = std::os::unix::fs::symlink(
+                libgpac.file_name().unwrap_or_default(),
+                lib_dir.join(&base),
+            );
         }
     }
 
@@ -500,7 +640,7 @@ fn extract_from_deb(
         .map_err(|e| format!("Could not write wrapper script: {e}"))?;
     set_executable_mode(&wrapper_path);
 
-    let _ = std::fs::remove_dir_all(&tmp_dir);
+    // TempDir auto-cleans on drop
     sink.log("[dovi] MP4Box extracted locally with wrapper script");
     Ok(())
 }
@@ -508,21 +648,21 @@ fn extract_from_deb(
 /// Manual .deb extraction using ar + tar (fallback when dpkg-deb is not available).
 #[cfg(all(feature = "downloader", target_os = "linux"))]
 fn extract_deb_manual(deb_path: &Path, dest: &Path) -> Result<bool, String> {
-    let tmp = dest.parent().unwrap_or(dest).join("_ar_tmp");
-    let _ = std::fs::create_dir_all(&tmp);
+    let parent = dest.parent().unwrap_or(dest);
+    let tmp = tempfile::tempdir_in(parent)
+        .map_err(|e| format!("Failed to create temp dir: {e}"))?;
 
     let ar_out = std::process::Command::new("ar")
         .args(["x", &deb_path.to_string_lossy()])
-        .current_dir(&tmp)
+        .current_dir(tmp.path())
         .output()
         .map_err(|e| format!("ar failed: {e}"))?;
 
     if !ar_out.status.success() {
-        let _ = std::fs::remove_dir_all(&tmp);
         return Err("ar extraction failed".to_string());
     }
 
-    if let Ok(entries) = std::fs::read_dir(&tmp) {
+    if let Ok(entries) = std::fs::read_dir(tmp.path()) {
         for entry in entries.flatten() {
             let name = entry.file_name().to_string_lossy().to_string();
             if name.starts_with("data.tar") {
@@ -536,13 +676,12 @@ fn extract_deb_manual(deb_path: &Path, dest: &Path) -> Result<bool, String> {
                     .output()
                     .map_err(|e| format!("tar failed: {e}"))?;
 
-                let _ = std::fs::remove_dir_all(&tmp);
+                // TempDir auto-cleans on drop
                 return Ok(tar_out.status.success());
             }
         }
     }
 
-    let _ = std::fs::remove_dir_all(&tmp);
     Err("No data.tar.* found in .deb".to_string())
 }
 
@@ -586,13 +725,13 @@ fn extract_from_pkg(
     target_dir: &Path,
     _sink: &dyn EventSink,
 ) -> Result<(), String> {
-    let tmp_dir = target_dir.join("_gpac_extract_tmp");
-    let _ = std::fs::create_dir_all(&tmp_dir);
+    let tmp_dir = tempfile::tempdir_in(target_dir)
+        .map_err(|e| format!("Failed to create temp dir: {e}"))?;
 
-    let pkg_path = tmp_dir.join("gpac.pkg");
+    let pkg_path = tmp_dir.path().join("gpac.pkg");
     std::fs::write(&pkg_path, pkg_bytes).map_err(|e| format!("Failed to write .pkg: {e}"))?;
 
-    let expand_dir = tmp_dir.join("expanded");
+    let expand_dir = tmp_dir.path().join("expanded");
     let _ = std::fs::create_dir_all(&expand_dir);
 
     // pkgutil --expand to unpack the .pkg
@@ -606,7 +745,6 @@ fn extract_from_pkg(
         .map_err(|e| format!("pkgutil failed: {e}"))?;
 
     if !output.status.success() {
-        let _ = std::fs::remove_dir_all(&tmp_dir);
         return Err("pkgutil extraction failed".to_string());
     }
 
@@ -625,11 +763,10 @@ fn extract_from_pkg(
             }
         }
     } else {
-        let _ = std::fs::remove_dir_all(&tmp_dir);
         return Err("MP4Box not found in GPAC .pkg".to_string());
     }
 
-    let _ = std::fs::remove_dir_all(&tmp_dir);
+    // TempDir auto-cleans on drop
     Ok(())
 }
 
@@ -642,10 +779,10 @@ fn extract_from_exe(
     target_dir: &Path,
     _sink: &dyn EventSink,
 ) -> Result<(), String> {
-    let tmp_dir = target_dir.join("_gpac_extract_tmp");
-    let _ = std::fs::create_dir_all(&tmp_dir);
+    let tmp_dir = tempfile::tempdir_in(target_dir)
+        .map_err(|e| format!("Failed to create temp dir: {e}"))?;
 
-    let exe_path = tmp_dir.join("gpac_installer.exe");
+    let exe_path = tmp_dir.path().join("gpac_installer.exe");
     std::fs::write(&exe_path, exe_bytes).map_err(|e| format!("Failed to write installer: {e}"))?;
 
     // Try 7z extraction (NSIS installers can be unpacked with 7z)
@@ -653,7 +790,7 @@ fn extract_from_exe(
         .args([
             "x",
             &exe_path.to_string_lossy(),
-            &format!("-o{}", tmp_dir.display()),
+            &format!("-o{}", tmp_dir.path().display()),
             "-y",
         ])
         .output();
@@ -661,7 +798,6 @@ fn extract_from_exe(
     match output {
         Ok(o) if o.status.success() => {}
         _ => {
-            let _ = std::fs::remove_dir_all(&tmp_dir);
             return Err(
                 "Could not extract GPAC installer. Please install GPAC manually from gpac.io"
                     .to_string(),
@@ -670,17 +806,16 @@ fn extract_from_exe(
     }
 
     let mp4box_name = "MP4Box.exe";
-    if let Some(src) = find_binary_recursive(&tmp_dir, mp4box_name) {
+    if let Some(src) = find_binary_recursive(tmp_dir.path(), mp4box_name) {
         let dst = target_dir.join(mp4box_name);
         if std::fs::rename(&src, &dst).is_err() {
             std::fs::copy(&src, &dst).map_err(|e| format!("Could not copy MP4Box: {e}"))?;
         }
     } else {
-        let _ = std::fs::remove_dir_all(&tmp_dir);
         return Err("MP4Box.exe not found in GPAC installer".to_string());
     }
 
-    let _ = std::fs::remove_dir_all(&tmp_dir);
+    // TempDir auto-cleans on drop
     Ok(())
 }
 
