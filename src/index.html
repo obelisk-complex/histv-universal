@@ -654,9 +654,11 @@
         chkPrecision.checked = cfg.precisionMode || false;
 		chkPreserveAv1.checked = cfg.preserveAv1 || false;
         chkCompat.checked = cfg.compatibilityMode || false;
-        // Re-apply mutual exclusion
-        if (chkCompat.checked) chkPreserveAv1.disabled = true;
-        if (chkPreserveAv1.checked) chkCompat.disabled = true;
+        // Enforce mutual exclusion on load (compat wins if both are saved)
+        if (chkCompat.checked) {
+          chkPreserveAv1.checked = false;
+          chkHdr.checked = false;
+        }
         numThreads.value = cfg.threads ?? 0;
         chkLowPriority.checked = cfg.lowPriority || false;
         txtOutputFolder.value = cfg.outputFolder || 'output';
@@ -1530,7 +1532,6 @@
       const anyAv1 = queueData.some(item => (item.videoCodec || '').toLowerCase() === 'av1');
       if (anyAv1 && !chkPreserveAv1.checked && !chkCompat.checked) {
         chkPreserveAv1.checked = true;
-        chkCompat.disabled = true;
         updateEncoderSummary();
         scheduleConfigSave();
       }
@@ -1863,13 +1864,10 @@
     function setupSettingsListeners() {
       // Codec change → repopulate encoder dropdown, refresh target bitrates, update RC visibility
 	  
-      // Preserve AV1 / Compatibility mode - mutually exclusive
+      // Mutual exclusion: toggle off conflicting options (never gray out)
       chkPreserveAv1.addEventListener('change', () => {
         if (chkPreserveAv1.checked) {
           chkCompat.checked = false;
-          chkCompat.disabled = true;
-        } else {
-          chkCompat.disabled = false;
         }
         updateEncoderSummary();
         updateRcModeVisibility();
@@ -1880,9 +1878,7 @@
       chkCompat.addEventListener('change', () => {
         if (chkCompat.checked) {
           chkPreserveAv1.checked = false;
-          chkPreserveAv1.disabled = true;
-        } else {
-          chkPreserveAv1.disabled = false;
+          chkHdr.checked = false;
         }
         updateEncoderSummary();
         updateRcModeVisibility();

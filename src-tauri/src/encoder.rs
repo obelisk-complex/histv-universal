@@ -1242,10 +1242,12 @@ async fn encode_single_file(
     let target_codec = file_codec_family.as_str();
 
     // Per-file pixel format and optional tonemap filter (#1, #2).
-    // preserve_hdr is hoisted above the loop; tonemap uses a static str.
+    // Compatibility mode forces SDR output — H.264 "compat" targets devices
+    // that don't support 10-bit/HDR, so tonemap regardless of preserve_hdr.
+    let force_sdr = settings.compatibility_mode;
     let (file_pix_fmt, tonemap_filter): (&str, Option<&'static str>) =
-        if item_is_hdr && !preserve_hdr {
-            // HDR source, user wants SDR - tonemap via zscale + Hable curve
+        if item_is_hdr && (!preserve_hdr || force_sdr) {
+            // HDR source → SDR: tonemap via zscale + Hable curve
             ("yuv420p", Some(TONEMAP_HABLE))
         } else if item_is_hdr {
             // HDR source, preserve HDR
