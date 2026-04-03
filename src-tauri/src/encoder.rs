@@ -591,9 +591,13 @@ pub fn resolve_file_settings(
             if settings.precision_mode {
                 software_fallback(codec_family).to_string()
             } else {
+                // Prefer HW encoders over SW for the same codec family.
+                // The detection list may contain both (HW added after test
+                // encodes, SW added as immediate fallbacks).
                 detected_encoders
                     .iter()
-                    .find(|e| e.codec_family == codec_family)
+                    .filter(|e| e.codec_family == codec_family)
+                    .max_by_key(|e| e.is_hardware as u8)
                     .map(|e| e.name.clone())
                     .unwrap_or_else(|| software_fallback(codec_family).to_string())
             }
