@@ -17,7 +17,7 @@ use tokio::process::Command;
 #[serde(rename_all = "camelCase")]
 pub struct EncoderInfo {
     pub name: String,
-    pub codec_family: String, // "hevc" or "h264"
+    pub codec_family: String, // "hevc", "h264", or "av1"
     pub is_hardware: bool,
 }
 
@@ -926,7 +926,9 @@ async fn handle_post_encode(
                     if let Err(e) = std::fs::rename(&dv_staging, temp_output_file) {
                         sink.log(&format!("  WARNING: Could not rename DV output: {e}"));
                         // Try copy as fallback (cross-filesystem)
-                        let _ = std::fs::copy(&dv_staging, temp_output_file);
+                        if let Err(copy_err) = std::fs::copy(&dv_staging, temp_output_file) {
+                            sink.log(&format!("  WARNING: DV output copy also failed: {copy_err}"));
+                        }
                         let _ = std::fs::remove_file(&dv_staging);
                     }
                 }

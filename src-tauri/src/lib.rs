@@ -136,7 +136,6 @@ mod gui_commands {
     }
 
     #[tauri::command]
-    #[allow(dead_code)]
     pub fn is_flatpak() -> bool {
         std::env::var("FLATPAK_ID").is_ok()
     }
@@ -195,18 +194,6 @@ mod gui_commands {
     ) -> Result<(Vec<EncoderInfo>, Vec<String>), String> {
         let ve = state.detected_video_encoders.read().await;
         let ae = state.detected_audio_encoders.read().await;
-        // Temporary diagnostic — writes to a file since Windows GUI has no stderr
-        if let Ok(mut f) = std::fs::OpenOptions::new()
-            .create(true).append(true)
-            .open("histv-encoder-diag.txt")
-        {
-            use std::io::Write;
-            let _ = writeln!(f, "get_detected_encoders: {} video, {} audio",
-                ve.len(), ae.len());
-            for e in ve.iter() {
-                let _ = writeln!(f, "  {} ({}) hw={}", e.name, e.codec_family, e.is_hardware);
-            }
-        }
         Ok((ve.clone(), ae.clone()))
     }
 

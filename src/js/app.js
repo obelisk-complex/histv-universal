@@ -1390,7 +1390,7 @@
     //  SETTINGS LISTENERS
     // ═══════════════════════════════════════════════════════════════
     function setupSettingsListeners() {
-      // Codec change → repopulate encoder dropdown, refresh target bitrates, update RC visibility
+      // Codec/mode change → refresh encoder summary, target bitrates, RC visibility
 	  
       // Mutual exclusion: toggle off conflicting options (never gray out)
       chkPreserveAv1.addEventListener('change', () => {
@@ -1542,22 +1542,27 @@
       }
     }
 
-    function updateRcModeVisibility() {
-      // Determine if the active encoder is software
+    // Resolve the active encoder for the current settings. Used by both
+    // the encoder summary display and the RC mode visibility logic.
+    function resolveActiveEncoder() {
       let family = 'hevc';
       if (chkCompat.checked) family = 'h264';
       else if (chkPreserveAv1.checked) family = 'av1';
 
+      const swFallback = family === 'h264' ? 'libx264' : family === 'av1' ? 'libsvtav1' : 'libx265';
       let encoder;
       if (chkPrecision.checked) {
-        encoder = family === 'h264' ? 'libx264' : family === 'av1' ? 'libsvtav1' : 'libx265';
+        encoder = swFallback;
       } else {
-        // Prefer HW encoders over SW for the same codec family
         const candidates = videoEncoders.filter(e => e.codecFamily === family);
         const match = candidates.find(e => e.isHardware) || candidates[0];
-        encoder = match ? match.name : 'libx265';
+        encoder = match ? match.name : swFallback;
       }
+      return { family, encoder };
+    }
 
+    function updateRcModeVisibility() {
+      const { encoder } = resolveActiveEncoder();
       if (isSoftwareEncoder(encoder)) {
         rowRcMode.style.display = 'flex';
       } else {
@@ -1601,21 +1606,7 @@
     // ═══════════════════════════════════════════════════════════════
     // ── Encoder summary line (§2.4.0) ──
     function updateEncoderSummary() {
-      let family = 'hevc'; // default
-      if (chkCompat.checked) family = 'h264';
-      else if (chkPreserveAv1.checked) family = 'av1';
-
-      let encoder;
-      if (chkPrecision.checked) {
-        // Software fallback
-        encoder = family === 'h264' ? 'libx264' : family === 'av1' ? 'libsvtav1' : 'libx265';
-      } else {
-        // Prefer HW encoders over SW for the same codec family
-        const candidates = videoEncoders.filter(e => e.codecFamily === family);
-        const match = candidates.find(e => e.isHardware) || candidates[0];
-        encoder = match ? match.name : (family === 'h264' ? 'libx264' : family === 'av1' ? 'libsvtav1' : 'libx265');
-      }
-
+      const { family, encoder } = resolveActiveEncoder();
       const isHw = !encoder.startsWith('lib');
       const familyLabel = family === 'h264' ? 'H.264' : family === 'av1' ? 'AV1' : 'HEVC';
       encoderSummary.textContent = `Encoder: ${encoder} (${isHw ? 'HW' : 'SW'}) - ${familyLabel}`;
@@ -2563,25 +2554,27 @@
           }
         }
 
-        // Re-fetch queue to get final statuses
+        // Re-fetch queue (statuses may not be synced yet — queue-sync-complete
+        // fires after the backend writes final statuses to the shared queue).
         await fetchQueue();
         renderQueue();
-		
-		// Auto-continue: if new files were added during the batch, start another
-        if (!batchWasCancelled) {
+        batchWasCancelled = false;
+      });
+
+      // Queue sync complete — the backend syncs queue statuses after
+      // batch-finished fires. Re-fetch to pick up the authoritative state,
+      // then auto-continue if new files were added during the batch.
+      listen('queue-sync-complete', async () => {
+        await fetchQueue();
+        renderQueue();
+
+        // Auto-continue: if new files were added during the batch, start another
+        if (!batchRunning && !batchWasCancelled) {
           const hasPending = queueData.some(i => (i.status || '').toLowerCase() === 'pending');
           if (hasPending) {
             startBatch(true, true);
           }
         }
-        batchWasCancelled = false;
-      });
-
-      // Queue sync complete — the backend syncs queue statuses after
-      // batch-finished fires. Re-fetch to pick up the authoritative state.
-      listen('queue-sync-complete', async () => {
-        await fetchQueue();
-        renderQueue();
       });
 
       // Overwrite prompt from backend
