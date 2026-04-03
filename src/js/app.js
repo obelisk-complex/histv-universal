@@ -1552,7 +1552,9 @@
       if (chkPrecision.checked) {
         encoder = family === 'h264' ? 'libx264' : family === 'av1' ? 'libsvtav1' : 'libx265';
       } else {
-        const match = videoEncoders.find(e => e.codecFamily === family);
+        // Prefer HW encoders over SW for the same codec family
+        const candidates = videoEncoders.filter(e => e.codecFamily === family);
+        const match = candidates.find(e => e.isHardware) || candidates[0];
         encoder = match ? match.name : 'libx265';
       }
 
@@ -1608,7 +1610,9 @@
         // Software fallback
         encoder = family === 'h264' ? 'libx264' : family === 'av1' ? 'libsvtav1' : 'libx265';
       } else {
-        const match = videoEncoders.find(e => e.codecFamily === family);
+        // Prefer HW encoders over SW for the same codec family
+        const candidates = videoEncoders.filter(e => e.codecFamily === family);
+        const match = candidates.find(e => e.isHardware) || candidates[0];
         encoder = match ? match.name : (family === 'h264' ? 'libx264' : family === 'av1' ? 'libsvtav1' : 'libx265');
       }
 
