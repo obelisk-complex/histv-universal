@@ -377,42 +377,24 @@ pub async fn detect_encoders(sink: &dyn EventSink) -> (Vec<EncoderInfo>, Vec<Str
         });
     }
 
-    // Test all hardware encoder candidates concurrently. Each test
-    // encode is independent (own temp file), so parallelism is safe.
-    if !hw_candidates.is_empty() {
-        let mut join_set = tokio::task::JoinSet::new();
-        for candidate in &hw_candidates {
-            let name = candidate.name.to_string();
-            join_set.spawn(async move {
-                let ok = test_encode(&name).await;
-                (name, ok)
+    // Test hardware encoder candidates sequentially. Concurrent test
+    // encodes can fail on GPUs that don't support multiple simultaneous
+    // encoding sessions (e.g. AMD AMF), causing all candidates to be
+    // rejected even though they work individually.
+    for candidate in &hw_candidates {
+        let ok = test_encode(candidate.name).await;
+        if ok {
+            sink.log(&format!("[detect] {} (HW) - works", candidate.name));
+            video_encoders.push(EncoderInfo {
+                name: candidate.name.to_string(),
+                codec_family: candidate.family.to_string(),
+                is_hardware: true,
             });
-        }
-
-        // Collect results into a map for ordered insertion below.
-        let mut results = std::collections::HashMap::new();
-        while let Some(res) = join_set.join_next().await {
-            if let Ok((name, ok)) = res {
-                results.insert(name, ok);
-            }
-        }
-
-        // Insert in priority order (not arrival order) to preserve ranking.
-        for candidate in &hw_candidates {
-            let ok = results.get(candidate.name).copied().unwrap_or(false);
-            if ok {
-                sink.log(&format!("[detect] {} (HW) - works", candidate.name));
-                video_encoders.push(EncoderInfo {
-                    name: candidate.name.to_string(),
-                    codec_family: candidate.family.to_string(),
-                    is_hardware: true,
-                });
-            } else {
-                sink.log(&format!(
-                    "[detect] {} (HW) - not available (test encode failed)",
-                    candidate.name
-                ));
-            }
+        } else {
+            sink.log(&format!(
+                "[detect] {} (HW) - not available (test encode failed)",
+                candidate.name
+            ));
         }
     }
 
