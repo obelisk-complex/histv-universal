@@ -132,18 +132,14 @@
       const alreadyDone = await invoke('get_encoder_detection_status');
       if (alreadyDone) {
         try {
-          const raw = await invoke('get_detected_encoders');
-          appendLog('[diag] get_detected_encoders raw: ' + JSON.stringify(raw));
-          const [ve, ae] = raw;
-          appendLog('[diag] videoEncoders: ' + JSON.stringify(ve));
-          videoEncoders = ve || [];
-          audioEncoders = ae || [];
+          const [ve, ae] = await invoke('get_detected_encoders');
+          videoEncoders = ve;
+          audioEncoders = ae;
           updateEncoderSummary();
           encoderDetectionDone = true;
           if (chkPrecision.checked) applyPrecisionMode();
           updateBatchButtons();
         } catch (e) {
-          appendLog('[diag] Encoder fetch error: ' + e);
           console.warn('Encoder fetch error:', e);
         }
       } else {
@@ -2343,14 +2339,11 @@
       listen('encoder-detection-done', async () => {
         encoderDetectionDone = true;
         try {
-          const raw = await invoke('get_detected_encoders');
-          appendLog('[diag] event path raw: ' + JSON.stringify(raw));
-          const [ve, ae] = raw;
-          videoEncoders = ve || [];
-          audioEncoders = ae || [];
+          const [ve, ae] = await invoke('get_detected_encoders');
+          videoEncoders = ve;
+          audioEncoders = ae;
           updateEncoderSummary();
         } catch (e) {
-          appendLog('[diag] event path error: ' + e);
           encoderSummary.textContent = 'Encoder detection failed';
         }
         if (chkPrecision.checked) applyPrecisionMode();

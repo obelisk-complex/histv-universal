@@ -195,6 +195,12 @@ mod gui_commands {
     ) -> Result<(Vec<EncoderInfo>, Vec<String>), String> {
         let ve = state.detected_video_encoders.read().await;
         let ae = state.detected_audio_encoders.read().await;
+        let hw_count = ve.iter().filter(|e| e.is_hardware).count();
+        eprintln!("[diag-rs] get_detected_encoders: {} video ({} HW), {} audio",
+            ve.len(), hw_count, ae.len());
+        for e in ve.iter() {
+            eprintln!("[diag-rs]   {} ({}) hw={}", e.name, e.codec_family, e.is_hardware);
+        }
         Ok((ve.clone(), ae.clone()))
     }
 
@@ -973,7 +979,7 @@ pub fn run() {
                 }
                 state_for_detect
                     .encoder_detection_done
-                    .store(true, Ordering::Relaxed);
+                    .store(true, Ordering::Release);
                 let _ = handle_for_detect.emit("encoder-detection-done", ());
             });
 
