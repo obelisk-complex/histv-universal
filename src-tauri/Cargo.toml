@@ -1,6 +1,6 @@
 [package]
 name = "histv"
-version = "2.5.4"
+version = "2.5.5"
 description = "Honey, I Shrunk The Vids - batch video encoder"
 authors = ["claude.ai", "obelisk-complex"]
 license = "GPL-3.0-or-later"
@@ -35,6 +35,7 @@ reqwest = { version = "0.13", features = ["stream"], optional = true }
 futures-util = { version = "0.3", optional = true }
 clap = { version = "4", features = ["derive"], optional = true }
 indicatif = { version = "0.17", optional = true }
+console = { version = "0.15", optional = true }
 ctrlc = { version = "3", optional = true }
 dolby_vision = { version = "~3.3.2", optional = true }
 sha2 = "0.10"
@@ -54,5 +55,5 @@ custom-protocol = [
     "dep:uuid",
 ]
 downloader = ["dep:reqwest", "dep:futures-util"]
-cli = ["dep:clap", "dep:indicatif", "dep:ctrlc"]
+cli = ["dep:clap", "dep:indicatif", "dep:ctrlc", "dep:console"]
 dovi = ["dep:dolby_vision", "dep:hdr10plus"]

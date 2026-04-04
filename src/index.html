@@ -3,7 +3,7 @@
 <head>
   <meta charset="UTF-8" />
   <meta name="viewport" content="width=device-width, initial-scale=1.0" />
-  <title>Honey, I Shrunk The Vids v2.5.4</title>
+  <title>Honey, I Shrunk The Vids v2.5.5</title>
   <link rel="stylesheet" href="css/app.css" />
 </head>
 <body>
@@ -77,10 +77,10 @@
               <span class="tooltip-text">Lets the encoder use extra data for fast-moving or detailed scenes so they don't look blocky. Higher = better action scenes, but very old devices pre-2013 might stutter. 1.5x is safest; 3x looks best.</span>
             </label>
             <div class="rc-toggle" id="peak-toggle" role="group" aria-label="VBR peak multiplier">
-              <button type="button" class="active" data-peak="1.5">1.5x</button>
-              <button type="button" data-peak="2">2x</button>
-              <button type="button" data-peak="2.5">2.5x</button>
-              <button type="button" data-peak="3">3x</button>
+              <button type="button" class="active" aria-pressed="true" data-peak="1.5">1.5x</button>
+              <button type="button" aria-pressed="false" data-peak="2">2x</button>
+              <button type="button" aria-pressed="false" data-peak="2.5">2.5x</button>
+              <button type="button" aria-pressed="false" data-peak="3">3x</button>
             </div>
           </div>
 
@@ -90,8 +90,8 @@
               <span class="tooltip-text" id="rc-tooltip">QP gives you predictable file sizes but some scenes may look blocky. CRF gives you much less blocking but file sizes vary more.</span>
             </label>
             <div class="rc-toggle" id="rc-toggle" role="group" aria-label="Quality mode">
-              <button type="button" class="active" data-mode="QP">QP</button>
-              <button type="button" data-mode="CRF">CRF</button>
+              <button type="button" class="active" aria-pressed="true" data-mode="QP">QP</button>
+              <button type="button" aria-pressed="false" data-mode="CRF">CRF</button>
             </div>
           </div>
 
@@ -293,12 +293,12 @@
         <div id="log-panel">
           <div id="log-panel-header">
             <div class="log-filters">
-              <button class="log-filter-btn active" data-filter="all" title="Show or hide all log categories at once">All</button>
-              <button class="log-filter-btn active" data-filter="error" title="Error messages from ffmpeg or the app">Errors</button>
-              <button class="log-filter-btn active" data-filter="warn" title="Non-fatal warnings (skipped streams, fallback decisions, etc.)">Warn</button>
-              <button class="log-filter-btn active" data-filter="result" title="Encoding results (file sizes, savings, copy/remux outcomes)">Results</button>
-              <button class="log-filter-btn active" data-filter="cmd" title="Full ffmpeg command lines (useful for debugging)">CMD</button>
-              <button class="log-filter-btn active" data-filter="detect" title="Encoder detection messages from startup">Detect</button>
+              <button class="log-filter-btn active" data-filter="all" aria-pressed="true" title="Show or hide all log categories at once">All</button>
+              <button class="log-filter-btn active" data-filter="error" aria-pressed="true" title="Error messages from ffmpeg or the app">Errors</button>
+              <button class="log-filter-btn active" data-filter="warn" aria-pressed="true" title="Non-fatal warnings (skipped streams, fallback decisions, etc.)">Warn</button>
+              <button class="log-filter-btn active" data-filter="result" aria-pressed="true" title="Encoding results (file sizes, savings, copy/remux outcomes)">Results</button>
+              <button class="log-filter-btn active" data-filter="cmd" aria-pressed="true" title="Full ffmpeg command lines (useful for debugging)">CMD</button>
+              <button class="log-filter-btn active" data-filter="detect" aria-pressed="true" title="Encoder detection messages from startup">Detect</button>
             </div>
           </div>
           <div id="log-content"></div>

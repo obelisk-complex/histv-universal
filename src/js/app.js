@@ -147,8 +147,10 @@
           encoderSummary.textContent = 'ffmpeg not found';
           const modal = document.querySelector('#modal-ffmpeg-missing');
           modal.classList.add('visible');
+          trapFocusInModal(modal);
 
           document.querySelector('#ffmpeg-dl-yes').onclick = async () => {
+            releaseFocusTrap(modal);
             modal.classList.remove('visible');
             encoderSummary.textContent = 'Downloading ffmpeg...';
             try {
@@ -162,6 +164,7 @@
           };
 
           document.querySelector('#ffmpeg-dl-no').onclick = () => {
+            releaseFocusTrap(modal);
             modal.classList.remove('visible');
             encoderSummary.textContent = 'ffmpeg not found - install ffmpeg and restart';
           };
@@ -317,7 +320,7 @@
       // Surface hierarchy
       derived['surface-dim']    = c['surface-dim']    || blendHex(surface, bg, 0.5);
       derived['surface-bright'] = c['surface-bright'] || shiftBrightness(surface, light ? -0.08 : 0.08);
-      derived['text-muted']     = c['text-muted']     || c['secondary'] || hexToRgba(text, 0.55);
+      derived['text-muted']     = c['text-muted']     || c['secondary'] || hexToRgba(text, 0.65);
       derived['accent']         = c['accent']         || primary;
 
       // Row tints - muted overlays of semantic colours onto the background
@@ -685,6 +688,7 @@
         const cb = document.createElement('input');
         cb.type = 'checkbox';
         cb.checked = selectedRows.has(i);
+        cb.setAttribute('aria-label', 'Select ' + item.fileName);
         tdCheck.appendChild(cb);
         tr.appendChild(tdCheck);
 
@@ -1137,18 +1141,29 @@
         }
       });
 
-      // Also handle native browser drag events as a fallback
-      container.addEventListener('dragover', (e) => {
+      // Browser-level fallback for platforms where Tauri native drag
+      // events don't fire
+      document.addEventListener('dragover', (e) => {
         e.preventDefault();
+        e.dataTransfer.dropEffect = 'copy';
+      });
+
+      document.addEventListener('dragenter', () => {
+        dragCounter++;
         dropOverlay.classList.add('visible');
       });
 
-      container.addEventListener('dragleave', () => {
-        dropOverlay.classList.remove('visible');
+      document.addEventListener('dragleave', () => {
+        dragCounter--;
+        if (dragCounter <= 0) {
+          dragCounter = 0;
+          dropOverlay.classList.remove('visible');
+        }
       });
 
-      container.addEventListener('drop', (e) => {
+      document.addEventListener('drop', (e) => {
         e.preventDefault();
+        dragCounter = 0;
         dropOverlay.classList.remove('visible');
       });
     }
@@ -1523,7 +1538,9 @@
 
     function setRateControlMode(mode) {
       for (const btn of rcToggle.querySelectorAll('button')) {
-        btn.classList.toggle('active', btn.dataset.mode === mode);
+        const isActive = btn.dataset.mode === mode;
+        btn.classList.toggle('active', isActive);
+        btn.setAttribute('aria-pressed', isActive);
       }
       if (mode === 'CRF') {
         rowQp.style.display = 'none';
@@ -1547,7 +1564,9 @@
     function setPeakMultiplier(value) {
       const str = String(value);
       for (const btn of peakToggle.querySelectorAll('button')) {
-        btn.classList.toggle('active', btn.dataset.peak === str);
+        const isActive = btn.dataset.peak === str;
+        btn.classList.toggle('active', isActive);
+        btn.setAttribute('aria-pressed', isActive);
       }
     }
 
@@ -1728,6 +1747,9 @@
             allBtn.classList.toggle('active', allOn);
           }
 
+          // Sync aria-pressed on all filter buttons
+          filterBtns.forEach(b => b.setAttribute('aria-pressed', b.classList.contains('active')));
+
           const lines = logContent.children;
           for (let i = 0; i < lines.length; i++) {
             const f = lines[i].dataset.logFilter;
@@ -1814,9 +1836,8 @@
     function setupContextMenu() {
       const container = $('#queue-container');
 
-      container.addEventListener('contextmenu', (e) => {
-        e.preventDefault();
-
+      // Shared logic for showing the context menu at a given position
+      function showContextMenu(x, y) {
         const hasSelection = selectedRows.size > 0;
         const hasTerminal = queueData.some(i => {
           const s = (i.status || '').toLowerCase();
@@ -1828,10 +1849,11 @@
           return s === 'done' || s === 'failed' || s === 'skipped' || s === 'cancelled';
         });
 
-        // Enable/disable based on context
         const setCtxState = (id, disabled) => {
-          $(id).classList.toggle('disabled', disabled);
-          $(id).setAttribute('aria-disabled', String(disabled));
+          const el = $(id);
+          el.classList.toggle('disabled', disabled);
+          el.setAttribute('aria-disabled', String(disabled));
+          el.setAttribute('tabindex', disabled ? '-1' : '0');
         };
         setCtxState('#ctx-requeue-selected', batchRunning || !selectedHasTerminal);
         setCtxState('#ctx-requeue-all', batchRunning || !hasTerminal);
@@ -1843,13 +1865,58 @@
         setCtxState('#ctx-repair-tags', batchRunning || !hasSelection);
         setCtxState('#ctx-deep-repair', batchRunning || !hasSelection);
 
-        contextMenu.style.left = e.clientX + 'px';
-        contextMenu.style.top = e.clientY + 'px';
+        contextMenu.style.left = x + 'px';
+        contextMenu.style.top = y + 'px';
         contextMenu.classList.add('visible');
+
+        // Focus the first enabled item
+        const first = contextMenu.querySelector('.ctx-item:not(.disabled)');
+        if (first) first.focus();
+      }
+
+      function hideContextMenu() {
+        contextMenu.classList.remove('visible');
+      }
+
+      container.addEventListener('contextmenu', (e) => {
+        e.preventDefault();
+        showContextMenu(e.clientX, e.clientY);
       });
 
-      document.addEventListener('click', () => {
-        contextMenu.classList.remove('visible');
+      // Keyboard activation: Shift+F10 or ContextMenu key
+      container.addEventListener('keydown', (e) => {
+        if (e.key === 'ContextMenu' || (e.key === 'F10' && e.shiftKey)) {
+          e.preventDefault();
+          const rect = container.getBoundingClientRect();
+          showContextMenu(rect.left + rect.width / 2, rect.top + rect.height / 2);
+        }
+      });
+
+      // Arrow navigation within the open menu
+      contextMenu.addEventListener('keydown', (e) => {
+        const items = [...contextMenu.querySelectorAll('.ctx-item:not(.disabled)')];
+        if (!items.length) return;
+        const current = document.activeElement;
+        const idx = items.indexOf(current);
+
+        if (e.key === 'ArrowDown') {
+          e.preventDefault();
+          items[idx < items.length - 1 ? idx + 1 : 0].focus();
+        } else if (e.key === 'ArrowUp') {
+          e.preventDefault();
+          items[idx > 0 ? idx - 1 : items.length - 1].focus();
+        } else if (e.key === 'Escape') {
+          e.preventDefault();
+          hideContextMenu();
+          container.focus();
+        } else if (e.key === 'Enter' || e.key === ' ') {
+          e.preventDefault();
+          if (current && current.classList.contains('ctx-item')) current.click();
+        }
+      });
+
+      document.addEventListener('click', (e) => {
+        if (!contextMenu.contains(e.target)) hideContextMenu();
       });
 
       // Re-queue selected
@@ -2684,7 +2751,6 @@
         selectedRows.clear();
         await fetchQueue();
         renderQueue();
-        batchWasCancelled = false;
       });
 
       // Queue sync complete — the backend syncs queue statuses after
@@ -2694,13 +2760,16 @@
         await fetchQueue();
         renderQueue();
 
-        // Auto-continue: if new files were added during the batch, start another
+        // Auto-continue: if new files were added during the batch, start another.
+        // Check batchWasCancelled BEFORE clearing it so a user cancel actually
+        // prevents auto-continue.
         if (!batchRunning && !batchWasCancelled) {
           const hasPending = queueData.some(i => (i.status || '').toLowerCase() === 'pending');
           if (hasPending) {
             startBatch(true, true);
           }
         }
+        batchWasCancelled = false;
       });
 
       // Overwrite prompt from backend

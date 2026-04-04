@@ -999,6 +999,9 @@ async fn handle_post_encode(
 
     // Post-encode size check
     // In replace mode, ffmpeg wrote to temp_output_file; in other modes temp == final.
+    // Skip for Copy decisions: the output is just a remux of the source, so
+    // a "remux source instead" fallback would produce the same file again.
+    let is_copy = matches!(decision, EncodeDecision::Copy);
     if temp_output_file.exists() {
         let src_size = std::fs::metadata(item_full_path)
             .map(|m| m.len())
@@ -1007,7 +1010,18 @@ async fn handle_post_encode(
             .map(|m| m.len())
             .unwrap_or(0);
 
-        if dst_size > src_size && src_size > 0 && !is_image_source {
+        // Container overhead deadband: MP4 moov atoms store per-frame index
+        // entries (~16 bytes each for stsz + stco + ctts) plus audio sample
+        // tables (~500 bytes/sec per stream). Outputs that exceed the source
+        // by less than this + 20% margin are within expected container
+        // overhead and should not trigger the remux fallback.
+        let fps = queue[idx].probe.video_fps.max(1.0);
+        let num_audio = queue[idx].probe.audio_streams.len() as f64;
+        let video_overhead = item_duration_secs * fps * 16.0;
+        let audio_overhead = item_duration_secs * 500.0 * num_audio;
+        let deadband = ((video_overhead + audio_overhead + 10_240.0) * 1.2) as u64;
+
+        if dst_size > src_size + deadband && src_size > 0 && !is_image_source && !is_copy {
             sink.log(&format!(
                 "  WARNING: Output ({:.1}MB) larger than source ({:.1}MB) - remuxing source instead",
                 dst_size as f64 / 1_000_000.0, src_size as f64 / 1_000_000.0,

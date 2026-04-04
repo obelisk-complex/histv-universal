@@ -111,7 +111,6 @@ fn main() {
         is_hw_encoder,
         disk_info,
         is_tty,
-        &sink,
     );
 
     if args.dry_run {
@@ -355,27 +354,15 @@ fn run_repair_tags(
     );
 }
 
-/// Print the full dry-run plan: decision table, DV/HDR10+ warnings,
-/// disk-space estimate, and staging plan for remote mounts.
-#[allow(clippy::too_many_arguments)]
-fn print_dry_run_plan(
-    queue_items: &[QueueItem],
+/// Compute encoding decisions for a set of pending queue items.
+/// Shared between `print_dry_run_plan` and `run_batch` (for live display init).
+fn compute_decisions(
+    items: &[&QueueItem],
     args: &cli::CliArgs,
     detected_encoders: &[EncoderInfo],
-    video_encoder: &str,
-    is_hw_encoder: bool,
-    disk_info: Option<(u64, u64)>,
-    is_tty: bool,
-    _sink: &cli_sink::CliSink,
-) {
-    let probed_items: Vec<&QueueItem> = queue_items
-        .iter()
-        .filter(|item| item.status == QueueItemStatus::Pending)
-        .collect();
-
-    // ── Compute encoding decisions ────────────────────────────
+) -> Vec<EncodeDecision> {
     let rate_control_mode = args.rc.to_string().to_uppercase();
-    let decisions: Vec<EncodeDecision> = probed_items
+    items
         .iter()
         .map(|item| {
             let source_ext = std::path::Path::new(&item.full_path)
@@ -426,7 +413,28 @@ fn print_dry_run_plan(
                 args.peak_multiplier,
             )
         })
+        .collect()
+}
+
+/// Print the full dry-run plan: decision table, DV/HDR10+ warnings,
+/// disk-space estimate, and staging plan for remote mounts.
+#[allow(clippy::too_many_arguments)]
+fn print_dry_run_plan(
+    queue_items: &[QueueItem],
+    args: &cli::CliArgs,
+    detected_encoders: &[EncoderInfo],
+    video_encoder: &str,
+    is_hw_encoder: bool,
+    disk_info: Option<(u64, u64)>,
+    is_tty: bool,
+) {
+    let probed_items: Vec<&QueueItem> = queue_items
+        .iter()
+        .filter(|item| item.status == QueueItemStatus::Pending)
         .collect();
+
+    // ── Compute encoding decisions ────────────────────────────
+    let decisions = compute_decisions(&probed_items, args, detected_encoders);
 
     // ── Remote mount detection ────────────────────────────────
     let mut mount_cache = histv_lib::remote::MountCache::new();
@@ -501,52 +509,41 @@ fn print_dry_run_plan(
     );
     eprintln!();
 
-    // Column headers
+    // Column headers (matching GUI: File, From Size, To Size, Resolution, HDR, From B/R, To B/R)
     eprintln!(
-        "  {dim}{:<34} {:>10}  {:<10}  {:>11}  {:<7}  {:<16}  Mount{reset}",
-        "File", "Bitrate", "Codec", "Resolution", "HDR", "Action",
+        "  {dim}{:<30}  {:>9}  {:>10}  {:>10}  {:<6}  {:>10}  {:<20}{reset}",
+        "File", "From", "To (est.)", "Resolution", "HDR", "From B/R", "To B/R",
     );
-    eprintln!("  {dim}{}{reset}", "-".repeat(106),);
+    eprintln!("  {dim}{}{reset}", "-".repeat(103));
 
     // Print per-file plan
-    for (i, (item, decision)) in probed_items.iter().zip(decisions.iter()).enumerate() {
+    for (item, decision) in probed_items.iter().zip(decisions.iter()) {
         let resolution = format!("{}x{}", item.probe.video_width, item.probe.video_height);
-
         let hdr_label = hdr_type_label(item);
+        let from_size = histv_lib::disk_monitor::format_bytes(item.source_bytes);
+        let to_size = format_estimated_size(item, decision);
 
-        let remote_tag = match &remote_annotations[i] {
-            Some(annotation) => annotation.clone(),
-            None => {
-                if is_tty {
-                    format!("{dim}local{reset}")
-                } else {
-                    "local".to_string()
-                }
-            }
-        };
+        let from_br = source_bitrate_label(item);
 
-        // Colour the action based on decision type
-        let action = short_decision(decision, args.bitrate);
-        let coloured_action = match decision {
-            EncodeDecision::Copy => format!("{green}{:<16}{reset}", action),
-            EncodeDecision::Vbr { .. } => format!("{cyan}{:<16}{reset}", action),
+        // Colour the target bitrate based on decision type
+        let to_br = target_bitrate_label(decision);
+        let coloured_to_br = match decision {
+            EncodeDecision::Copy => format!("{green}{:<20}{reset}", to_br),
+            EncodeDecision::Vbr { .. } => format!("{cyan}{:<20}{reset}", to_br),
             EncodeDecision::Cqp { .. } | EncodeDecision::Crf { .. } => {
-                format!("{magenta}{:<16}{reset}", action)
+                format!("{magenta}{:<20}{reset}", to_br)
             }
         };
-
-        // Truncate codec to 10 chars for consistent spacing
-        let codec_str = truncate_filename(&item.probe.video_codec, 10);
 
         eprintln!(
-            "  {:<34} {:>8.2}Mbps  {:<10}  {:>11}  {:<7}  {}  {}",
-            truncate_filename(&item.file_name, 34),
-            item.probe.video_bitrate_mbps,
-            codec_str,
+            "  {:<30}  {:>9}  {:>10}  {:>10}  {:<6}  {:>10}  {}",
+            truncate_filename(&item.file_name, 30),
+            from_size,
+            to_size,
             resolution,
             hdr_label,
-            coloured_action,
-            remote_tag,
+            from_br,
+            coloured_to_br,
         );
     }
 
@@ -977,6 +974,42 @@ fn run_batch(
 
     eprintln!();
 
+    // ── Initialize live display ──────────────────────────────
+    {
+        let probed_items: Vec<&QueueItem> = queue_items
+            .iter()
+            .filter(|item| item.status == QueueItemStatus::Pending)
+            .collect();
+        let decisions = compute_decisions(&probed_items, args, detected_encoders);
+
+        let display_items: Vec<cli_sink::DisplayItem> = probed_items
+            .iter()
+            .zip(decisions.iter())
+            .map(|(item, decision)| {
+                let from_br = if item.probe.video_bitrate_mbps > 0.0 {
+                    format!("{:.2}Mbps", item.probe.video_bitrate_mbps)
+                } else {
+                    "-".to_string()
+                };
+                cli_sink::DisplayItem {
+                    file_name: item.file_name.clone(),
+                    source_size: histv_lib::disk_monitor::format_bytes(item.source_bytes),
+                    estimated_size: format_estimated_size(item, decision),
+                    resolution: format!(
+                        "{}x{}",
+                        item.probe.video_width, item.probe.video_height
+                    ),
+                    hdr_label: hdr_type_label(item),
+                    source_br: from_br,
+                    target_br: target_bitrate_label(decision),
+                    status: cli_sink::DisplayStatus::Pending,
+                }
+            })
+            .collect();
+
+        sink.init_live_display(display_items);
+    }
+
     // Run the encoding loop with the wave plan
     let (done, failed, _skipped, was_cancelled) = rt.block_on(encoder::run_encode_loop(
         sink,
@@ -1169,7 +1202,7 @@ fn hdr_type_label(item: &QueueItem) -> &'static str {
 }
 
 /// Truncate a filename to fit a given width, adding "..." if needed.
-fn truncate_filename(name: &str, max_width: usize) -> String {
+pub(crate) fn truncate_filename(name: &str, max_width: usize) -> String {
     if name.len() <= max_width {
         name.to_string()
     } else if max_width > 3 {
@@ -1179,12 +1212,59 @@ fn truncate_filename(name: &str, max_width: usize) -> String {
     }
 }
 
-/// Short decision label for the plan table.
-fn short_decision(decision: &EncodeDecision, threshold: f64) -> String {
+/// Source bitrate label for display columns.
+fn source_bitrate_label(item: &QueueItem) -> String {
+    if item.probe.video_bitrate_mbps > 0.0 {
+        format!("{:.2}Mbps", item.probe.video_bitrate_mbps)
+    } else {
+        "-".to_string()
+    }
+}
+
+/// Target bitrate label matching the GUI's To B/R column.
+fn target_bitrate_label(decision: &EncodeDecision) -> String {
     match decision {
         EncodeDecision::Copy => "Copy".to_string(),
-        EncodeDecision::Vbr { .. } => format!("VBR {}Mbps", threshold),
-        EncodeDecision::Cqp { qi, qp } => format!("CQP {}/{}", qi, qp),
+        EncodeDecision::Vbr {
+            target_bps,
+            peak_bps,
+        } => {
+            let target = *target_bps as f64 / 1_000_000.0;
+            let peak = *peak_bps as f64 / 1_000_000.0;
+            format!("{:.1}/{:.1}Mbps (VBR)", target, peak)
+        }
+        EncodeDecision::Cqp { qi, qp } => format!("CQP ({}/{})", qi, qp),
         EncodeDecision::Crf { crf, .. } => format!("CRF {}", crf),
+    }
+}
+
+/// Estimated output size for a queue item. Returns (bytes, is_approximate).
+/// is_approximate=true for CQP/CRF where exact size cannot be predicted.
+fn estimate_output_size(item: &QueueItem, decision: &EncodeDecision) -> Option<(u64, bool)> {
+    if item.source_bytes == 0 {
+        return None;
+    }
+    match decision {
+        EncodeDecision::Copy => Some((item.source_bytes, false)),
+        EncodeDecision::Vbr { target_bps, .. } => {
+            if item.probe.duration_secs > 0.0 {
+                let bytes = (*target_bps as f64 * item.probe.duration_secs / 8.0) as u64;
+                Some((bytes, false))
+            } else {
+                Some((item.source_bytes, true))
+            }
+        }
+        EncodeDecision::Cqp { .. } | EncodeDecision::Crf { .. } => {
+            Some((item.source_bytes, true))
+        }
+    }
+}
+
+/// Format estimated output size for display, matching the GUI's To Size column.
+fn format_estimated_size(item: &QueueItem, decision: &EncodeDecision) -> String {
+    match estimate_output_size(item, decision) {
+        Some((bytes, true)) => format!("~{}", histv_lib::disk_monitor::format_bytes(bytes)),
+        Some((bytes, false)) => histv_lib::disk_monitor::format_bytes(bytes),
+        None => "-".to_string(),
     }
 }

@@ -216,6 +216,13 @@ fn extract_frames(path: &Path) -> Result<(WebpInfo, Vec<AnimFrame>), String> {
                     return Err(format!("ANMF chunk too small: {} bytes", chunk_size));
                 }
                 let data_size = chunk_size as usize - header_bytes;
+                const MAX_CHUNK_SIZE: usize = 256 * 1024 * 1024;
+                if data_size > MAX_CHUNK_SIZE {
+                    return Err(format!(
+                        "ANMF chunk too large: {} bytes (max {})",
+                        data_size, MAX_CHUNK_SIZE,
+                    ));
+                }
                 let mut data = vec![0u8; data_size];
                 file.read_exact(&mut data)
                     .map_err(|e| format!("ANMF data: {e}"))?;

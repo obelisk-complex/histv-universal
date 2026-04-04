@@ -272,6 +272,11 @@ mod gui_commands {
         if !p.exists() {
             return Err(format!("Path does not exist: {path}"));
         }
+        // Reject UNC paths on Windows to prevent NTLM relay attacks.
+        #[cfg(target_os = "windows")]
+        if path.starts_with("\\\\") {
+            return Err("UNC paths are not supported".to_string());
+        }
         #[cfg(target_os = "windows")]
         {
             // Use explorer.exe directly with /select, — safe because explorer

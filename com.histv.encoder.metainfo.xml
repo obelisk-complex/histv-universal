@@ -99,6 +99,11 @@
   </content_rating>
 
   <releases>
+    <release version="2.5.5" date="2026-04-04">
+      <description>
+        <p>Batch cancel fix, CLI live display, and encoding improvements: batch cancellation now properly stops the entire queue, CLI shows a persistent queue table during encoding matching the GUI columns, post-encode size comparison uses fps-aware container overhead deadband to avoid unnecessary remuxing, below-threshold copies no longer trigger redundant remux fallback, and drag-and-drop text selection fixed on Linux.</p>
+      </description>
+    </release>
     <release version="2.5.4" date="2026-04-03">
       <description>
         <p>Code quality and accessibility: 43 Clippy warnings fixed with options structs for encoder functions, frontend accessibility overhaul (ARIA live regions, focus indicators, modal keyboard support, semantic HTML), theme colour validation, and CI clippy enforcement.</p>

@@ -19,6 +19,7 @@ pub struct ProbeResult {
     pub dovi_profile: Option<u8>,
     pub dovi_bl_compat_id: Option<u8>,
     pub has_hdr10plus: bool,
+    pub video_fps: f64,
     pub subtitle_stream_count: u32,
 }
 
@@ -99,6 +100,11 @@ pub async fn probe_file(file_path: &str, sink: &dyn EventSink) -> Result<ProbeRe
                 dovi_profile: None,
                 dovi_bl_compat_id: None,
                 has_hdr10plus: false,
+                video_fps: if duration > 0.0 {
+                    info.frame_count as f64 / duration
+                } else {
+                    30.0
+                },
                 subtitle_stream_count: 0,
             });
         }
@@ -140,6 +146,7 @@ pub async fn probe_file(file_path: &str, sink: &dyn EventSink) -> Result<ProbeRe
     let mut dovi_profile: Option<u8> = None;
     let mut dovi_bl_compat_id: Option<u8> = None;
     let mut has_hdr10plus = false;
+    let mut video_fps: f64 = 0.0;
     let mut subtitle_stream_count: u32 = 0;
 
     if let Some(streams_arr) = streams {
@@ -211,6 +218,25 @@ pub async fn probe_file(file_path: &str, sink: &dyn EventSink) -> Result<ProbeRe
                     is_hdr = true;
                     color_transfer = ct.to_string();
                 }
+
+                // Frame rate: parse "N/D" fraction from r_frame_rate,
+                // fall back to avg_frame_rate. Conservative 30fps default
+                // if both are missing (used only for container overhead
+                // estimation in the post-encode size deadband).
+                video_fps = s["r_frame_rate"]
+                    .as_str()
+                    .or_else(|| s["avg_frame_rate"].as_str())
+                    .and_then(|frac| {
+                        let parts: Vec<&str> = frac.split('/').collect();
+                        if parts.len() == 2 {
+                            let num: f64 = parts[0].parse().ok()?;
+                            let den: f64 = parts[1].parse().ok()?;
+                            if den > 0.0 { Some(num / den) } else { None }
+                        } else {
+                            None
+                        }
+                    })
+                    .unwrap_or(30.0);
             } else if codec_type == "audio" {
                 // Audio stream - extract in the same pass (#9)
                 let codec = s["codec_name"].as_str().unwrap_or("unknown").to_string();
@@ -350,6 +376,7 @@ pub async fn probe_file(file_path: &str, sink: &dyn EventSink) -> Result<ProbeRe
         dovi_profile,
         dovi_bl_compat_id,
         has_hdr10plus,
+        video_fps,
         subtitle_stream_count,
     })
 }

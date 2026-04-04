@@ -11,7 +11,7 @@
   /* Derived (computed by applyTheme, fallbacks for pre-init) */
   --surface-dim: #282828;
   --surface-bright: #424242;
-  --text-muted: rgba(220, 220, 220, 0.55);
+  --text-muted: rgba(220, 220, 220, 0.65);
   --accent: #0078D7;
   --row-info: #1E3C5A;
   --row-done: #19411F;
@@ -29,7 +29,7 @@
   --log-detect: #a78bfa;
   --log-file: #7dd3fc;
   --log-text: #8BC88B;
-  --log-cmd: #555;
+  --log-cmd: #888;
   --text-on-primary: #fff;
 
   /* Glass tokens (overridden by JS per theme lightness) */
@@ -71,7 +71,15 @@ html, body {
   background: var(--background);
   color: var(--text);
   overflow: hidden;
-  user-select: none; /* Scoped: queue data re-enabled below */
+  -webkit-user-select: none;
+  user-select: none;
+}
+
+/* Belt-and-suspenders: WebKitGTK may not inherit user-select:none from
+   ancestors on table cells and interactive elements. Apply directly. */
+*:not(#log-content):not(#log-content *):not(input):not(textarea):not(select) {
+  -webkit-user-select: none;
+  user-select: none;
 }
 
 @media (prefers-reduced-motion: reduce) {
@@ -264,7 +272,6 @@ html, body {
   text-overflow: ellipsis;
   border-bottom: 1px solid var(--surface-dim);
 }
-#queue-table td:nth-child(n+2) { user-select: text; }
 
 .col-check { overflow: visible !important; }
 .col-check input[type="checkbox"] { cursor: pointer; margin: 0; accent-color: var(--primary); }
@@ -449,6 +456,7 @@ html, body {
   white-space: pre-wrap;
   word-break: break-all;
   background: var(--glass-log-bg);
+  -webkit-user-select: text;
   user-select: text;
   cursor: text;
 }
