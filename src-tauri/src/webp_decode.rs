@@ -100,11 +100,7 @@ fn probe_metadata(path: &Path) -> Result<Option<WebpInfo>, String> {
     let mut frame_count: u32 = 0;
     let mut found_anim = false;
 
-    loop {
-        let chunk_id = match read_fourcc(&mut file) {
-            Ok(id) => id,
-            Err(_) => break,
-        };
+    while let Ok(chunk_id) = read_fourcc(&mut file) {
         let chunk_size = match read_u32_le(&mut file) {
             Ok(s) => s,
             Err(_) => break,
@@ -182,11 +178,7 @@ fn extract_frames(path: &Path) -> Result<(WebpInfo, Vec<AnimFrame>), String> {
     let mut total_duration_ms: u32 = 0;
     let mut frames: Vec<AnimFrame> = Vec::new();
 
-    loop {
-        let chunk_id = match read_fourcc(&mut file) {
-            Ok(id) => id,
-            Err(_) => break,
-        };
+    while let Ok(chunk_id) = read_fourcc(&mut file) {
         let chunk_size = match read_u32_le(&mut file) {
             Ok(s) => s,
             Err(_) => break,
@@ -747,5 +739,150 @@ mod tests {
         let result = Canvas::new(0, 100);
         assert!(result.is_ok());
         assert_eq!(result.unwrap().pixels.len(), 0);
+    }
+
+    #[test]
+    fn test_canvas_clear() {
+        let mut canvas = Canvas::new(4, 4).unwrap();
+        canvas.pixels.fill(0xFF);
+        canvas.clear();
+        assert!(canvas.pixels.iter().all(|&b| b == 0));
+    }
+
+    #[test]
+    fn test_canvas_clear_rect() {
+        let mut canvas = Canvas::new(4, 4).unwrap();
+        canvas.pixels.fill(0xFF);
+        canvas.clear_rect(1, 1, 2, 2);
+
+        for row in 0..4u32 {
+            for col in 0..4u32 {
+                let idx = ((row * 4 + col) * 4) as usize;
+                let pixel = &canvas.pixels[idx..idx + 4];
+                if row >= 1 && row < 3 && col >= 1 && col < 3 {
+                    assert!(pixel.iter().all(|&b| b == 0),
+                        "pixel ({col},{row}) should be zeroed");
+                } else {
+                    assert!(pixel.iter().all(|&b| b == 0xFF),
+                        "pixel ({col},{row}) should still be 0xFF");
+                }
+            }
+        }
+    }
+
+    #[test]
+    fn test_canvas_composite_overwrite() {
+        let mut canvas = Canvas::new(4, 4).unwrap();
+        // Canvas starts all zeros.
+        // Create a 2x2 frame of all 0xFF (including alpha=255).
+        let frame = vec![0xFFu8; 2 * 2 * 4];
+        canvas.composite(&frame, 1, 1, 2, 2, false);
+
+        for row in 0..4u32 {
+            for col in 0..4u32 {
+                let idx = ((row * 4 + col) * 4) as usize;
+                let pixel = &canvas.pixels[idx..idx + 4];
+                if row >= 1 && row < 3 && col >= 1 && col < 3 {
+                    assert!(pixel.iter().all(|&b| b == 0xFF),
+                        "pixel ({col},{row}) should be 0xFF");
+                } else {
+                    assert!(pixel.iter().all(|&b| b == 0),
+                        "pixel ({col},{row}) should be 0");
+                }
+            }
+        }
+    }
+
+    #[test]
+    fn test_canvas_composite_blend_opaque() {
+        let mut canvas = Canvas::new(4, 4).unwrap();
+        // Fill background with known color (50, 100, 150, 255).
+        for pixel in canvas.pixels.chunks_exact_mut(4) {
+            pixel.copy_from_slice(&[50, 100, 150, 255]);
+        }
+        // Composite a fully opaque 2x2 frame (200, 200, 200, 255).
+        let frame: Vec<u8> = [200u8, 200, 200, 255].repeat(2 * 2);
+        canvas.composite(&frame, 1, 1, 2, 2, true);
+
+        for row in 0..4u32 {
+            for col in 0..4u32 {
+                let idx = ((row * 4 + col) * 4) as usize;
+                let pixel = &canvas.pixels[idx..idx + 4];
+                if row >= 1 && row < 3 && col >= 1 && col < 3 {
+                    assert_eq!(pixel, &[200, 200, 200, 255],
+                        "pixel ({col},{row}) should be overwritten by opaque source");
+                } else {
+                    assert_eq!(pixel, &[50, 100, 150, 255],
+                        "pixel ({col},{row}) should be unchanged");
+                }
+            }
+        }
+    }
+
+    #[test]
+    fn test_canvas_composite_blend_transparent() {
+        let mut canvas = Canvas::new(4, 4).unwrap();
+        // Fill background with known color.
+        for pixel in canvas.pixels.chunks_exact_mut(4) {
+            pixel.copy_from_slice(&[80, 120, 160, 255]);
+        }
+        // Composite a fully transparent 2x2 frame (alpha=0).
+        let frame: Vec<u8> = [200u8, 200, 200, 0].repeat(2 * 2);
+        canvas.composite(&frame, 1, 1, 2, 2, true);
+
+        // Destination should be completely unchanged.
+        for pixel in canvas.pixels.chunks_exact(4) {
+            assert_eq!(pixel, &[80, 120, 160, 255]);
+        }
+    }
+
+    #[test]
+    fn test_canvas_composite_boundary_clip() {
+        let mut canvas = Canvas::new(4, 4).unwrap();
+        // Composite a 3x3 frame at offset (3,3) — only pixel (3,3) overlaps.
+        let frame: Vec<u8> = vec![0xFF; 3 * 3 * 4];
+        canvas.composite(&frame, 3, 3, 3, 3, false);
+
+        for row in 0..4u32 {
+            for col in 0..4u32 {
+                let idx = ((row * 4 + col) * 4) as usize;
+                let pixel = &canvas.pixels[idx..idx + 4];
+                if row == 3 && col == 3 {
+                    assert!(pixel.iter().all(|&b| b == 0xFF),
+                        "pixel (3,3) should be written");
+                } else {
+                    assert!(pixel.iter().all(|&b| b == 0),
+                        "pixel ({col},{row}) should be unchanged");
+                }
+            }
+        }
+    }
+
+    #[test]
+    fn test_canvas_composite_partial_alpha() {
+        let mut canvas = Canvas::new(4, 4).unwrap();
+        // Fill background with (100, 100, 100, 255).
+        for pixel in canvas.pixels.chunks_exact_mut(4) {
+            pixel.copy_from_slice(&[100, 100, 100, 255]);
+        }
+        // Composite 1x1 pixel with (200, 200, 200, 128) at (0,0) with blend.
+        let frame = vec![200u8, 200, 200, 128];
+        canvas.composite(&frame, 0, 0, 1, 1, true);
+
+        let pixel = &canvas.pixels[0..4];
+        // The blending formula in composite:
+        //   sa=128, da=255, inv_sa=127
+        //   out_c = (sc*sa + dc*da*inv_sa/255) / max(sa + da*inv_sa/255, 1)
+        //         = (200*128 + 100*255*127/255) / max(128 + 255*127/255, 1)
+        //         = (25600 + 12700) / (128 + 127) = 38300/255 ≈ 150
+        //   out_a = sa + da*inv_sa/255 = 128 + 127 = 255
+        // Allow tolerance of ±2 for integer rounding.
+        assert!((pixel[0] as i32 - 150).abs() <= 2,
+            "red channel: expected ~150, got {}", pixel[0]);
+        assert!((pixel[1] as i32 - 150).abs() <= 2,
+            "green channel: expected ~150, got {}", pixel[1]);
+        assert!((pixel[2] as i32 - 150).abs() <= 2,
+            "blue channel: expected ~150, got {}", pixel[2]);
+        assert_eq!(pixel[3], 255, "alpha should be 255");
     }
 }

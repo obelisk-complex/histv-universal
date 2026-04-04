@@ -208,7 +208,7 @@ pub fn remove_items(queue: &mut Vec<QueueItem>, indices: &mut [usize]) {
 
 /// Reset selected items back to Pending (re-queue).
 /// Only resets items in a terminal state (Done, Failed, Skipped, Cancelled).
-pub fn requeue_items(queue: &mut Vec<QueueItem>, indices: &[usize]) {
+pub fn requeue_items(queue: &mut [QueueItem], indices: &[usize]) {
     for &idx in indices {
         if idx < queue.len() {
             match queue[idx].status {
@@ -225,7 +225,7 @@ pub fn requeue_items(queue: &mut Vec<QueueItem>, indices: &[usize]) {
 }
 
 /// Reset all items in a terminal state back to Pending.
-pub fn requeue_all(queue: &mut Vec<QueueItem>) {
+pub fn requeue_all(queue: &mut [QueueItem]) {
     for item in queue.iter_mut() {
         match item.status {
             QueueItemStatus::Done
@@ -255,4 +255,155 @@ pub fn move_item(queue: &mut Vec<QueueItem>, from: usize, to: usize) {
     }
     let item = queue.remove(from);
     queue.insert(to, item);
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn make_item(name: &str, status: QueueItemStatus) -> QueueItem {
+        QueueItem {
+            full_path: format!("/tmp/{name}"),
+            file_name: name.to_string(),
+            base_name: name.to_string(),
+            status,
+            source_bytes: 0,
+            probe: ProbeResult::default(),
+        }
+    }
+
+    #[test]
+    fn is_supported_extension_known() {
+        assert!(is_supported_extension("video.mkv"));
+        assert!(is_supported_extension("video.mp4"));
+        assert!(is_supported_extension("video.avi"));
+        assert!(is_supported_extension("video.webm"));
+    }
+
+    #[test]
+    fn is_supported_extension_unsupported() {
+        assert!(!is_supported_extension("doc.txt"));
+        assert!(!is_supported_extension("pic.jpg"));
+        assert!(!is_supported_extension("doc.pdf"));
+    }
+
+    #[test]
+    fn is_supported_extension_case_insensitive() {
+        assert!(is_supported_extension("video.MKV"));
+        assert!(is_supported_extension("video.Mp4"));
+    }
+
+    #[test]
+    fn is_supported_extension_none() {
+        assert!(!is_supported_extension("noext"));
+    }
+
+    #[test]
+    fn remove_items_middle() {
+        let mut queue = vec![
+            make_item("A", QueueItemStatus::Pending),
+            make_item("B", QueueItemStatus::Pending),
+            make_item("C", QueueItemStatus::Pending),
+            make_item("D", QueueItemStatus::Pending),
+            make_item("E", QueueItemStatus::Pending),
+        ];
+        remove_items(&mut queue, &mut [1, 3]);
+        let names: Vec<&str> = queue.iter().map(|i| i.file_name.as_str()).collect();
+        assert_eq!(names, vec!["A", "C", "E"]);
+    }
+
+    #[test]
+    fn remove_items_empty_indices() {
+        let mut queue = vec![
+            make_item("A", QueueItemStatus::Pending),
+            make_item("B", QueueItemStatus::Pending),
+            make_item("C", QueueItemStatus::Pending),
+        ];
+        remove_items(&mut queue, &mut []);
+        assert_eq!(queue.len(), 3);
+    }
+
+    #[test]
+    fn requeue_done_and_failed() {
+        let mut queue = vec![
+            make_item("A", QueueItemStatus::Done),
+            make_item("B", QueueItemStatus::Failed),
+            make_item("C", QueueItemStatus::Cancelled),
+        ];
+        requeue_items(&mut queue, &[0, 1, 2]);
+        assert_eq!(queue[0].status, QueueItemStatus::Pending);
+        assert_eq!(queue[1].status, QueueItemStatus::Pending);
+        assert_eq!(queue[2].status, QueueItemStatus::Pending);
+    }
+
+    #[test]
+    fn requeue_leaves_pending_alone() {
+        let mut queue = vec![make_item("A", QueueItemStatus::Pending)];
+        requeue_items(&mut queue, &[0]);
+        assert_eq!(queue[0].status, QueueItemStatus::Pending);
+    }
+
+    #[test]
+    fn requeue_all_mixed() {
+        let mut queue = vec![
+            make_item("A", QueueItemStatus::Pending),
+            make_item("B", QueueItemStatus::Probing),
+            make_item("C", QueueItemStatus::Encoding),
+            make_item("D", QueueItemStatus::Done),
+            make_item("E", QueueItemStatus::Failed),
+            make_item("F", QueueItemStatus::Skipped),
+            make_item("G", QueueItemStatus::Cancelled),
+        ];
+        requeue_all(&mut queue);
+        assert_eq!(queue[0].status, QueueItemStatus::Pending);
+        assert_eq!(queue[1].status, QueueItemStatus::Probing);
+        assert_eq!(queue[2].status, QueueItemStatus::Encoding);
+        assert_eq!(queue[3].status, QueueItemStatus::Pending);
+        assert_eq!(queue[4].status, QueueItemStatus::Pending);
+        assert_eq!(queue[5].status, QueueItemStatus::Pending);
+        assert_eq!(queue[6].status, QueueItemStatus::Pending);
+    }
+
+    #[test]
+    fn clear_non_pending_retains_active() {
+        let mut queue = vec![
+            make_item("A", QueueItemStatus::Pending),
+            make_item("B", QueueItemStatus::Probing),
+            make_item("C", QueueItemStatus::Encoding),
+            make_item("D", QueueItemStatus::Done),
+            make_item("E", QueueItemStatus::Failed),
+            make_item("F", QueueItemStatus::Skipped),
+            make_item("G", QueueItemStatus::Cancelled),
+        ];
+        clear_non_pending(&mut queue);
+        assert_eq!(queue.len(), 3);
+        let names: Vec<&str> = queue.iter().map(|i| i.file_name.as_str()).collect();
+        assert_eq!(names, vec!["A", "B", "C"]);
+    }
+
+    #[test]
+    fn move_item_forward() {
+        let mut queue = vec![
+            make_item("A", QueueItemStatus::Pending),
+            make_item("B", QueueItemStatus::Pending),
+            make_item("C", QueueItemStatus::Pending),
+            make_item("D", QueueItemStatus::Pending),
+        ];
+        move_item(&mut queue, 0, 2);
+        let names: Vec<&str> = queue.iter().map(|i| i.file_name.as_str()).collect();
+        assert_eq!(names, vec!["B", "C", "A", "D"]);
+    }
+
+    #[test]
+    fn move_item_backward() {
+        let mut queue = vec![
+            make_item("A", QueueItemStatus::Pending),
+            make_item("B", QueueItemStatus::Pending),
+            make_item("C", QueueItemStatus::Pending),
+            make_item("D", QueueItemStatus::Pending),
+        ];
+        move_item(&mut queue, 3, 1);
+        let names: Vec<&str> = queue.iter().map(|i| i.file_name.as_str()).collect();
+        assert_eq!(names, vec!["A", "D", "B", "C"]);
+    }
 }

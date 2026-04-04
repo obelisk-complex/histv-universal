@@ -3,17 +3,17 @@
 <head>
   <meta charset="UTF-8" />
   <meta name="viewport" content="width=device-width, initial-scale=1.0" />
-  <title>Honey, I Shrunk The Vids v2.5.3</title>
+  <title>Honey, I Shrunk The Vids v2.5.4</title>
   <link rel="stylesheet" href="css/app.css" />
 </head>
 <body>
   <div id="app">
     <!-- ═══ Main area: split panel (§4.1) ═══ -->
-    <div id="main-area">
+    <main id="main-area">
       <!-- ─── Left panel: file queue (§5) ─── -->
-      <div id="left-panel">
+      <section id="left-panel">
         <div class="panel-header">File Queue <span id="queue-summary" class="queue-summary"></span></div>
-        <div id="queue-container" style="position:relative;">
+        <div id="queue-container">
           <div id="drop-overlay">Drop files or folders here</div>
           <div id="queue-empty-state" class="visible">
             <div>No files in queue</div>
@@ -32,6 +32,7 @@
                 <th>To B/R</th>
                 <th>Status</th>
               </tr>
+            </thead>
             <tbody id="queue-body"></tbody>
           </table>
         </div>
@@ -47,7 +48,7 @@
           <button class="btn" id="btn-cancel-current" disabled>Skip</button>
           <button class="btn" id="btn-cancel-all" disabled>Cancel</button>
         </div>
-      </div>
+      </section>
 
       <!-- ─── Splitter ─── -->
       <div id="splitter">
@@ -55,7 +56,7 @@
       </div>
 
       <!-- ─── Right panel: settings (single scrollable column) ─── -->
-      <div id="right-panel">
+      <aside id="right-panel">
         <div id="settings-panel">
 
           <div class="section-header">Video</div>
@@ -75,7 +76,7 @@
               <span class="tooltip-icon">?</span>
               <span class="tooltip-text">Lets the encoder use extra data for fast-moving or detailed scenes so they don't look blocky. Higher = better action scenes, but very old devices pre-2013 might stutter. 1.5x is safest; 3x looks best.</span>
             </label>
-            <div class="rc-toggle" id="peak-toggle">
+            <div class="rc-toggle" id="peak-toggle" role="group" aria-label="VBR peak multiplier">
               <button type="button" class="active" data-peak="1.5">1.5x</button>
               <button type="button" data-peak="2">2x</button>
               <button type="button" data-peak="2.5">2.5x</button>
@@ -88,7 +89,7 @@
               <span class="tooltip-icon">?</span>
               <span class="tooltip-text" id="rc-tooltip">QP gives you predictable file sizes but some scenes may look blocky. CRF gives you much less blocking but file sizes vary more.</span>
             </label>
-            <div class="rc-toggle" id="rc-toggle">
+            <div class="rc-toggle" id="rc-toggle" role="group" aria-label="Quality mode">
               <button type="button" class="active" data-mode="QP">QP</button>
               <button type="button" data-mode="CRF">CRF</button>
             </div>
@@ -99,16 +100,16 @@
               <span class="tooltip-icon">?</span>
               <span class="tooltip-text">Lower numbers look better but produce bigger files. Around 20 is a good balance; go down to 18 for best quality, up to 28 if some visible quality loss is acceptable for a smaller file.</span>
             </label>
-            <input type="number" id="num-qp-i" min="0" max="51" value="22" style="width:55px;" />
-            <input type="number" id="num-qp-p" min="0" max="51" value="24" style="width:55px;" />
+            <input type="number" id="num-qp-i" min="0" max="51" value="22" />
+            <input type="number" id="num-qp-p" min="0" max="51" value="24" />
           </div>
 
-          <div class="form-row" id="row-crf" style="display:none;">
+          <div class="form-row hidden" id="row-crf">
             <label class="has-tooltip" id="lbl-crf">CRF value
               <span class="tooltip-icon">?</span>
               <span class="tooltip-text">Lower numbers look better but produce bigger files. 20 is a good balance between size and quality, 18 for basically perfect and a bigger file. Software encoders only.</span>
             </label>
-            <input type="number" id="num-crf" min="0" max="51" value="20" style="width:55px;" />
+            <input type="number" id="num-crf" min="0" max="51" value="20" />
           </div>
 
           <div class="section-header">Output</div>
@@ -199,7 +200,7 @@
               <span class="tooltip-icon">?</span>
               <span class="tooltip-text">0 means full speed. Set lower if you want to use your PC for other things while encoding. Low priority lets other apps stay responsive.</span>
             </label>
-            <input type="number" id="num-threads" min="0" max="64" value="0" style="width:55px;" />
+            <input type="number" id="num-threads" min="0" max="64" value="0" />
             <label class="inline-check" for="chk-low-priority">
               <input type="checkbox" id="chk-low-priority" />
               Low priority
@@ -222,12 +223,12 @@
             </select>
           </div>
 
-          <div class="form-row" id="row-custom-command" style="display:none;">
+          <div class="form-row hidden" id="row-custom-command">
             <label for="txt-custom-command">Command</label>
             <input type="text" id="txt-custom-command" placeholder="e.g. my-script.sh" />
           </div>
 
-          <div class="form-row" id="row-countdown" style="display:none;">
+          <div class="form-row hidden" id="row-countdown">
             <label for="num-countdown" class="has-tooltip">Countdown (seconds)
               <span class="tooltip-icon">?</span>
               <span class="tooltip-text">Seconds to wait before running the post-batch action, giving you a chance to cancel. 0 means run immediately.</span>
@@ -255,11 +256,11 @@
           </div>
 
         </div><!-- /settings-panel -->
-      </div><!-- /right-panel -->
-    </div><!-- /main-area -->
+      </aside><!-- /right-panel -->
+    </main><!-- /main-area -->
 
     <!-- ═══ Bottom area: status strip + collapsible log ═══ -->
-    <div id="bottom-panel">
+    <footer id="bottom-panel">
       <!-- Compact status strip - always visible -->
       <div id="status-strip">
         <div id="status-strip-info">
@@ -270,13 +271,13 @@
         <div id="status-strip-bars">
           <div class="bar-row">
             <span class="bar-label">File</span>
-            <div class="progress-bar-container">
+            <div class="progress-bar-container" id="progress-bar-container" role="progressbar" aria-valuenow="0" aria-valuemin="0" aria-valuemax="100" aria-label="File encoding progress">
               <div id="progress-bar"></div>
             </div>
           </div>
           <div class="bar-row">
             <span class="bar-label">All</span>
-            <div class="progress-bar-container">
+            <div class="progress-bar-container" id="batch-progress-bar-container" role="progressbar" aria-valuenow="0" aria-valuemin="0" aria-valuemax="100" aria-label="Overall batch progress">
               <div id="batch-progress-bar"></div>
             </div>
           </div>
@@ -286,7 +287,7 @@
         </button>
       </div>
       <!-- Hidden element for JS compatibility -->
-      <span id="job-cmd" style="display:none;"></span>
+      <span id="job-cmd" class="hidden"></span>
       <!-- Expandable log -->
       <div id="bottom-panel-body">
         <div id="log-panel">
@@ -303,7 +304,7 @@
           <div id="log-content"></div>
         </div>
       </div>
-    </div>
+    </footer>
 
     <!-- ═══ Context menu (§5.5) ═══ -->
     <div id="context-menu" role="menu">
@@ -360,16 +361,16 @@
 
     <!-- ═══ Modal: Pre-flight DV/HDR10+ warnings ═══ -->
     <div class="modal-overlay" id="modal-preflight" role="dialog" aria-modal="true" aria-labelledby="modal-preflight-title">
-      <div class="modal-box" style="max-width:640px;">
+      <div class="modal-box modal-wide">
         <div class="modal-title" id="modal-preflight-title">Some files need additional tools for best results</div>
         <div class="modal-body" id="preflight-body">
-          <table class="preflight-table" style="width:100%;font-size:0.85em;border-collapse:collapse;">
+          <table class="preflight-table">
             <thead>
-              <tr style="text-align:left;border-bottom:1px solid var(--border);">
-                <th style="padding:4px;">File</th>
-                <th style="padding:4px;">Source</th>
-                <th style="padding:4px;">Outcome</th>
-                <th style="padding:4px;">Missing</th>
+              <tr>
+                <th>File</th>
+                <th>Source</th>
+                <th>Outcome</th>
+                <th>Missing</th>
               </tr>
             </thead>
             <tbody id="preflight-table-body"></tbody>
@@ -420,6 +421,9 @@
         </div>
       </div>
     </div>
+
+    <!-- ═══ Screen reader live region (a11y) ═══ -->
+    <div id="live-status" class="sr-only" aria-live="polite" aria-atomic="true" role="status"></div>
 
   </div><!-- /app -->
 

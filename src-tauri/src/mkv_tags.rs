@@ -423,11 +423,7 @@ fn patch_first_statistics_tag(path: &Path, values: &TagValues) -> Result<u32, St
 
     let mut locations: Vec<TagLocation> = Vec::new();
 
-    loop {
-        let tag_header = match find_child(&mut file, ID_TAG, tags_data_end)? {
-            Some(h) => h,
-            None => break,
-        };
+    while let Some(tag_header) = find_child(&mut file, ID_TAG, tags_data_end)? {
         let tag_data_start = file.stream_position().map_err(|e| format!("{e}"))?;
         let tag_data_end = tag_data_start + tag_header.data_size;
 
@@ -912,5 +908,68 @@ mod tests {
 
         let video_bps = (video_bytes as f64 * 8.0 / duration_secs) as u64;
         assert_eq!(video_bps, 79_744_000);
+    }
+
+    // ── EBML primitive tests ─────────────────────────────────────
+
+    use std::io::Cursor;
+
+    #[test]
+    fn test_read_vint_1byte() {
+        // 0x81 = 1000_0001 → marker bit in position 7, value bits = 000_0001 = 1
+        let mut cur = Cursor::new([0x81u8]);
+        let (value, len, all_ones) = read_vint(&mut cur).unwrap();
+        assert_eq!(value, 1);
+        assert_eq!(len, 1);
+        assert!(!all_ones);
+    }
+
+    #[test]
+    fn test_read_vint_2byte() {
+        // 0x40 0x01 → marker in bit 6 (2-byte VINT).
+        // Data bits: 00_0000 from first byte + 0x01 = value 1. Length = 2.
+        let mut cur = Cursor::new([0x40u8, 0x01]);
+        let (value, len, all_ones) = read_vint(&mut cur).unwrap();
+        assert_eq!(value, 1);
+        assert_eq!(len, 2);
+        assert!(!all_ones);
+    }
+
+    #[test]
+    fn test_read_vint_all_ones_1byte() {
+        // 0xFF = all-ones for 1-byte VINT → unknown size marker.
+        // Value bits = 111_1111 = 127.
+        let mut cur = Cursor::new([0xFFu8]);
+        let (value, len, all_ones) = read_vint(&mut cur).unwrap();
+        assert_eq!(value, 127);
+        assert_eq!(len, 1);
+        assert!(all_ones);
+    }
+
+    #[test]
+    fn test_read_vint_zero_invalid() {
+        // Zero byte is not a valid VINT leading byte.
+        let mut cur = Cursor::new([0x00u8]);
+        assert!(read_vint(&mut cur).is_err());
+    }
+
+    #[test]
+    fn test_read_element_id_1byte() {
+        // 0xA3 = 1010_0011 → leading 1 means 1-byte ID. Value = 0xA3.
+        let mut cur = Cursor::new([0xA3u8]);
+        let (id, len) = read_element_id(&mut cur).unwrap();
+        assert_eq!(id, 0xA3);
+        assert_eq!(len, 1);
+    }
+
+    #[test]
+    fn test_read_element_header() {
+        // 1-byte ID (0xA3) + 1-byte size VINT (0x8A = marker 0x80 + value 10).
+        let mut cur = Cursor::new([0xA3u8, 0x8A]);
+        let header = read_element_header(&mut cur).unwrap();
+        assert_eq!(header.id, 0xA3);
+        assert_eq!(header.data_size, 10);
+        assert_eq!(header.header_len, 2);
+        assert!(!header.unknown_size);
     }
 }

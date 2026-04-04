@@ -151,7 +151,7 @@ pub fn reinit(resource_dir: Option<&Path>, sink: &dyn EventSink) {
 }
 
 /// Log which path was resolved for a binary (helps diagnose "not found" reports).
-fn log_resolved_path(sink: &dyn EventSink, label: &str, path: &PathBuf) {
+fn log_resolved_path(sink: &dyn EventSink, label: &str, path: &Path) {
     let display = path.display();
     if path.exists() {
         sink.log(&format!("[ffmpeg] {label} resolved: {display}"));
@@ -557,9 +557,9 @@ fn extract_from_tar_xz(
     let mut extract_cmd = std::process::Command::new("tar");
     extract_cmd.args([
         "xf",
-        &tar_path.to_string_lossy().as_ref(),
+        tar_path.to_string_lossy().as_ref(),
         "-C",
-        &tmp_extract.path().to_string_lossy().as_ref(),
+        tmp_extract.path().to_string_lossy().as_ref(),
     ]);
     hide_window_std(&mut extract_cmd);
     let output = extract_cmd

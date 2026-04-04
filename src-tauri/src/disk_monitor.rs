@@ -350,21 +350,20 @@ impl DiskMonitor {
         batch_control: &dyn crate::events::BatchControl,
     ) -> bool {
         // Check output partition
-        if self.is_over_limit(&self.output_path, sink) {
-            if !self
+        if self.is_over_limit(&self.output_path, sink)
+            && !self
                 .wait_for_space(&self.output_path, sink, batch_control)
                 .await
-            {
-                return false;
-            }
+        {
+            return false;
         }
 
         // Check staging partition if different
         if let Some(ref staging) = self.staging_path {
-            if self.is_over_limit(staging, sink) {
-                if !self.wait_for_space(staging, sink, batch_control).await {
-                    return false;
-                }
+            if self.is_over_limit(staging, sink)
+                && !self.wait_for_space(staging, sink, batch_control).await
+            {
+                return false;
             }
         }
 

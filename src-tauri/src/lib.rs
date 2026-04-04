@@ -925,8 +925,8 @@ pub fn run() {
             dovi_tools::init(resource_dir.as_deref(), &sink);
 
             // Load config
-            let loaded_config = config::load_config(&app.handle());
-            let themes_loaded = themes::scan_themes_folder(&app.handle());
+            let loaded_config = config::load_config(app.handle());
+            let themes_loaded = themes::scan_themes_folder(app.handle());
 
             let state = app_state.clone();
             let app_handle = app.handle().clone();

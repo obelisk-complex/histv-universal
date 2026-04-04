@@ -586,4 +586,37 @@ mod tests {
     fn test_parse_numeric_non_numeric() {
         assert!(parse_numeric("abc").is_none());
     }
+
+    #[test]
+    fn test_parse_duration_mkv_90_seconds() {
+        let result = parse_duration_tag("00:01:30.000000000").unwrap();
+        assert!((result - 90.0).abs() < 0.001);
+    }
+
+    #[test]
+    fn test_parse_duration_large_hours() {
+        let result = parse_duration_tag("100:00:00.000").unwrap();
+        assert!((result - 360000.0).abs() < 0.001);
+    }
+
+    #[test]
+    fn test_parse_duration_fractional_only() {
+        let result = parse_duration_tag("0:0:0.5").unwrap();
+        assert!((result - 0.5).abs() < 0.001);
+    }
+
+    #[test]
+    fn test_parse_numeric_large_value() {
+        assert_eq!(parse_numeric("1000000000"), Some(1000000000.0));
+    }
+
+    #[test]
+    fn test_parse_numeric_decimal() {
+        assert_eq!(parse_numeric("3.14"), Some(3.14));
+    }
+
+    #[test]
+    fn test_parse_numeric_negative_returns_none() {
+        assert!(parse_numeric("-100").is_none());
+    }
 }

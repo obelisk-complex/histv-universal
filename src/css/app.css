@@ -28,6 +28,9 @@
   --log-error: #f87171;
   --log-detect: #a78bfa;
   --log-file: #7dd3fc;
+  --log-text: #8BC88B;
+  --log-cmd: #555;
+  --text-on-primary: #fff;
 
   /* Glass tokens (overridden by JS per theme lightness) */
   --glass-bg: rgba(40, 40, 40, 0.65);
@@ -42,6 +45,20 @@
   --glass-blur: 16px;
   --radius: 8px;
   --radius-sm: 5px;
+}
+
+/* ── Utility classes ── */
+.hidden { display: none; }
+.sr-only {
+  position: absolute;
+  width: 1px;
+  height: 1px;
+  padding: 0;
+  margin: -1px;
+  overflow: hidden;
+  clip: rect(0, 0, 0, 0);
+  white-space: nowrap;
+  border: 0;
 }
 
 /* ── Reset & base ── */
@@ -173,6 +190,7 @@ html, body {
 #queue-container {
   flex: 1;
   overflow: auto;
+  position: relative;
   background: var(--glass-bg);
   -webkit-backdrop-filter: blur(var(--glass-blur));
   backdrop-filter: blur(var(--glass-blur));
@@ -426,7 +444,7 @@ html, body {
   padding: 6px 10px;
   font-family: 'Consolas', 'Courier New', monospace;
   font-size: 12px;
-  color: #8BC88B;
+  color: var(--log-text);
   line-height: 1.45;
   white-space: pre-wrap;
   word-break: break-all;
@@ -436,7 +454,7 @@ html, body {
 }
 
 /* Log line categories */
-.log-line-cmd { color: #555; font-size: 10px; }
+.log-line-cmd { color: var(--log-cmd); font-size: 10px; }
 .log-line-warn { color: var(--log-warn); }
 .log-line-error { color: var(--log-error); font-weight: 600; }
 .log-line-file { color: var(--log-file); font-weight: 600; }
@@ -459,7 +477,7 @@ html, body {
 .log-filter-btn:hover { color: var(--text); border-color: var(--primary); }
 .log-filter-btn.active {
   background: var(--primary);
-  color: #fff;
+  color: var(--text-on-primary);
   border-color: var(--primary);
 }
 
@@ -579,6 +597,15 @@ html, body {
 .form-row input:focus {
   border-color: var(--primary);
 }
+.form-row select:focus-visible,
+.form-row input:focus-visible {
+  outline: 2px solid var(--primary);
+  outline-offset: -1px;
+}
+.settings-footer select:focus-visible {
+  outline: 2px solid var(--primary);
+  outline-offset: -1px;
+}
 
 /* Native dropdown option elements need opaque backgrounds -
    glass rgba values composite against grey in the OS menu layer */
@@ -588,7 +615,7 @@ select option {
 }
 select option:checked {
   background: var(--primary);
-  color: #fff;
+  color: var(--text-on-primary);
 }
 
 .form-row input[type="number"] { width: 65px; min-width: 45px; flex-shrink: 1; }
@@ -735,7 +762,7 @@ input[readonly] { opacity: 0.6; cursor: default; }
   transition: background 0.12s, color 0.12s;
 }
 .rc-toggle button:not(:last-child) { border-right: 1px solid var(--glass-border); }
-.rc-toggle button.active { background: var(--primary); color: #fff; }
+.rc-toggle button.active { background: var(--primary); color: var(--text-on-primary); }
 .rc-toggle button:hover:not(.active) { background: var(--glass-hover); color: var(--text); }
 
 /* ── Buttons ── */
@@ -755,7 +782,7 @@ input[readonly] { opacity: 0.6; cursor: default; }
 .btn:disabled { opacity: 0.35; cursor: not-allowed; }
 .btn-primary {
   background: var(--primary);
-  color: #fff;
+  color: var(--text-on-primary);
   border-color: var(--primary);
 }
 .btn-primary:hover:not(:disabled) { filter: brightness(1.15); }
@@ -776,7 +803,7 @@ input[readonly] { opacity: 0.6; cursor: default; }
 }
 #context-menu.visible { display: block; }
 .ctx-item { padding: 6px 16px; font-size: 12px; cursor: pointer; color: var(--text); transition: background 0.08s; background: none; border: none; width: 100%; text-align: left; font-family: inherit; display: block; }
-.ctx-item:hover { background: var(--primary); color: #fff; }
+.ctx-item:hover { background: var(--primary); color: var(--text-on-primary); }
 .ctx-item.disabled { opacity: 0.35; pointer-events: none; }
 .ctx-separator { height: 1px; background: var(--glass-border); margin: 4px 0; }
 
@@ -845,6 +872,48 @@ input[readonly] { opacity: 0.6; cursor: default; }
 ::-webkit-scrollbar-track { background: transparent; }
 ::-webkit-scrollbar-thumb { background: var(--glass-border); border-radius: 3px; }
 ::-webkit-scrollbar-thumb:hover { background: var(--text-muted); }
+
+/* ── Specific input widths (replaces inline styles) ── */
+#num-qp-i, #num-qp-p, #num-crf, #num-threads { width: 55px; }
+
+/* ── Preflight table ── */
+.preflight-table {
+  width: 100%;
+  font-size: 0.85em;
+  border-collapse: collapse;
+}
+.preflight-table thead tr {
+  text-align: left;
+  border-bottom: 1px solid var(--glass-border);
+}
+.preflight-table th,
+.preflight-table td {
+  padding: 4px;
+}
+.modal-wide { max-width: 640px; }
+
+/* ── Focus indicators (a11y) ── */
+.btn:focus-visible,
+.rc-toggle button:focus-visible,
+.log-filter-btn:focus-visible,
+#bottom-panel-toggle:focus-visible,
+#splitter-toggle:focus-visible {
+  outline: 2px solid var(--primary);
+  outline-offset: 2px;
+}
+
+.ctx-item:focus-visible {
+  outline: 2px solid var(--primary);
+  outline-offset: -2px;
+  background: var(--primary);
+  color: var(--text-on-primary);
+}
+
+input[type="checkbox"]:focus-visible,
+input[type="radio"]:focus-visible {
+  outline: 2px solid var(--primary);
+  outline-offset: 2px;
+}
 
 /* ── Spinner ── */
 @keyframes spin { to { transform: rotate(360deg); } }

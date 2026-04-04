@@ -96,6 +96,12 @@ fn canonicalize_with_timeout(dir: &Path) -> PathBuf {
         .unwrap_or_else(|_| dir.to_path_buf())
 }
 
+impl Default for MountCache {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
 impl MountCache {
     pub fn new() -> Self {
         Self {
@@ -317,7 +323,7 @@ fn unescape_mount_path(s: &str) -> String {
             let mut octal = String::new();
             for _ in 0..3 {
                 if let Some(&next) = chars.as_str().as_bytes().first() {
-                    if next >= b'0' && next <= b'7' {
+                    if (b'0'..=b'7').contains(&next) {
                         octal.push(chars.next().unwrap());
                     } else {
                         break;

@@ -17,10 +17,8 @@
     }
 
     // ── State ──────────────────────────────────────────────────────
-    let isFlatpak = false;             // set at init; kept for future use
 	let queueData = [];                // mirrors backend queue
     let videoEncoders = [];            // EncoderInfo[]
-    let audioEncoders = [];            // string[]
 	let batchWasCancelled = false;     // check if batch was user-cancelled
     let themes = [];                   // Theme[]
     let selectedRows = new Set();      // indices of selected rows
@@ -38,7 +36,6 @@
 
     // ── DOM refs ───────────────────────────────────────────────────
     const $ = (s) => document.querySelector(s);
-    const $$ = (s) => document.querySelectorAll(s);
 
     const queueBody       = $('#queue-body');
     const dropOverlay     = $('#drop-overlay');
@@ -89,6 +86,9 @@
 	const encoderSummary  = $('#encoder-summary');
     const chkPreserveAv1  = $('#chk-preserve-av1');
     const chkCompat       = $('#chk-compat');
+    const progressBarContainer = $('#progress-bar-container');
+    const batchProgressBarContainer = $('#batch-progress-bar-container');
+    const liveStatus      = $('#live-status');
 
     // Status icons - done/failed/cancelled colours are updated by applyTheme
     let STATUS_ICONS = {
@@ -109,7 +109,6 @@
     //  INITIALISATION
     // ═══════════════════════════════════════════════════════════════
     document.addEventListener('DOMContentLoaded', async () => {
-	  isFlatpak = await invoke('is_flatpak');
       const savedConfig = await loadConfig();
       await loadThemes(savedConfig);
       setupSplitter();
@@ -132,9 +131,8 @@
       const alreadyDone = await invoke('get_encoder_detection_status');
       if (alreadyDone) {
         try {
-          const [ve, ae] = await invoke('get_detected_encoders');
+          const [ve] = await invoke('get_detected_encoders');
           videoEncoders = ve;
-          audioEncoders = ae;
           updateEncoderSummary();
           encoderDetectionDone = true;
           if (chkPrecision.checked) applyPrecisionMode();
@@ -342,16 +340,27 @@
       derived['log-error']      = c['log-error']      || derived['icon-failed'];
       derived['log-detect']     = c['log-detect']     || c['status-detect'] || '#a78bfa';
       derived['log-file']       = c['log-file']       || '#7dd3fc';
+      derived['log-text']       = c['log-text']       || '#8BC88B';
+      derived['log-cmd']        = c['log-cmd']        || (light ? '#999' : '#555');
+      derived['text-on-primary'] = c['text-on-primary'] || '#fff';
 
-      // ── Apply all to :root ──
+      // ── Apply all to :root (with colour validation) ──
+      const isValidCssColor = (v) => {
+        if (typeof v !== 'string') return false;
+        if (/^#[0-9a-fA-F]{3,8}$/.test(v)) return true;
+        if (/^rgba?\(\s*\d/.test(v)) return true;
+        return false;
+      };
       for (const [key, value] of Object.entries(derived)) {
-        root.style.setProperty(`--${key}`, value);
+        if (isValidCssColor(value)) {
+          root.style.setProperty(`--${key}`, value);
+        }
       }
 
       // Also apply any extra keys from the theme JSON that we didn't
       // derive (forward-compatibility for future variables).
       for (const [key, value] of Object.entries(c)) {
-        if (!(key in derived)) {
+        if (!(key in derived) && isValidCssColor(value)) {
           root.style.setProperty(`--${key}`, value);
         }
       }
@@ -2087,7 +2096,9 @@
         body += `\n\nThese files will be converted to ${target}.`;
         $('#unknown-codec-body').textContent = body;
         $('#unknown-codec-body').style.whiteSpace = 'pre-line';
-        $('#modal-unknown-codec').classList.add('visible');
+        const ucModal = $('#modal-unknown-codec');
+        ucModal.classList.add('visible');
+        trapFocusInModal(ucModal);
         return;
       }
 
@@ -2140,39 +2151,87 @@
     }
 
     // ═══════════════════════════════════════════════════════════════
+    //  ACCESSIBILITY HELPERS
+    // ═══════════════════════════════════════════════════════════════
+
+    function announceStatus(text) {
+      if (liveStatus) liveStatus.textContent = text;
+    }
+
+    let previouslyFocusedElement = null;
+
+    function trapFocusInModal(modalEl) {
+      previouslyFocusedElement = document.activeElement;
+      const focusables = modalEl.querySelectorAll(
+        'button:not([disabled]), input:not([disabled]), select:not([disabled]), [tabindex]:not([tabindex="-1"])'
+      );
+      if (focusables.length > 0) focusables[0].focus();
+
+      modalEl._trapHandler = (e) => {
+        if (e.key !== 'Tab') return;
+        const first = focusables[0];
+        const last = focusables[focusables.length - 1];
+        if (e.shiftKey) {
+          if (document.activeElement === first) { e.preventDefault(); last.focus(); }
+        } else {
+          if (document.activeElement === last) { e.preventDefault(); first.focus(); }
+        }
+      };
+      modalEl.addEventListener('keydown', modalEl._trapHandler);
+    }
+
+    function releaseFocusTrap(modalEl) {
+      if (modalEl._trapHandler) {
+        modalEl.removeEventListener('keydown', modalEl._trapHandler);
+        delete modalEl._trapHandler;
+      }
+      if (previouslyFocusedElement && previouslyFocusedElement.focus) {
+        previouslyFocusedElement.focus();
+        previouslyFocusedElement = null;
+      }
+    }
+
+    // ═══════════════════════════════════════════════════════════════
     //  MODAL DIALOGS
     // ═══════════════════════════════════════════════════════════════
     function setupModalButtons() {
       // Overwrite prompt (§7.3)
       $('#ow-yes').addEventListener('click', () => {
         invoke('respond_overwrite', { response: 'yes' });
+        releaseFocusTrap($('#modal-overwrite'));
         $('#modal-overwrite').classList.remove('visible');
       });
       $('#ow-no').addEventListener('click', () => {
         invoke('respond_overwrite', { response: 'no' });
+        releaseFocusTrap($('#modal-overwrite'));
         $('#modal-overwrite').classList.remove('visible');
       });
       $('#ow-always').addEventListener('click', () => {
         invoke('respond_overwrite', { response: 'always' });
+        releaseFocusTrap($('#modal-overwrite'));
         $('#modal-overwrite').classList.remove('visible');
       });
-	  
+
 	  // Unknown codec modal
       $('#uc-continue').addEventListener('click', () => {
+        releaseFocusTrap($('#modal-unknown-codec'));
         $('#modal-unknown-codec').classList.remove('visible');
         doStartBatch();
       });
       $('#uc-cancel').addEventListener('click', () => {
+        releaseFocusTrap($('#modal-unknown-codec'));
         $('#modal-unknown-codec').classList.remove('visible');
       });
 
       // Fallback prompt (§10.6)
       $('#fb-yes').addEventListener('click', () => {
         invoke('respond_fallback', { response: 'yes' });
+        releaseFocusTrap($('#modal-fallback'));
         $('#modal-fallback').classList.remove('visible');
       });
       $('#fb-no').addEventListener('click', () => {
         invoke('respond_fallback', { response: 'no' });
+        releaseFocusTrap($('#modal-fallback'));
         $('#modal-fallback').classList.remove('visible');
       });
 
@@ -2182,7 +2241,57 @@
       // Countdown cancel
       $('#cd-cancel').addEventListener('click', () => {
         clearCountdownTimer();
+        releaseFocusTrap($('#modal-countdown'));
         $('#modal-countdown').classList.remove('visible');
+      });
+
+      // Global Escape key handler for modals and context menu
+      document.addEventListener('keydown', (e) => {
+        if (e.key !== 'Escape') return;
+
+        // Close context menu first
+        if (contextMenu.classList.contains('visible')) {
+          contextMenu.classList.remove('visible');
+          e.preventDefault();
+          return;
+        }
+
+        // Find the topmost visible modal
+        const modals = document.querySelectorAll('.modal-overlay.visible');
+        if (modals.length === 0) return;
+        const modal = modals[modals.length - 1];
+        e.preventDefault();
+
+        switch (modal.id) {
+          case 'modal-overwrite':
+            invoke('respond_overwrite', { response: 'no' });
+            releaseFocusTrap(modal);
+            modal.classList.remove('visible');
+            break;
+          case 'modal-fallback':
+            invoke('respond_fallback', { response: 'no' });
+            releaseFocusTrap(modal);
+            modal.classList.remove('visible');
+            break;
+          case 'modal-delete-confirm':
+            $('#dc-no').click();
+            break;
+          case 'modal-preflight':
+            $('#pf-cancel').click();
+            break;
+          case 'modal-countdown':
+            $('#cd-cancel').click();
+            break;
+          case 'modal-ffmpeg-missing':
+            $('#ffmpeg-dl-no').click();
+            break;
+          case 'modal-unknown-codec':
+            $('#uc-cancel').click();
+            break;
+          default:
+            releaseFocusTrap(modal);
+            modal.classList.remove('visible');
+        }
       });
     }
 
@@ -2191,9 +2300,11 @@
       return new Promise((resolve) => {
         const modal = $('#modal-delete-confirm');
         modal.classList.add('visible');
+        trapFocusInModal(modal);
         const yesBtn = $('#dc-yes');
         const noBtn = $('#dc-no');
         function cleanup() {
+          releaseFocusTrap(modal);
           modal.classList.remove('visible');
           yesBtn.removeEventListener('click', onYes);
           noBtn.removeEventListener('click', onNo);
@@ -2216,7 +2327,6 @@
           const tr = document.createElement('tr');
           for (const text of [w.fileName, w.sourceType, w.actualOutcome, w.missingTool || '-']) {
             const td = document.createElement('td');
-            td.style.padding = '4px';
             td.textContent = text;
             tr.appendChild(td);
           }
@@ -2227,7 +2337,9 @@
         dlBtn.style.display = hasMissing ? '' : 'none';
 
         modal.classList.add('visible');
+        trapFocusInModal(modal);
         function cleanup() {
+          releaseFocusTrap(modal);
           modal.classList.remove('visible');
           dlBtn.removeEventListener('click', onDl);
           $('#pf-continue').removeEventListener('click', onCont);
@@ -2262,6 +2374,7 @@
       s2.textContent = remaining;
       body.append(s1, ' in ', s2, ' seconds...');
       modal.classList.add('visible');
+      trapFocusInModal(modal);
 
       countdownInterval = setInterval(() => {
         remaining--;
@@ -2334,9 +2447,8 @@
       listen('encoder-detection-done', async () => {
         encoderDetectionDone = true;
         try {
-          const [ve, ae] = await invoke('get_detected_encoders');
+          const [ve] = await invoke('get_detected_encoders');
           videoEncoders = ve;
-          audioEncoders = ae;
           updateEncoderSummary();
         } catch (e) {
           encoderSummary.textContent = 'Encoder detection failed';
@@ -2352,21 +2464,24 @@
         const modal = document.querySelector('#modal-ffmpeg-missing');
         const body = document.querySelector('#ffmpeg-missing-body');
         modal.classList.add('visible');
+        trapFocusInModal(modal);
 
         document.querySelector('#ffmpeg-dl-yes').onclick = async () => {
+          releaseFocusTrap(modal);
           modal.classList.remove('visible');
           encoderSummary.textContent = 'Downloading ffmpeg...';
           try {
             await invoke('download_ffmpeg');
-            // encoder-detection-done event will fire automatically after download
           } catch (e) {
             encoderSummary.textContent = 'Download failed: ' + e;
             body.textContent = 'Download failed: ' + e + '. You can install ffmpeg manually and restart the app.';
             modal.classList.add('visible');
+            trapFocusInModal(modal);
           }
         };
 
         document.querySelector('#ffmpeg-dl-no').onclick = () => {
+          releaseFocusTrap(modal);
           modal.classList.remove('visible');
           encoderSummary.textContent = 'ffmpeg not found - install ffmpeg and restart';
         };
@@ -2391,6 +2506,7 @@
       listen('file-progress', (event) => {
         const { percent, timeSecs, totalSecs, pass } = event.payload;
         progressBar.style.width = percent.toFixed(1) + '%';
+        if (progressBarContainer) progressBarContainer.setAttribute('aria-valuenow', Math.round(percent));
         const elapsed = formatDuration(timeSecs);
         const total = formatDuration(totalSecs);
         const passLabel = pass ? ` - Pass ${pass.current}/${pass.total}` : '';
@@ -2420,6 +2536,7 @@
           const completedPct = ((batchCurrentFile - 1) / batchTotalFiles) * 100;
           const filePortion = (1 / batchTotalFiles) * percent;
           batchProgressBar.style.width = (completedPct + filePortion).toFixed(1) + '%';
+          if (batchProgressBarContainer) batchProgressBarContainer.setAttribute('aria-valuenow', Math.round(completedPct + filePortion));
         }
         // Advance green fill on the currently-encoding queue row (by cached index)
         if (currentEncodingIndex >= 0) {
@@ -2485,6 +2602,7 @@
         batchRunning = true;
         btnPause.textContent = 'Pause';
         jobStatus.textContent = 'Encoding...';
+        announceStatus('Encoding started');
         updateBatchButtons();
       });
 
@@ -2495,12 +2613,15 @@
         batchTotalFiles = total;
         fileEncodeStart = performance.now();
         jobStatus.textContent = `Encoding file ${current} of ${total}`;
+        announceStatus(`Encoding file ${current} of ${total}`);
         // Reset per-file progress bar when a new file starts
         progressBar.style.width = '0%';
+        if (progressBarContainer) progressBarContainer.setAttribute('aria-valuenow', 0);
         jobProgressText.textContent = '0%';
         // Update overall batch progress bar (completed files only)
         const batchPct = total > 0 ? ((current - 1) / total) * 100 : 0;
         batchProgressBar.style.width = batchPct + '%';
+        if (batchProgressBarContainer) batchProgressBarContainer.setAttribute('aria-valuenow', Math.round(batchPct));
       });
 
       // Batch status label (current file name)
@@ -2508,6 +2629,7 @@
         jobStatus.textContent = 'Encoding...';
         jobFile.textContent = event.payload;
         jobFile.title = event.payload;
+        announceStatus('Encoding ' + event.payload);
       });
 
       // Batch command label
@@ -2543,6 +2665,9 @@
 		currentEncodeProgress = '';
         progressBar.style.width = '0%';
         batchProgressBar.style.width = '0%';
+        if (progressBarContainer) progressBarContainer.setAttribute('aria-valuenow', 0);
+        if (batchProgressBarContainer) batchProgressBarContainer.setAttribute('aria-valuenow', 0);
+        announceStatus('Batch finished');
         updateBatchButtons();
 
         // Auto-clear completed items if enabled
@@ -2554,8 +2679,9 @@
           }
         }
 
-        // Re-fetch queue (statuses may not be synced yet — queue-sync-complete
+        // Re-fetch queue (statuses may not be synced yet - queue-sync-complete
         // fires after the backend writes final statuses to the shared queue).
+        selectedRows.clear();
         await fetchQueue();
         renderQueue();
         batchWasCancelled = false;
@@ -2581,7 +2707,9 @@
       listen('overwrite-prompt', (event) => {
         const filename = event.payload;
         $('#overwrite-body').textContent = `Output file already exists:\n${filename}\n\nOverwrite?`;
-        $('#modal-overwrite').classList.add('visible');
+        const owModal = $('#modal-overwrite');
+        owModal.classList.add('visible');
+        trapFocusInModal(owModal);
       });
 
       // Fallback prompt from backend
@@ -2589,7 +2717,9 @@
         const filename = event.payload;
         $('#fallback-body').textContent =
           `Hardware encoder failed for "${filename}".\nFall back to software encoding for this file and continue?`;
-        $('#modal-fallback').classList.add('visible');
+        const fbModal = $('#modal-fallback');
+        fbModal.classList.add('visible');
+        trapFocusInModal(fbModal);
       });
 
       // Toast notification (§7.7)

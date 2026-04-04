@@ -1,7 +1,7 @@
 use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
 use std::fs;
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 use tauri::AppHandle;
 use tauri::Manager;
 
@@ -34,7 +34,7 @@ pub fn scan_themes_folder(app: &AppHandle) -> Vec<Theme> {
         if let Ok(entries) = fs::read_dir(&dir) {
             for entry in entries.flatten() {
                 let path = entry.path();
-                if path.extension().map_or(false, |e| e == "json") {
+                if path.extension().is_some_and(|e| e == "json") {
                     if let Ok(contents) = fs::read_to_string(&path) {
                         match serde_json::from_str::<Theme>(&contents) {
                             Ok(theme) => themes.push(theme),
@@ -82,7 +82,7 @@ pub fn scan_themes_folder(app: &AppHandle) -> Vec<Theme> {
     themes
 }
 
-fn write_builtin_if_missing(dir: &PathBuf, filename: &str, theme: &Theme) {
+fn write_builtin_if_missing(dir: &Path, filename: &str, theme: &Theme) {
     let path = dir.join(filename);
     if !path.exists() {
         if let Ok(json) = serde_json::to_string_pretty(theme) {

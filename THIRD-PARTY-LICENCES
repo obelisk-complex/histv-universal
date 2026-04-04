@@ -39,5 +39,5 @@ Honey, I Shrunk the Vids
 -------------------------
 
 The application itself (everything except the bundled FFmpeg binaries)
-is released into the public domain under the Unlicence. See the
-LICENSE file for details.
+is licensed under the GNU General Public Licence version 3 or later
+(GPL-3.0-or-later). See the LICENSE file for the full licence text.

@@ -572,4 +572,92 @@ mod tests {
     fn test_container_format_fromstr_invalid() {
         assert!(parse::<ContainerFormat>("invalid").is_err());
     }
+
+    // ── OutputMode ──────────────────────────────────────────────
+
+    #[test]
+    fn test_output_mode_fromstr() {
+        assert!(parse::<OutputMode>("folder").is_ok());
+        assert!(parse::<OutputMode>("beside").is_ok());
+        assert!(parse::<OutputMode>("replace").is_ok());
+        assert!(parse::<OutputMode>("other").is_err());
+    }
+
+    // ── OverwritePolicy ─────────────────────────────────────────
+
+    #[test]
+    fn test_overwrite_policy_fromstr() {
+        assert!(parse::<OverwritePolicy>("ask").is_ok());
+        assert!(parse::<OverwritePolicy>("yes").is_ok());
+        assert!(parse::<OverwritePolicy>("skip").is_ok());
+        assert!(parse::<OverwritePolicy>("other").is_err());
+    }
+
+    // ── FallbackPolicy ──────────────────────────────────────────
+
+    #[test]
+    fn test_fallback_policy_fromstr() {
+        assert!(parse::<FallbackPolicy>("ask").is_ok());
+        assert!(parse::<FallbackPolicy>("yes").is_ok());
+        assert!(parse::<FallbackPolicy>("no").is_ok());
+        assert!(parse::<FallbackPolicy>("other").is_err());
+    }
+
+    // ── LogLevel ────────────────────────────────────────────────
+
+    #[test]
+    fn test_log_level_fromstr() {
+        assert!(parse::<LogLevel>("quiet").is_ok());
+        assert!(parse::<LogLevel>("normal").is_ok());
+        assert!(parse::<LogLevel>("verbose").is_ok());
+        assert!(parse::<LogLevel>("debug").is_err());
+    }
+
+    // ── JobFile round-trip ──────────────────────────────────────
+
+    #[test]
+    fn test_job_file_default_roundtrip() {
+        let job = JobFile {
+            files: vec!["a.mkv".into()],
+            ..Default::default()
+        };
+        let json = serde_json::to_string(&job).unwrap();
+        let back: JobFile = serde_json::from_str(&json).unwrap();
+        assert_eq!(back.files, vec!["a.mkv"]);
+        assert!(back.codec.is_none());
+        assert!(back.bitrate.is_none());
+    }
+
+    #[test]
+    fn test_job_file_populated_roundtrip() {
+        let job = JobFile {
+            files: vec!["b.mp4".into()],
+            bitrate: Some(8.0),
+            codec: Some("hevc".into()),
+            output_mode: Some("beside".into()),
+            threads: Some(4),
+            ..Default::default()
+        };
+        let json = serde_json::to_string(&job).unwrap();
+        let back: JobFile = serde_json::from_str(&json).unwrap();
+        assert_eq!(back.files, vec!["b.mp4"]);
+        assert_eq!(back.bitrate, Some(8.0));
+        assert_eq!(back.codec.as_deref(), Some("hevc"));
+        assert_eq!(back.output_mode.as_deref(), Some("beside"));
+        assert_eq!(back.threads, Some(4));
+    }
+
+    #[test]
+    fn test_job_file_minimal_json_compat() {
+        let back: JobFile = serde_json::from_str(r#"{"files":["a.mkv"]}"#).unwrap();
+        assert_eq!(back.files, vec!["a.mkv"]);
+        assert!(back.codec.is_none());
+        assert!(back.bitrate.is_none());
+        assert!(back.output.is_none());
+    }
+
+    #[test]
+    fn test_job_file_invalid_json() {
+        assert!(serde_json::from_str::<JobFile>("not json").is_err());
+    }
 }

@@ -256,11 +256,7 @@ pub async fn inject_and_package(
         ])
         .stdout(std::process::Stdio::null())
         .stderr(std::process::Stdio::piped())
-        .spawn()
-        .and_then(|child| {
-            // Use a synchronous block to get the output since we just need success/fail
-            Ok(child)
-        });
+        .spawn();
     let has_audio = match audio_output {
         Ok(child) => match child.wait_with_output().await {
             Ok(o) => {

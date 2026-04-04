@@ -11,6 +11,16 @@ use std::collections::HashSet;
 use std::sync::Arc;
 use tokio::process::Command;
 
+// ── Rate-control parameters (options struct) ───────────────────
+
+/// Rate control parameters for the encoding decision.
+pub struct RateControlParams<'a> {
+    pub mode: &'a str,
+    pub qp_i: u32,
+    pub qp_p: u32,
+    pub crf_val: u32,
+}
+
 // ── Encoder info & abstraction layer ────────────────────────────
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -253,10 +263,7 @@ pub fn decide_encode_strategy(
     threshold: f64,
     video_codec: &str,
     target_codec: &str,
-    rate_control_mode: &str,
-    qp_i: u32,
-    qp_p: u32,
-    crf_val: u32,
+    rc: &RateControlParams,
     peak_multiplier: f64,
 ) -> EncodeDecision {
     // Codecs that cannot be stream-copied into MKV/MP4 - always transcode.
@@ -269,14 +276,14 @@ pub fn decide_encode_strategy(
         // make it smaller and risks making it bigger.
         if bitrate_mbps > 0.0 && is_copyable {
             EncodeDecision::Copy
-        } else if rate_control_mode == "CRF" || rate_control_mode == "crf" {
+        } else if rc.mode == "CRF" || rc.mode == "crf" {
             EncodeDecision::Crf {
-                crf: crf_val,
-                qi_fallback: qp_i,
-                qp_fallback: qp_p,
+                crf: rc.crf_val,
+                qi_fallback: rc.qp_i,
+                qp_fallback: rc.qp_p,
             }
         } else {
-            EncodeDecision::Cqp { qi: qp_i, qp: qp_p }
+            EncodeDecision::Cqp { qi: rc.qp_i, qp: rc.qp_p }
         }
     } else if is_already_target && is_copyable && bitrate_mbps <= threshold * COPY_HYSTERESIS {
         EncodeDecision::Copy
@@ -1362,25 +1369,23 @@ async fn encode_single_file(
 
     // Overwrite check - in replace mode, we're replacing the source so
     // no overwrite prompt is needed. In other modes, check the final output.
-    if !is_replace_mode && output_file.exists() {
-        if !batch_control.overwrite_always() {
-            let response = batch_control.overwrite_prompt(&final_output_str);
-            match response.as_str() {
-                "no" | "skip" => {
-                    sink.log("  Skipped (output exists)");
-                    write_log(log_writer, "  Skipped (output exists)");
-                    queue[idx].status = QueueItemStatus::Skipped;
-                    sink.queue_item_updated(idx, "Skipped");
-                    return EncodeFileResult::Skipped;
-                }
-                "always" => {
-                    batch_control.set_overwrite_always();
-                }
-                "cancel" => {
-                    return EncodeFileResult::CancelledAll;
-                }
-                _ => {} // "yes" - proceed
+    if !is_replace_mode && output_file.exists() && !batch_control.overwrite_always() {
+        let response = batch_control.overwrite_prompt(&final_output_str);
+        match response.as_str() {
+            "no" | "skip" => {
+                sink.log("  Skipped (output exists)");
+                write_log(log_writer, "  Skipped (output exists)");
+                queue[idx].status = QueueItemStatus::Skipped;
+                sink.queue_item_updated(idx, "Skipped");
+                return EncodeFileResult::Skipped;
             }
+            "always" => {
+                batch_control.set_overwrite_always();
+            }
+            "cancel" => {
+                return EncodeFileResult::CancelledAll;
+            }
+            _ => {} // "yes" - proceed
         }
     }
 
@@ -1412,10 +1417,12 @@ async fn encode_single_file(
         settings.threshold,
         &item_video_codec,
         target_codec,
-        &settings.rate_control_mode,
-        settings.qp_i,
-        settings.qp_p,
-        settings.crf_val,
+        &RateControlParams {
+            mode: &settings.rate_control_mode,
+            qp_i: settings.qp_i,
+            qp_p: settings.qp_p,
+            crf_val: settings.crf_val,
+        },
         settings.peak_multiplier,
     );
 
@@ -1541,13 +1548,15 @@ async fn encode_single_file(
         sink.log("  Precision mode: probing CRF viability...");
 
         let probe_result = probe_crf_viability(
-            &item_full_path,
-            item_duration_secs,
-            &video_args,
-            file_pix_fmt,
-            settings.threads,
-            settings.low_priority,
-            batch_stderr_log.clone(),
+            &CrfProbeConfig {
+                input_path: &item_full_path,
+                duration_secs: item_duration_secs,
+                video_args: &video_args,
+                pix_fmt: file_pix_fmt,
+                threads: settings.threads,
+                low_priority: settings.low_priority,
+                stderr_log: batch_stderr_log.clone(),
+            },
             sink,
             batch_control,
         )
@@ -1724,24 +1733,33 @@ async fn encode_single_file(
     } else {
         // Assemble ffmpeg command
         let video_arg_refs: Vec<&str> = video_args.iter().map(|s| s.as_str()).collect();
-        let ffmpeg_args = assemble_ffmpeg_args(
-            &item_full_path,
-            &video_arg_refs,
-            file_pix_fmt,
-            &audio_map_args,
-            &audio_codec_args,
-            &output_str,
+        let ffmpeg_args = assemble_ffmpeg_args(&FfmpegAssemblyParts {
+            input_path: &item_full_path,
+            output_path: &output_str,
+            video_args: &video_arg_refs,
+            pix_fmt: file_pix_fmt,
+            audio_map_args: &audio_map_args,
+            audio_codec_args: &audio_codec_args,
             is_image_source,
-            settings.threads,
+            threads: settings.threads,
             tonemap_filter,
-            target_codec,
-        );
+            codec_family: target_codec,
+        });
 
         let cmd_line = format!("ffmpeg {}", ffmpeg_args.join(" "));
         sink.batch_command(&cmd_line);
         let cmd_log = format!("  CMD: {cmd_line}");
         sink.log(&cmd_log);
         write_log(log_writer, &cmd_log);
+
+        // Shared context for run_ffmpeg_with_progress calls within this file.
+        let ffmpeg_ctx = FfmpegRunContext {
+            low_priority: settings.low_priority,
+            stderr_log: batch_stderr_log.clone(),
+            stderr_label: &item_file_name,
+            sink,
+            batch_control,
+        };
 
         // Spawn ffmpeg - optionally as a two-pass encode.
         // Precision mode on low-RAM systems (<8GB) uses two-pass CRF instead
@@ -1784,11 +1802,7 @@ async fn encode_single_file(
                 &pass1_args,
                 item_duration_secs,
                 Some((1, 2)),
-                settings.low_priority,
-                batch_stderr_log.clone(),
-                &item_file_name,
-                sink,
-                batch_control,
+                &ffmpeg_ctx,
             )
             .await
             {
@@ -1837,11 +1851,7 @@ async fn encode_single_file(
                 &pass2_args,
                 item_duration_secs,
                 Some((2, 2)),
-                settings.low_priority,
-                batch_stderr_log.clone(),
-                &item_file_name,
-                sink,
-                batch_control,
+                &ffmpeg_ctx,
             )
             .await
             {
@@ -1885,11 +1895,7 @@ async fn encode_single_file(
                 &ffmpeg_args,
                 item_duration_secs,
                 None,
-                settings.low_priority,
-                batch_stderr_log.clone(),
-                &item_file_name,
-                sink,
-                batch_control,
+                &ffmpeg_ctx,
             )
             .await
             {
@@ -1973,18 +1979,18 @@ async fn encode_single_file(
 
                     // Reuse audio args from the primary encode - inputs haven't changed
                     let sw_ref: Vec<&str> = sw_video_args.iter().map(|s| s.as_str()).collect();
-                    let sw_args = assemble_ffmpeg_args(
-                        &item_full_path,
-                        &sw_ref,
-                        file_pix_fmt,
-                        &audio_map_args,
-                        &audio_codec_args,
-                        &output_str,
+                    let sw_args = assemble_ffmpeg_args(&FfmpegAssemblyParts {
+                        input_path: &item_full_path,
+                        output_path: &output_str,
+                        video_args: &sw_ref,
+                        pix_fmt: file_pix_fmt,
+                        audio_map_args: &audio_map_args,
+                        audio_codec_args: &audio_codec_args,
                         is_image_source,
-                        settings.threads,
+                        threads: settings.threads,
                         tonemap_filter,
-                        target_codec,
-                    );
+                        codec_family: target_codec,
+                    });
 
                     let sw_cmd = format!("ffmpeg {}", sw_args.join(" "));
                     sink.batch_command(&sw_cmd);
@@ -1997,11 +2003,7 @@ async fn encode_single_file(
                         &sw_args,
                         item_duration_secs,
                         None,
-                        settings.low_priority,
-                        batch_stderr_log.clone(),
-                        &item_file_name,
-                        sink,
-                        batch_control,
+                        &ffmpeg_ctx,
                     )
                     .await
                     {
@@ -2118,7 +2120,7 @@ async fn encode_single_file(
 pub async fn run_encode_loop(
     sink: &dyn EventSink,
     batch_control: &dyn BatchControl,
-    queue: &mut Vec<QueueItem>,
+    queue: &mut [QueueItem],
     settings: &BatchSettings,
     detected_encoders: &[EncoderInfo],
     wave_plan: Option<Vec<WaveItem>>,
@@ -2602,22 +2604,28 @@ fn build_two_pass_args(
     args
 }
 
+/// Context for a single `run_ffmpeg_with_progress` invocation, grouping
+/// the fields that stay constant across passes within one file.
+struct FfmpegRunContext<'a> {
+    low_priority: bool,
+    stderr_log: Option<SharedStderrLog>,
+    stderr_label: &'a str,
+    sink: &'a dyn EventSink,
+    batch_control: &'a dyn BatchControl,
+}
+
 /// Spawn ffmpeg with the given args, stream stderr for progress, handle
 /// pause/cancel, and return the result. Extracted to avoid duplicating the
 /// poll loop for two-pass encoding and software fallback.
 ///
-/// `stderr_log` is an optional shared batch log file. When provided, all
-/// ffmpeg stderr output is appended there. `stderr_label` is written into
+/// `ctx.stderr_log` is an optional shared batch log file. When provided, all
+/// ffmpeg stderr output is appended there. `ctx.stderr_label` is written into
 /// the separator header (typically the filename being encoded).
 async fn run_ffmpeg_with_progress(
     args: &[String],
     file_duration: f64,
     pass: Option<(u8, u8)>,
-    low_priority: bool,
-    stderr_log: Option<SharedStderrLog>,
-    stderr_label: &str,
-    sink: &dyn EventSink,
-    batch_control: &dyn BatchControl,
+    ctx: &FfmpegRunContext<'_>,
 ) -> Result<FfmpegRunResult, String> {
     let mut cmd = ffbin::ffmpeg_command();
     cmd.args(args)
@@ -2626,7 +2634,7 @@ async fn run_ffmpeg_with_progress(
         .stderr(std::process::Stdio::piped());
 
     // Set below-normal priority on the ffmpeg child process
-    if low_priority {
+    if ctx.low_priority {
         #[cfg(target_os = "windows")]
         {
             // BELOW_NORMAL_PRIORITY_CLASS | CREATE_NO_WINDOW
@@ -2642,7 +2650,7 @@ async fn run_ffmpeg_with_progress(
 
     // On Unix, renice the child after spawn (avoids libc dependency)
     #[cfg(unix)]
-    if low_priority {
+    if ctx.low_priority {
         if let Some(pid) = child.id() {
             let _ = std::process::Command::new("renice")
                 .args(["-n", "10", "-p", &pid.to_string()])
@@ -2652,14 +2660,14 @@ async fn run_ffmpeg_with_progress(
         }
     }
 
-    sink.log(&format!("  ffmpeg PID: {}", child.id().unwrap_or(0)));
+    ctx.sink.log(&format!("  ffmpeg PID: {}", child.id().unwrap_or(0)));
 
     // Stream stderr for progress using a blocking thread, with log capture
     let progress = FfmpegProgress::new();
     let stderr_thread = child
         .stderr
         .take()
-        .map(|stderr| spawn_stderr_reader(stderr, &progress, stderr_log, stderr_label));
+        .map(|stderr| spawn_stderr_reader(stderr, &progress, ctx.stderr_log.clone(), ctx.stderr_label));
 
     // Poll for cancellation/pause while waiting for ffmpeg, and emit progress
     let mut last_progress_emit = std::time::Instant::now() - std::time::Duration::from_millis(500);
@@ -2669,7 +2677,7 @@ async fn run_ffmpeg_with_progress(
             Ok(None) => {}
             Err(_) => break,
         }
-        if batch_control.should_cancel_current() || batch_control.should_cancel_all() {
+        if ctx.batch_control.should_cancel_current() || ctx.batch_control.should_cancel_all() {
             if let Some(mut stdin) = child.stdin.take() {
                 use tokio::io::AsyncWriteExt;
                 let _ = stdin.write_all(b"q").await;
@@ -2683,8 +2691,8 @@ async fn run_ffmpeg_with_progress(
             break;
         }
 
-        while batch_control.is_paused() {
-            if batch_control.should_cancel_current() || batch_control.should_cancel_all() {
+        while ctx.batch_control.is_paused() {
+            if ctx.batch_control.should_cancel_current() || ctx.batch_control.should_cancel_all() {
                 break;
             }
             tokio::time::sleep(std::time::Duration::from_millis(200)).await;
@@ -2696,7 +2704,7 @@ async fn run_ffmpeg_with_progress(
                 let secs = progress.secs();
                 if secs > 0.0 {
                     let pct = (secs / file_duration * 100.0).min(100.0);
-                    sink.file_progress(pct, secs, file_duration, pass);
+                    ctx.sink.file_progress(pct, secs, file_duration, pass);
                     last_progress_emit = now;
                 }
             }
@@ -2712,7 +2720,7 @@ async fn run_ffmpeg_with_progress(
         let _ = handle.join();
     }
     if file_duration > 0.0 {
-        sink.file_progress(100.0, file_duration, file_duration, pass);
+        ctx.sink.file_progress(100.0, file_duration, file_duration, pass);
     }
 
     let exit_code = exit_status.map(|s| s.code().unwrap_or(-1)).unwrap_or(-1);
@@ -2720,8 +2728,8 @@ async fn run_ffmpeg_with_progress(
 
     Ok(FfmpegRunResult {
         exit_code,
-        was_cancelled_current: batch_control.should_cancel_current(),
-        was_cancelled_all: batch_control.should_cancel_all(),
+        was_cancelled_current: ctx.batch_control.should_cancel_current(),
+        was_cancelled_all: ctx.batch_control.should_cancel_all(),
         frame_count: final_frames,
     })
 }
@@ -2818,6 +2826,17 @@ pub fn precision_needs_two_pass_with_ram(ram_gb: u64) -> bool {
     ram_gb < 8
 }
 
+/// Configuration for a CRF viability probe.
+pub struct CrfProbeConfig<'a> {
+    pub input_path: &'a str,
+    pub duration_secs: f64,
+    pub video_args: &'a [String],
+    pub pix_fmt: &'a str,
+    pub threads: u32,
+    pub low_priority: bool,
+    pub stderr_log: Option<SharedStderrLog>,
+}
+
 /// Probe CRF viability by encoding three 10-second samples from 25%, 50%,
 /// and 75% through the file and returning the average output bitrate in Mbps.
 ///
@@ -2825,17 +2844,11 @@ pub fn precision_needs_two_pass_with_ram(ram_gb: u64) -> bool {
 /// via batch_status. Returns None if the file is too short to sample (<120s)
 /// or if any sample encode fails.
 pub async fn probe_crf_viability(
-    input_path: &str,
-    duration_secs: f64,
-    video_args: &[String],
-    pix_fmt: &str,
-    threads: u32,
-    low_priority: bool,
-    stderr_log: Option<SharedStderrLog>,
+    config: &CrfProbeConfig<'_>,
     sink: &dyn EventSink,
     batch_control: &dyn BatchControl,
 ) -> Option<f64> {
-    if duration_secs < MIN_PROBE_DURATION_SECS {
+    if config.duration_secs < MIN_PROBE_DURATION_SECS {
         sink.log("  Precision probe: file too short, skipping viability check");
         return None;
     }
@@ -2850,7 +2863,7 @@ pub async fn probe_crf_viability(
             return None;
         }
 
-        let seek_secs = duration_secs * fraction;
+        let seek_secs = config.duration_secs * fraction;
         let sample_num = i + 1;
         sink.batch_status(&format!(
             "Probing CRF viability ({}/{})",
@@ -2886,28 +2899,32 @@ pub async fn probe_crf_viability(
             "-t".into(),
             format!("{:.2}", sample_duration),
             "-i".into(),
-            input_path.to_string(),
+            config.input_path.to_string(),
             "-map".into(),
             "0:v:0".into(),
             "-an".into(),
             "-sn".into(),
         ];
-        if threads > 0 {
-            args.extend(vec!["-threads".into(), threads.to_string()]);
+        if config.threads > 0 {
+            args.extend(vec!["-threads".into(), config.threads.to_string()]);
         }
-        args.extend(video_args.iter().cloned());
-        args.extend(vec!["-pix_fmt".into(), pix_fmt.to_string()]);
+        args.extend(config.video_args.iter().cloned());
+        args.extend(vec!["-pix_fmt".into(), config.pix_fmt.to_string()]);
         args.push(tmp_str.clone());
 
+        let probe_label = format!("probe_{}", sample_num);
+        let probe_ctx = FfmpegRunContext {
+            low_priority: config.low_priority,
+            stderr_log: config.stderr_log.clone(),
+            stderr_label: &probe_label,
+            sink,
+            batch_control,
+        };
         let result = run_ffmpeg_with_progress(
             &args,
             sample_duration,
             Some((sample_num as u8, seek_points.len() as u8)),
-            low_priority,
-            stderr_log.clone(),
-            &format!("probe_{}", sample_num),
-            sink,
-            batch_control,
+            &probe_ctx,
         )
         .await;
 
@@ -2964,21 +2981,24 @@ pub async fn probe_crf_viability(
     }
 }
 
+/// Component parts for assembling an ffmpeg command line.
+struct FfmpegAssemblyParts<'a> {
+    input_path: &'a str,
+    output_path: &'a str,
+    video_args: &'a [&'a str],
+    pix_fmt: &'a str,
+    audio_map_args: &'a [String],
+    audio_codec_args: &'a [String],
+    is_image_source: bool,
+    threads: u32,
+    tonemap_filter: Option<&'a str>,
+    codec_family: &'a str,
+}
+
 /// Assemble the full ffmpeg argument list from its component parts.
 /// Used by both the primary encode and the software-fallback path
 /// to avoid duplicating the invocation pattern.
-fn assemble_ffmpeg_args(
-    input_path: &str,
-    video_args: &[&str],
-    pix_fmt: &str,
-    audio_map_args: &[String],
-    audio_codec_args: &[String],
-    output_path: &str,
-    is_image_source: bool,
-    threads: u32,
-    tonemap_filter: Option<&str>,
-    codec_family: &str,
-) -> Vec<String> {
+fn assemble_ffmpeg_args(parts: &FfmpegAssemblyParts<'_>) -> Vec<String> {
     let mut args: Vec<String> = vec![
         "-err_detect".into(),
         "ignore_err".into(),
@@ -2988,21 +3008,21 @@ fn assemble_ffmpeg_args(
         "100M".into(),
         "-y".into(),
         "-i".into(),
-        input_path.to_string(),
+        parts.input_path.to_string(),
         "-map".into(),
         "0:v:0".into(),
     ];
 
     // Thread limit (0 = ffmpeg default / auto)
-    if threads > 0 {
-        args.extend(vec!["-threads".into(), threads.to_string()]);
+    if parts.threads > 0 {
+        args.extend(vec!["-threads".into(), parts.threads.to_string()]);
     }
 
-    if is_image_source {
+    if parts.is_image_source {
         // GIF/APNG: no audio or subtitle streams, pad odd dimensions,
         // force yuv420p (GIF decodes to rgb24/rgba).
         args.extend(vec!["-an".into(), "-sn".into()]);
-        args.extend(video_args.iter().map(|s| s.to_string()));
+        args.extend(parts.video_args.iter().map(|s| s.to_string()));
         args.extend(vec![
             "-vf".into(),
             "pad=ceil(iw/2)*2:ceil(ih/2)*2".into(),
@@ -3011,19 +3031,19 @@ fn assemble_ffmpeg_args(
         ]);
     } else {
         // Normal video: per-stream audio maps + subtitle passthrough
-        args.extend_from_slice(audio_map_args);
-        args.extend(video_args.iter().map(|s| s.to_string()));
+        args.extend_from_slice(parts.audio_map_args);
+        args.extend(parts.video_args.iter().map(|s| s.to_string()));
         // Tonemap filter for HDR→SDR conversion
-        if let Some(filter) = tonemap_filter {
+        if let Some(filter) = parts.tonemap_filter {
             args.extend(vec!["-vf".into(), filter.to_string()]);
         }
-        args.extend(vec!["-pix_fmt".into(), pix_fmt.to_string()]);
-        args.extend_from_slice(audio_codec_args);
+        args.extend(vec!["-pix_fmt".into(), parts.pix_fmt.to_string()]);
+        args.extend_from_slice(parts.audio_codec_args);
         // Subtitle handling: MP4 only supports mov_text (timed text).
         // Using `-c:s mov_text` converts text-based subs (SRT, ASS) and
         // causes ffmpeg to silently skip bitmap subs (PGS, DVB) that
         // cannot be converted. MKV supports all subtitle codecs as-is.
-        if output_path.ends_with(".mp4") {
+        if parts.output_path.ends_with(".mp4") {
             args.extend(vec![
                 "-map".into(), "0:s?".into(),
                 "-c:s".into(), "mov_text".into(),
@@ -3038,17 +3058,17 @@ fn assemble_ffmpeg_args(
     }
 
     // MP4-specific muxing flags
-    if output_path.ends_with(".mp4") {
+    if parts.output_path.ends_with(".mp4") {
         args.extend(vec!["-movflags".into(), "+faststart".into()]);
         // HEVC in MP4: force hvc1 tag (parameter sets out-of-band).
         // ffmpeg defaults to hev1, which macOS/iOS/Safari refuse to play.
         // Only apply when the codec is actually HEVC to avoid tag mismatches.
-        if codec_family == "hevc" {
+        if parts.codec_family == "hevc" {
             args.extend(vec!["-tag:v".into(), "hvc1".into()]);
         }
     }
 
-    args.push(output_path.to_string());
+    args.push(parts.output_path.to_string());
     args
 }
 
@@ -3263,6 +3283,12 @@ pub async fn execute_post_action(action: &str) -> Result<(), String> {
 pub struct FfmpegProgress {
     pub progress_secs: Arc<std::sync::atomic::AtomicU64>,
     pub frame_count: Arc<std::sync::atomic::AtomicU64>,
+}
+
+impl Default for FfmpegProgress {
+    fn default() -> Self {
+        Self::new()
+    }
 }
 
 impl FfmpegProgress {
@@ -3611,21 +3637,21 @@ mod tests {
     #[test]
     fn test_decide_strategy_copy_below_threshold() {
         // File at 3.0 Mbps with a 4.0 Mbps threshold → Copy.
-        let d = decide_encode_strategy(3.0, 4.0, "hevc", "hevc", "QP", 20, 22, 20, 1.5);
+        let d = decide_encode_strategy(3.0, 4.0, "hevc", "hevc", &RateControlParams { mode: "QP", qp_i: 20, qp_p: 22, crf_val: 20 }, 1.5);
         assert!(matches!(d, EncodeDecision::Copy));
     }
 
     #[test]
     fn test_decide_strategy_copy_at_threshold() {
         // Exactly at the threshold → below-or-equal branch → Copy.
-        let d = decide_encode_strategy(4.0, 4.0, "hevc", "hevc", "QP", 20, 22, 20, 1.5);
+        let d = decide_encode_strategy(4.0, 4.0, "hevc", "hevc", &RateControlParams { mode: "QP", qp_i: 20, qp_p: 22, crf_val: 20 }, 1.5);
         assert!(matches!(d, EncodeDecision::Copy));
     }
 
     #[test]
     fn test_decide_strategy_vbr_above_threshold() {
         // 10 Mbps with a 4 Mbps threshold → VBR.
-        let d = decide_encode_strategy(10.0, 4.0, "hevc", "hevc", "QP", 20, 22, 20, 1.5);
+        let d = decide_encode_strategy(10.0, 4.0, "hevc", "hevc", &RateControlParams { mode: "QP", qp_i: 20, qp_p: 22, crf_val: 20 }, 1.5);
         match d {
             EncodeDecision::Vbr {
                 target_bps,
@@ -3640,7 +3666,7 @@ mod tests {
 
     #[test]
     fn test_decide_strategy_vbr_custom_peak_multiplier() {
-        let d = decide_encode_strategy(10.0, 4.0, "hevc", "hevc", "QP", 20, 22, 20, 2.0);
+        let d = decide_encode_strategy(10.0, 4.0, "hevc", "hevc", &RateControlParams { mode: "QP", qp_i: 20, qp_p: 22, crf_val: 20 }, 2.0);
         match d {
             EncodeDecision::Vbr {
                 target_bps,
@@ -3656,7 +3682,7 @@ mod tests {
     #[test]
     fn test_decide_strategy_vbr_peak_multiplier_below_one_uses_default() {
         // peak_multiplier <= 1.0 should use the default 1.5.
-        let d = decide_encode_strategy(10.0, 4.0, "hevc", "hevc", "QP", 20, 22, 20, 0.5);
+        let d = decide_encode_strategy(10.0, 4.0, "hevc", "hevc", &RateControlParams { mode: "QP", qp_i: 20, qp_p: 22, crf_val: 20 }, 0.5);
         match d {
             EncodeDecision::Vbr { peak_bps, .. } => {
                 assert_eq!(peak_bps, 6_000_000); // 4M * 1.5 (default)
@@ -3668,7 +3694,7 @@ mod tests {
     #[test]
     fn test_decide_strategy_copy_hysteresis_same_codec() {
         // File at 4.5 Mbps, threshold 4.0 → 4.5 <= 4.0 * 1.15 = 4.6 → Copy.
-        let d = decide_encode_strategy(4.5, 4.0, "hevc", "hevc", "QP", 20, 22, 20, 1.5);
+        let d = decide_encode_strategy(4.5, 4.0, "hevc", "hevc", &RateControlParams { mode: "QP", qp_i: 20, qp_p: 22, crf_val: 20 }, 1.5);
         assert!(matches!(d, EncodeDecision::Copy));
     }
 
@@ -3676,14 +3702,14 @@ mod tests {
     fn test_decide_strategy_no_hysteresis_different_codec() {
         // File at 4.5 Mbps, threshold 4.0, but source is h264 and target is hevc.
         // Hysteresis only applies when source == target codec, so this should VBR.
-        let d = decide_encode_strategy(4.5, 4.0, "h264", "hevc", "QP", 20, 22, 20, 1.5);
+        let d = decide_encode_strategy(4.5, 4.0, "h264", "hevc", &RateControlParams { mode: "QP", qp_i: 20, qp_p: 22, crf_val: 20 }, 1.5);
         assert!(matches!(d, EncodeDecision::Vbr { .. }));
     }
 
     #[test]
     fn test_decide_strategy_above_hysteresis_same_codec() {
         // File at 5.0 Mbps, threshold 4.0 → 5.0 > 4.0 * 1.15 = 4.6 → VBR.
-        let d = decide_encode_strategy(5.0, 4.0, "hevc", "hevc", "QP", 20, 22, 20, 1.5);
+        let d = decide_encode_strategy(5.0, 4.0, "hevc", "hevc", &RateControlParams { mode: "QP", qp_i: 20, qp_p: 22, crf_val: 20 }, 1.5);
         assert!(matches!(d, EncodeDecision::Vbr { .. }));
     }
 
@@ -3691,7 +3717,7 @@ mod tests {
     fn test_decide_strategy_cqp_zero_bitrate() {
         // bitrate_mbps == 0.0 → falls into below-threshold branch,
         // but bitrate is not > 0.0 so cannot Copy. QP mode → CQP.
-        let d = decide_encode_strategy(0.0, 4.0, "hevc", "hevc", "QP", 20, 22, 20, 1.5);
+        let d = decide_encode_strategy(0.0, 4.0, "hevc", "hevc", &RateControlParams { mode: "QP", qp_i: 20, qp_p: 22, crf_val: 20 }, 1.5);
         match d {
             EncodeDecision::Cqp { qi, qp } => {
                 assert_eq!(qi, 20);
@@ -3704,7 +3730,7 @@ mod tests {
     #[test]
     fn test_decide_strategy_crf_zero_bitrate() {
         // CRF mode with zero bitrate → CRF decision.
-        let d = decide_encode_strategy(0.0, 4.0, "hevc", "hevc", "CRF", 20, 22, 18, 1.5);
+        let d = decide_encode_strategy(0.0, 4.0, "hevc", "hevc", &RateControlParams { mode: "CRF", qp_i: 20, qp_p: 22, crf_val: 18 }, 1.5);
         match d {
             EncodeDecision::Crf {
                 crf,
@@ -3722,32 +3748,32 @@ mod tests {
     #[test]
     fn test_decide_strategy_crf_lowercase() {
         // "crf" (lowercase) should also trigger CRF mode.
-        let d = decide_encode_strategy(0.0, 4.0, "hevc", "hevc", "crf", 20, 22, 18, 1.5);
+        let d = decide_encode_strategy(0.0, 4.0, "hevc", "hevc", &RateControlParams { mode: "crf", qp_i: 20, qp_p: 22, crf_val: 18 }, 1.5);
         assert!(matches!(d, EncodeDecision::Crf { .. }));
     }
 
     #[test]
     fn test_decide_strategy_non_copyable_gif() {
         // GIF cannot be stream-copied even if below threshold.
-        let d = decide_encode_strategy(1.0, 4.0, "gif", "hevc", "QP", 20, 22, 20, 1.5);
+        let d = decide_encode_strategy(1.0, 4.0, "gif", "hevc", &RateControlParams { mode: "QP", qp_i: 20, qp_p: 22, crf_val: 20 }, 1.5);
         assert!(matches!(d, EncodeDecision::Cqp { .. }));
     }
 
     #[test]
     fn test_decide_strategy_non_copyable_webp() {
-        let d = decide_encode_strategy(2.0, 4.0, "webp", "hevc", "QP", 20, 22, 20, 1.5);
+        let d = decide_encode_strategy(2.0, 4.0, "webp", "hevc", &RateControlParams { mode: "QP", qp_i: 20, qp_p: 22, crf_val: 20 }, 1.5);
         assert!(matches!(d, EncodeDecision::Cqp { .. }));
     }
 
     #[test]
     fn test_decide_strategy_non_copyable_apng() {
-        let d = decide_encode_strategy(2.0, 4.0, "apng", "hevc", "QP", 20, 22, 20, 1.5);
+        let d = decide_encode_strategy(2.0, 4.0, "apng", "hevc", &RateControlParams { mode: "QP", qp_i: 20, qp_p: 22, crf_val: 20 }, 1.5);
         assert!(matches!(d, EncodeDecision::Cqp { .. }));
     }
 
     #[test]
     fn test_decide_strategy_non_copyable_mjpeg() {
-        let d = decide_encode_strategy(2.0, 4.0, "mjpeg", "hevc", "QP", 20, 22, 20, 1.5);
+        let d = decide_encode_strategy(2.0, 4.0, "mjpeg", "hevc", &RateControlParams { mode: "QP", qp_i: 20, qp_p: 22, crf_val: 20 }, 1.5);
         assert!(matches!(d, EncodeDecision::Cqp { .. }));
     }
 
@@ -3755,7 +3781,7 @@ mod tests {
     fn test_decide_strategy_copy_below_threshold_different_codec() {
         // Below threshold → Copy, even when source != target.
         // The function copies regardless of codec mismatch when below threshold.
-        let d = decide_encode_strategy(2.0, 4.0, "h264", "hevc", "QP", 20, 22, 20, 1.5);
+        let d = decide_encode_strategy(2.0, 4.0, "h264", "hevc", &RateControlParams { mode: "QP", qp_i: 20, qp_p: 22, crf_val: 20 }, 1.5);
         assert!(matches!(d, EncodeDecision::Copy));
     }
 
@@ -3763,7 +3789,7 @@ mod tests {
     fn test_decide_strategy_negative_bitrate() {
         // Negative bitrate (edge case) → treated as below-or-equal to threshold.
         // Not > 0.0, so goes to CQP.
-        let d = decide_encode_strategy(-1.0, 4.0, "hevc", "hevc", "QP", 20, 22, 20, 1.5);
+        let d = decide_encode_strategy(-1.0, 4.0, "hevc", "hevc", &RateControlParams { mode: "QP", qp_i: 20, qp_p: 22, crf_val: 20 }, 1.5);
         assert!(matches!(d, EncodeDecision::Cqp { .. }));
     }
 
@@ -4321,18 +4347,18 @@ mod tests {
 
     #[test]
     fn test_assemble_hevc_in_mp4_has_hvc1_and_faststart() {
-        let args = assemble_ffmpeg_args(
-            "input.mkv",
-            &["-c:v", "libx265"],
-            "yuv420p",
-            &[],
-            &[],
-            "output.mp4",
-            false,
-            0,
-            None,
-            "hevc",
-        );
+        let args = assemble_ffmpeg_args(&FfmpegAssemblyParts {
+            input_path: "input.mkv",
+            output_path: "output.mp4",
+            video_args: &["-c:v", "libx265"],
+            pix_fmt: "yuv420p",
+            audio_map_args: &[],
+            audio_codec_args: &[],
+            is_image_source: false,
+            threads: 0,
+            tonemap_filter: None,
+            codec_family: "hevc",
+        });
         assert!(args.contains(&"-tag:v".to_string()));
         assert!(args.contains(&"hvc1".to_string()));
         assert!(args.contains(&"-movflags".to_string()));
@@ -4341,18 +4367,18 @@ mod tests {
 
     #[test]
     fn test_assemble_h264_in_mp4_no_hvc1_tag() {
-        let args = assemble_ffmpeg_args(
-            "input.mkv",
-            &["-c:v", "libx264"],
-            "yuv420p",
-            &[],
-            &[],
-            "output.mp4",
-            false,
-            0,
-            None,
-            "h264",
-        );
+        let args = assemble_ffmpeg_args(&FfmpegAssemblyParts {
+            input_path: "input.mkv",
+            output_path: "output.mp4",
+            video_args: &["-c:v", "libx264"],
+            pix_fmt: "yuv420p",
+            audio_map_args: &[],
+            audio_codec_args: &[],
+            is_image_source: false,
+            threads: 0,
+            tonemap_filter: None,
+            codec_family: "h264",
+        });
         assert!(!args.contains(&"-tag:v".to_string()));
         assert!(!args.contains(&"hvc1".to_string()));
         // Should still have faststart for MP4.
@@ -4362,18 +4388,18 @@ mod tests {
 
     #[test]
     fn test_assemble_hevc_in_mkv_no_hvc1_or_movflags() {
-        let args = assemble_ffmpeg_args(
-            "input.mkv",
-            &["-c:v", "libx265"],
-            "yuv420p",
-            &[],
-            &[],
-            "output.mkv",
-            false,
-            0,
-            None,
-            "hevc",
-        );
+        let args = assemble_ffmpeg_args(&FfmpegAssemblyParts {
+            input_path: "input.mkv",
+            output_path: "output.mkv",
+            video_args: &["-c:v", "libx265"],
+            pix_fmt: "yuv420p",
+            audio_map_args: &[],
+            audio_codec_args: &[],
+            is_image_source: false,
+            threads: 0,
+            tonemap_filter: None,
+            codec_family: "hevc",
+        });
         assert!(!args.contains(&"-tag:v".to_string()));
         assert!(!args.contains(&"hvc1".to_string()));
         assert!(!args.contains(&"-movflags".to_string()));
@@ -4382,18 +4408,18 @@ mod tests {
 
     #[test]
     fn test_assemble_mp4_subtitles_use_mov_text() {
-        let args = assemble_ffmpeg_args(
-            "input.mkv",
-            &["-c:v", "libx265"],
-            "yuv420p",
-            &[],
-            &[],
-            "output.mp4",
-            false,
-            0,
-            None,
-            "hevc",
-        );
+        let args = assemble_ffmpeg_args(&FfmpegAssemblyParts {
+            input_path: "input.mkv",
+            output_path: "output.mp4",
+            video_args: &["-c:v", "libx265"],
+            pix_fmt: "yuv420p",
+            audio_map_args: &[],
+            audio_codec_args: &[],
+            is_image_source: false,
+            threads: 0,
+            tonemap_filter: None,
+            codec_family: "hevc",
+        });
         assert!(args.contains(&"-c:s".to_string()));
         assert!(args.contains(&"mov_text".to_string()));
         // The subtitle codec value following -c:s must not be "copy".
@@ -4410,18 +4436,18 @@ mod tests {
 
     #[test]
     fn test_assemble_mkv_subtitles_use_copy() {
-        let args = assemble_ffmpeg_args(
-            "input.mkv",
-            &["-c:v", "libx265"],
-            "yuv420p",
-            &[],
-            &[],
-            "output.mkv",
-            false,
-            0,
-            None,
-            "hevc",
-        );
+        let args = assemble_ffmpeg_args(&FfmpegAssemblyParts {
+            input_path: "input.mkv",
+            output_path: "output.mkv",
+            video_args: &["-c:v", "libx265"],
+            pix_fmt: "yuv420p",
+            audio_map_args: &[],
+            audio_codec_args: &[],
+            is_image_source: false,
+            threads: 0,
+            tonemap_filter: None,
+            codec_family: "hevc",
+        });
         assert!(args.contains(&"-c:s".to_string()));
         assert!(args.contains(&"copy".to_string()));
         // Should not contain "mov_text".

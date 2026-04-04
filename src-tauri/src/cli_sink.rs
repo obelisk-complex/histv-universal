@@ -141,7 +141,7 @@ impl EventSink for CliSink {
         } else {
             // Simple mode: print at 10% increments, skip duplicates
             let pct = percent.round() as u32;
-            if pct % 10 == 0 {
+            if pct.is_multiple_of(10) {
                 let mut last = self.last_simple_pct.lock().unwrap_or_else(|e| e.into_inner());
                 if *last != pct {
                     *last = pct;
@@ -193,7 +193,7 @@ impl EventSink for CliSink {
         self.clear_progress();
 
         // Always show the summary, even in quiet mode
-        eprintln!("");
+        eprintln!();
         eprintln!(
             "Batch complete. Done: {}, Failed: {}, Skipped: {}. Duration: {}",
             done, failed, skipped, duration

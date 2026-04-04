@@ -115,7 +115,7 @@ fn main() {
     );
 
     if args.dry_run {
-        eprintln!("");
+        eprintln!();
         eprintln!("Dry run complete. No files were encoded.");
         std::process::exit(0);
     }
@@ -177,8 +177,8 @@ fn collect_and_probe_files(
     let semaphore = Arc::new(Semaphore::new(8));
     let mut handles = Vec::with_capacity(total_files);
 
-    for i in 0..total_files {
-        let file_path = queue_items[i].full_path.clone();
+    for (i, item) in queue_items.iter().enumerate() {
+        let file_path = item.full_path.clone();
         let sem = semaphore.clone();
         let sink_ref = sink.clone();
         handles.push(rt.spawn(async move {
@@ -230,10 +230,8 @@ fn collect_and_probe_files(
     }
 
     // Clear the probing line in TTY mode
-    if !matches!(args.log_level, cli::LogLevel::Quiet) {
-        if is_tty {
-            eprint!("\r\x1b[2K"); // Clear line
-        }
+    if !matches!(args.log_level, cli::LogLevel::Quiet) && is_tty {
+        eprint!("\r\x1b[2K"); // Clear line
     }
 
     // Report probe failures
@@ -278,9 +276,9 @@ fn run_repair_tags(
     } else {
         "Repairing"
     };
-    eprintln!("");
+    eprintln!();
     eprintln!("{} MKV stream statistics tags...", mode_label);
-    eprintln!("");
+    eprintln!();
 
     let mut repaired: u32 = 0;
     let mut skipped: u32 = 0;
@@ -309,9 +307,9 @@ fn run_repair_tags(
         }
 
         let result = if is_deep {
-            rt.block_on(histv_lib::mkv_tags::deep_repair(path, &*sink))
+            rt.block_on(histv_lib::mkv_tags::deep_repair(path, sink))
         } else {
-            rt.block_on(histv_lib::mkv_tags::repair_file_tags(path, &*sink))
+            rt.block_on(histv_lib::mkv_tags::repair_file_tags(path, sink))
         };
 
         if is_tty {
@@ -348,7 +346,7 @@ fn run_repair_tags(
         }
     }
 
-    eprintln!("");
+    eprintln!();
     eprintln!(
         "Repair complete. {} file{} updated, {} skipped.",
         repaired,
@@ -419,10 +417,12 @@ fn print_dry_run_plan(
                 args.bitrate,
                 &item.probe.video_codec,
                 &resolved.codec_family,
-                &rate_control_mode,
-                args.qp_i,
-                args.qp_p,
-                args.crf,
+                &encoder::RateControlParams {
+                    mode: &rate_control_mode,
+                    qp_i: args.qp_i,
+                    qp_p: args.qp_p,
+                    crf_val: args.crf,
+                },
                 args.peak_multiplier,
             )
         })
@@ -489,7 +489,7 @@ fn print_dry_run_plan(
     let green = if is_tty { "\x1b[32m" } else { "" };
     let magenta = if is_tty { "\x1b[35m" } else { "" };
 
-    eprintln!("");
+    eprintln!();
     eprintln!(
         "{}Encoding plan{} ({} files, target {}Mbps {} via {}):",
         bold,
@@ -499,12 +499,12 @@ fn print_dry_run_plan(
         codec_display,
         encoder_label,
     );
-    eprintln!("");
+    eprintln!();
 
     // Column headers
     eprintln!(
-        "  {dim}{:<34} {:>10}  {:<10}  {:>11}  {:<7}  {:<16}  {}{reset}",
-        "File", "Bitrate", "Codec", "Resolution", "HDR", "Action", "Mount",
+        "  {dim}{:<34} {:>10}  {:<10}  {:>11}  {:<7}  {:<16}  Mount{reset}",
+        "File", "Bitrate", "Codec", "Resolution", "HDR", "Action",
     );
     eprintln!("  {dim}{}{reset}", "-".repeat(106),);
 
@@ -551,7 +551,7 @@ fn print_dry_run_plan(
     }
 
     // Summary line
-    eprintln!("");
+    eprintln!();
     let mut summary_parts: Vec<String> = Vec::new();
     if vbr_count > 0 {
         summary_parts.push(format!("{cyan}{} to encode (VBR){reset}", vbr_count));
@@ -621,7 +621,7 @@ fn print_dry_run_plan(
 
         let red = if is_tty { "\x1b[31m" } else { "" };
 
-        eprintln!("");
+        eprintln!();
         eprintln!("{}Disk-space estimate:{}", bold, reset);
         eprintln!(
             "  Output partition:  {} total, {} free, {}% used",
@@ -761,7 +761,7 @@ fn print_dry_run_plan(
             .count();
 
         if wave_count > 0 {
-            eprintln!("");
+            eprintln!();
             eprintln!(
                 "{}Staging plan:{} {} wave{} ({} remote file{}, {} local file{})",
                 bold,
@@ -809,7 +809,7 @@ fn print_dry_run_plan(
 fn run_batch(
     args: &cli::CliArgs,
     rt: &tokio::runtime::Runtime,
-    queue_items: &mut Vec<QueueItem>,
+    queue_items: &mut [QueueItem],
     detected_encoders: &[EncoderInfo],
     video_encoder: &str,
     sink: &cli_sink::CliSink,
@@ -842,11 +842,9 @@ fn run_batch(
 
     // Disk-aware mode
     let mut delete_source = args.delete_source;
-    if args.disk_limit != "off" && !args.disk_limit.is_empty() {
-        if !delete_source {
-            sink.log("--disk-limit implies --delete-source. Enabling for this batch.");
-            delete_source = true;
-        }
+    if args.disk_limit != "off" && !args.disk_limit.is_empty() && !delete_source {
+        sink.log("--disk-limit implies --delete-source. Enabling for this batch.");
+        delete_source = true;
     }
 
     // Staging directory
@@ -977,11 +975,11 @@ fn run_batch(
         )
     };
 
-    eprintln!("");
+    eprintln!();
 
     // Run the encoding loop with the wave plan
     let (done, failed, _skipped, was_cancelled) = rt.block_on(encoder::run_encode_loop(
-        &*sink,
+        sink,
         batch_control.as_ref(),
         queue_items,
         &batch_settings,
