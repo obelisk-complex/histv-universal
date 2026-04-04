@@ -36,7 +36,7 @@ Available as a desktop app and a headless CLI for servers (see [CLI-README.md](C
 <details>
 <summary><strong>Full feature list</strong></summary>
 
-- **Queue management** - drag-and-drop, clipboard paste (Ctrl+V), file/folder picker. Click, Shift+click, Ctrl+click, Ctrl+A, Delete. Right-click context menu. Drag to reorder.
+- **Queue management** - drag-and-drop, clipboard paste (Ctrl+V), file/folder picker. Click, Shift+click, Ctrl+click, Ctrl+A, Delete. Right-click context menu (also Shift+F10 for keyboard users). Drag to reorder.
 - **GIF/APNG/WebP support** - animated GIFs, APNGs, and WebPs are converted to proper video files automatically.
 - **Per-file codec resolution** - the app decides the codec, container, and audio handling for each file individually based on its source properties. H.264 stays H.264, HEVC stays HEVC, and everything else converts to HEVC. No manual codec selection needed.
 - **AV1 support** - first-class AV1 encoding via libsvtav1 and hardware AV1 encoders (AMF, NVENC, QSV, VideoToolbox, VAAPI). Enable Preserve AV1 to keep AV1 sources as AV1 instead of converting to HEVC.
@@ -51,8 +51,8 @@ Available as a desktop app and a headless CLI for servers (see [CLI-README.md](C
 - **Pre-flight checks** - before encoding starts, the app scans your queue and warns you if any files won't get their best-possible encode (e.g. DV files without MP4Box). Offers to download missing tools, encode anyway, or cancel.
 - **Subtitles** - all subtitle tracks are kept.
 - **Output options** - save to a folder, next to the source file, or replace the source. Container is preserved per-file (MKV stays MKV, MP4 stays MP4, MOV stays MOV; other formats default to MKV).
-- **Queue columns** - source file size, estimated compressed size, HDR type badge (DV8, HDR10+, HDR10, HLG, SDR), and resizable column headers.
-- **Size safety net** - if the encoded file ends up bigger than the original, the app throws it away and copies the original into the new container instead.
+- **Queue columns** - source file size, estimated compressed size, resolution, HDR type badge (DV8, HDR10+, HDR10, HLG, SDR), source and target bitrates, and resizable column headers.
+- **Size safety net** - if the encoded file ends up meaningfully bigger than the original (accounting for container overhead based on frame rate and audio streams), the app throws it away and copies the original into the new container instead. Files already below the target threshold are copied without re-encoding.
 - **MKV tag repair** - detects and corrects stale stream statistics tags left behind by ffmpeg and third-party muxing tools, so bitrate decisions use the real numbers. Runs automatically at import and after each encode, with optional manual deep repair for severely corrupted metadata.
 - **Performance controls** - limit CPU threads and/or run encoding at low priority so your PC stays usable.
 - **ETA** - shows estimated time remaining in the progress bar and the window title, so you can see it from the taskbar.
@@ -68,7 +68,7 @@ Available as a desktop app and a headless CLI for servers (see [CLI-README.md](C
 - **Themes** - six built-in themes (dark, light, and four community-inspired palettes). Create your own with just 6 colour values - the app derives everything else automatically. See [THEMES.md](THEMES.md).
 - **ffmpeg downloader** - offers to download ffmpeg for you if it's not installed.
 - **Remembers settings** - everything is saved to config.json in the same folder as the .exe, and restored on next launch.
-- **CLI version** - same engine as a command-line tool for servers and scripts. See [CLI-README.md](CLI-README.md).
+- **CLI version** - same engine as a command-line tool for servers and scripts. Shows a persistent queue table during encoding matching the GUI's columns. See [CLI-README.md](CLI-README.md).
 
 </details>
 
@@ -148,7 +148,7 @@ The target codec is determined per-file: H.264 sources stay H.264, HEVC sources 
 
 Files within 15% above the threshold that are already in the target codec are also copied rather than re-encoded, to avoid wasting time on marginal gains.
 
-If an encode makes the file bigger than it was, the app throws away the encode and copies the original into the new container instead.
+If an encode makes the file meaningfully bigger than it was (accounting for container overhead), the app throws away the encode and copies the original into the new container instead. Small size increases from container format differences are tolerated.
 
 ### Dolby Vision and HDR10+
 

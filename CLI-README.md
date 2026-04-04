@@ -4,6 +4,8 @@ Command-line batch video encoder - the headless companion to [Honey, I Shrunk Th
 
 Same encoding engine as the desktop app: figures out what each file needs, picks the right codec and container per-file, preserves Dolby Vision and HDR10+ dynamic metadata, uses your GPU if available, handles audio tracks individually, stages remote files in waves before encoding, watches disk space, and checks output sizes. Built for servers and automation.
 
+In TTY mode, the CLI shows a persistent queue table during encoding - completed files, the current file with progress, and upcoming files - matching the GUI's columns (file, sizes, resolution, HDR, bitrates, status). Verbose and quiet modes use traditional line-by-line output.
+
 #### Can I use this with Sonarr/Radarr?
 
 Yes! Please see the [Sonarr-Radarr Guide](https://github.com/obelisk-complex/histv-universal/Sonarr-Radarr-Integration.md) for details.
@@ -78,7 +80,7 @@ Then the encoding decision:
 | Too big | **Shrunk** to hit the target bitrate |
 | GIF, APNG, or animated WebP | **Always re-encoded** into a proper video |
 
-If an encode makes the file bigger than it was, the CLI throws away the encode and copies the original into the new container instead.
+If an encode makes the file meaningfully bigger than it was (accounting for container overhead based on frame rate and audio streams), the CLI throws away the encode and copies the original into the new container instead.
 
 ### Dolby Vision and HDR10+
 
@@ -91,7 +93,7 @@ When `--hdr` is active (the default for HDR sources), the CLI automatically pres
 | DV without MP4Box | None | Falls back to HDR10 base layer. Warning logged. |
 | HDR10 / HLG | None | Preserved as-is. |
 
-The dry-run table shows the detected HDR type per file (DV8, HDR10+, HDR10, HLG, SDR). Warnings are logged before encoding starts if any files won't get their best-possible treatment.
+The dry-run table shows each file's source size, estimated output size, resolution, HDR type (DV8, HDR10+, HDR10, HLG, SDR), source bitrate, and target bitrate. Warnings are logged before encoding starts if any files won't get their best-possible treatment.
 
 ## Options
 
