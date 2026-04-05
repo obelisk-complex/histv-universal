@@ -38,8 +38,12 @@ env:
   FFMPEG_BTBN_LINUX: "ffmpeg-n8.1-7-ga3475e2554-linux64-gpl-8.1.tar.xz"
   FFMPEG_BTBN_LINUX_SHA256: "57417a11d21fc9ec76b4a250f95754d99d0f272765ba62b2d0aaf87d02c32cd8"
   FFMPEG_GYAN_VERSION: "8.0.1"
+  FFMPEG_GYAN_SHA256: "42edab4b9241ff1184b26d5f4545322227589713a7e56cf4459c4c4e30ccaaac"
   FFMPEG_EVERMEET_VER: "8.1"
+  FFMPEG_EVERMEET_SHA256: "d67db25908eff64b7d0eaa73784f0c55728d9e036a96931095fcf8e8968eefab"
+  FFPROBE_EVERMEET_SHA256: "b6e9bf4f4ab2992dace205498d99d9e2ede684e3e8ae89485cadd3b91711ea04"
   APPIMAGETOOL_VERSION: "1.9.1"
+  APPIMAGETOOL_SHA256: "ed4ce84f0d9caff66f50bcca6ff6f35aae54ce8135408b3fa33abfc3cb384eb0"
 
 jobs:
   build:
@@ -52,7 +56,7 @@ jobs:
           ref: ${{ inputs.ref }}
 
       - name: Install Rust ${{ env.RUST_VERSION }}
-        uses: dtolnay/rust-toolchain@3c5f7ea28cd621ae0bf5283f0e981fb97b8a7af9
+        uses: dtolnay/rust-toolchain@3c5f7ea28cd621ae0bf5283f0e981fb97b8a7af9 # 2026-03-27
         with:
           toolchain: ${{ env.RUST_VERSION }}
           targets: ${{ inputs.target }}
@@ -75,12 +79,20 @@ jobs:
             libsoup-3.0-dev \
             libjavascriptcoregtk-4.1-dev
 
+      - name: Cache Tauri CLI binary
+        id: cache-tauri-cli
+        uses: actions/cache@0400d5f644dc74513175e3cd8d07132dd4860809 # v4.2.4
+        with:
+          path: ~/.cargo/bin/cargo-tauri
+          key: tauri-cli-${{ env.TAURI_CLI_VERSION }}-${{ runner.os }}
+
       - name: Install Tauri CLI
+        if: steps.cache-tauri-cli.outputs.cache-hit != 'true'
         run: cargo install tauri-cli --version "${{ env.TAURI_CLI_VERSION }}" --locked
 
       - name: Run tests
         working-directory: src-tauri
-        run: cargo test --features dovi,cli
+        run: cargo test --features dovi,cli --target ${{ inputs.target }}
 
       - name: Build GUI
         shell: bash
@@ -157,8 +169,7 @@ jobs:
               URL="https://www.gyan.dev/ffmpeg/builds/packages/ffmpeg-${FFMPEG_GYAN_VERSION}-full_build.7z"
               echo "Downloading ffmpeg from $URL"
               curl -fSL --retry 3 -o ffmpeg-archive.7z "$URL"
-              # TODO: pin SHA-256 for gyan.dev ffmpeg
-              # echo "<SHA256>  ffmpeg-archive.7z" | sha256sum -c -
+              echo "${FFMPEG_GYAN_SHA256}  ffmpeg-archive.7z" | sha256sum -c -
               7z x ffmpeg-archive.7z -offmpeg-extract -y
               FFMPEG=$(find ffmpeg-extract -name "ffmpeg.exe" -type f | head -1)
               FFPROBE=$(find ffmpeg-extract -name "ffprobe.exe" -type f | head -1)
@@ -182,9 +193,8 @@ jobs:
               echo "Downloading ffmpeg ${FFMPEG_EVERMEET_VER} from evermeet.cx"
               curl -fSL --retry 3 -o ffmpeg.zip "https://evermeet.cx/ffmpeg/ffmpeg-${FFMPEG_EVERMEET_VER}.zip"
               curl -fSL --retry 3 -o ffprobe.zip "https://evermeet.cx/ffmpeg/ffprobe-${FFMPEG_EVERMEET_VER}.zip"
-              # TODO: pin SHA-256 for evermeet.cx ffmpeg
-              # echo "<SHA256>  ffmpeg.zip" | shasum -a 256 -c -
-              # echo "<SHA256>  ffprobe.zip" | shasum -a 256 -c -
+              echo "${FFMPEG_EVERMEET_SHA256}  ffmpeg.zip" | shasum -a 256 -c -
+              echo "${FFPROBE_EVERMEET_SHA256}  ffprobe.zip" | shasum -a 256 -c -
               unzip -q ffmpeg.zip -d ffmpeg-bin
               unzip -q ffprobe.zip -d ffmpeg-bin
               chmod +x ffmpeg-bin/ffmpeg ffmpeg-bin/ffprobe
@@ -234,8 +244,7 @@ jobs:
           # Get appimagetool to repack (pinned version)
           APPIMAGETOOL_URL="https://github.com/AppImage/appimagetool/releases/download/${APPIMAGETOOL_VERSION}/appimagetool-x86_64.AppImage"
           curl -fSL --retry 3 -o appimagetool "$APPIMAGETOOL_URL"
-          # TODO: pin SHA-256 for appimagetool
-          # echo "<SHA256>  appimagetool" | sha256sum -c -
+          echo "${APPIMAGETOOL_SHA256}  appimagetool" | sha256sum -c -
           chmod +x appimagetool
           ARCH=x86_64 ./appimagetool --appimage-extract-and-run squashfs-root/ artefacts/histv-linux-full.AppImage
 
