@@ -51,7 +51,7 @@ jobs:
 
     steps:
       - name: Checkout
-        uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
+        uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
         with:
           ref: ${{ inputs.ref }}
 
@@ -81,7 +81,7 @@ jobs:
 
       - name: Cache Tauri CLI binary
         id: cache-tauri-cli
-        uses: actions/cache@0400d5f644dc74513175e3cd8d07132dd4860809 # v4.2.4
+        uses: actions/cache@668228422ae6a00e4ad889ee87cd7109ec5666a7 # v5.0.4
         with:
           path: ~/.cargo/bin/cargo-tauri
           key: tauri-cli-${{ env.TAURI_CLI_VERSION }}-${{ runner.os }}
@@ -300,7 +300,7 @@ jobs:
           tar czf "artefacts/histv-cli-$LABEL-full.tar.gz" -C bundle-cli .
 
       - name: Upload artefacts
-        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
+        uses: actions/upload-artifact@bbbca2ddaa5d8feaa63e36b76fdaad77386f024f # v7.0.0
         with:
           name: histv-${{ inputs.label }}
           path: artefacts/*
