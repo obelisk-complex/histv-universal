@@ -621,23 +621,20 @@ pub fn resolve_file_settings(
         resolve_container(&fake_path, &settings.output_container, false).to_string()
     };
 
-    // 4. Audio strategy — explicit --audio override takes priority,
-    //    then compat mode forces AAC, then default copy-capped.
+    // 4. Audio strategy — compat mode always forces AAC (overrides --audio),
+    //    then explicit --audio takes priority, then default copy-capped.
     let cap = settings.audio_cap;
-    let audio_strategy = match settings.audio_encoder.as_str() {
-        "copy" => AudioStrategy::CopyCapped { cap_kbps: cap },
-        "aac" => AudioStrategy::CompatCapped { cap_kbps: cap },
-        "" | "auto" => {
-            if settings.compatibility_mode {
-                AudioStrategy::CompatCapped { cap_kbps: cap }
-            } else {
-                AudioStrategy::CopyCapped { cap_kbps: cap }
-            }
+    let audio_strategy = if settings.compatibility_mode {
+        AudioStrategy::CompatCapped { cap_kbps: cap }
+    } else {
+        match settings.audio_encoder.as_str() {
+            "copy" => AudioStrategy::CopyCapped { cap_kbps: cap },
+            "aac" => AudioStrategy::CompatCapped { cap_kbps: cap },
+            // ac3, eac3, or any other codec: use CopyCapped so the
+            // fallback codec is resolved per-stream inside
+            // build_audio_args_from_probe.
+            _ => AudioStrategy::CopyCapped { cap_kbps: cap },
         }
-        // ac3, eac3, or any other codec: use CopyCapped so the
-        // fallback codec is resolved per-stream inside
-        // build_audio_args_from_probe.
-        _ => AudioStrategy::CopyCapped { cap_kbps: cap },
     };
 
     ResolvedFileSettings {
@@ -904,6 +901,7 @@ async fn handle_post_encode(
     #[cfg(feature = "dovi")] extracted_hdr10plus: &Option<hdr10plus_pipeline::ExtractedHdr10Plus>,
     #[cfg(not(feature = "dovi"))] _extracted_hdr10plus: &Option<()>,
     settings: &BatchSettings,
+    audio_strategy: &AudioStrategy,
     log_writer: &mut Option<std::io::BufWriter<std::fs::File>>,
     write_log: &(dyn Fn(&mut Option<std::io::BufWriter<std::fs::File>>, &str) + Send + Sync),
     sink: &dyn EventSink,
@@ -1029,23 +1027,43 @@ async fn handle_post_encode(
             write_log(log_writer, "  Output larger than source - remuxing");
             let _ = std::fs::remove_file(temp_output_file);
 
-            // Remux with container-aware stream mapping: MP4 cannot hold
-            // bitmap subtitles (PGS, DVB) or some audio codecs, so we
-            // only map video + audio + text subs for MP4 output.
-            let mut remux_args = vec![
-                "-y", "-i", item_full_path,
-                "-map", "0:v", "-map", "0:a?",
+            // Remux with audio-strategy-aware stream mapping: use the same
+            // audio strategy as the main encode path so compat mode re-encodes
+            // incompatible audio (e.g. DTS/TrueHD → AAC for MP4).
+            let (audio_map, audio_codec) = build_audio_args_from_probe(
+                &queue[idx].probe.audio_streams,
+                audio_strategy,
+                ext,
+                sink,
+            );
+
+            let mut remux_args: Vec<String> = vec![
+                "-y".into(), "-i".into(), item_full_path.into(),
+                "-map".into(), "0:v".into(),
             ];
+            remux_args.extend(audio_map);
+
             if ext == "mp4" {
                 // MP4: convert text subs to mov_text; ffmpeg silently
                 // skips bitmap subs (PGS, DVB) that can't be converted.
-                remux_args.extend(["-map", "0:s?", "-c", "copy", "-c:s", "mov_text"]);
+                remux_args.extend([
+                    "-map".into(), "0:s?".into(),
+                    "-c:v".into(), "copy".into(),
+                    "-c:s".into(), "mov_text".into(),
+                ]);
             } else {
-                remux_args.extend(["-map", "0:s?", "-c", "copy"]);
+                remux_args.extend([
+                    "-map".into(), "0:s?".into(),
+                    "-c:v".into(), "copy".into(),
+                    "-c:s".into(), "copy".into(),
+                ]);
             }
-            remux_args.push(output_str);
+            remux_args.extend(audio_codec);
+            remux_args.push(output_str.into());
+
+            let remux_refs: Vec<&str> = remux_args.iter().map(|s| s.as_str()).collect();
             let remux_output = ffbin::ffmpeg_command()
-                .args(&remux_args)
+                .args(&remux_refs)
                 .stdout(std::process::Stdio::null())
                 .stderr(std::process::Stdio::piped())
                 .spawn()
@@ -2114,6 +2132,7 @@ async fn encode_single_file(
         &extracted_rpus,
         &extracted_hdr10plus,
         settings,
+        &resolved.audio_strategy,
         log_writer,
         write_log,
         sink,
@@ -4466,5 +4485,232 @@ mod tests {
         assert!(args.contains(&"copy".to_string()));
         // Should not contain "mov_text".
         assert!(!args.contains(&"mov_text".to_string()));
+    }
+
+    // ══════════════════════════════════════════════════════════════
+    //  6. Compat mode invariants
+    // ══════════════════════════════════════════════════════════════
+
+    /// Compat mode MUST produce CompatCapped regardless of audio_encoder setting.
+    #[test]
+    fn test_compat_mode_forces_compat_capped_for_all_audio_encoders() {
+        let audio_values = ["auto", "", "copy", "aac", "ac3", "eac3", "opus", "flac"];
+        let encoders = default_encoders();
+        for audio in &audio_values {
+            let mut settings = default_settings();
+            settings.compatibility_mode = true;
+            settings.audio_encoder = audio.to_string();
+            let result = resolve_file_settings("hevc", "mkv", &settings, &encoders);
+            assert!(
+                matches!(result.audio_strategy, AudioStrategy::CompatCapped { .. }),
+                "audio_encoder={:?} should produce CompatCapped in compat mode, got {:?}",
+                audio, result.audio_strategy,
+            );
+        }
+    }
+
+    /// Without compat mode, "copy" should produce CopyCapped.
+    #[test]
+    fn test_no_compat_copy_produces_copy_capped() {
+        let mut settings = default_settings();
+        settings.audio_encoder = "copy".to_string();
+        let encoders = default_encoders();
+        let result = resolve_file_settings("hevc", "mkv", &settings, &encoders);
+        assert!(matches!(result.audio_strategy, AudioStrategy::CopyCapped { .. }));
+    }
+
+    /// Without compat mode, explicit "aac" should produce CompatCapped.
+    #[test]
+    fn test_no_compat_explicit_aac_produces_compat_capped() {
+        let mut settings = default_settings();
+        settings.audio_encoder = "aac".to_string();
+        let encoders = default_encoders();
+        let result = resolve_file_settings("hevc", "mkv", &settings, &encoders);
+        assert!(matches!(result.audio_strategy, AudioStrategy::CompatCapped { .. }));
+    }
+
+    /// Compat mode MUST produce h264 codec and mp4 container regardless of
+    /// codec_family, output_container, and source codec settings.
+    #[test]
+    fn test_compat_mode_forces_h264_mp4_across_settings() {
+        let containers = ["auto", "mkv", "mp4"];
+        let source_codecs = ["hevc", "h264", "av1", "mpeg2video"];
+        let encoders = default_encoders();
+        for container in &containers {
+            for source in &source_codecs {
+                let mut settings = default_settings();
+                settings.compatibility_mode = true;
+                settings.output_container = container.to_string();
+                let result = resolve_file_settings(source, "mkv", &settings, &encoders);
+                assert_eq!(
+                    result.container_ext, "mp4",
+                    "compat mode with container={}, source={} should force mp4",
+                    container, source,
+                );
+                assert_eq!(
+                    result.codec_family, "h264",
+                    "compat mode with source={} should force h264",
+                    source,
+                );
+            }
+        }
+    }
+
+    // ══════════════════════════════════════════════════════════════
+    //  7. Composed: resolve_file_settings + build_audio_args_from_probe
+    // ══════════════════════════════════════════════════════════════
+
+    /// Compat mode with DTS audio and explicit --audio copy: resolve should
+    /// still pick CompatCapped, which makes build_audio_args re-encode to AAC.
+    #[test]
+    fn test_composed_compat_dts_becomes_aac() {
+        let mut settings = default_settings();
+        settings.compatibility_mode = true;
+        settings.audio_encoder = "copy".to_string();
+        let encoders = default_encoders();
+        let resolved = resolve_file_settings("hevc", "mkv", &settings, &encoders);
+
+        let streams = vec![AudioStreamInfo {
+            index: 0,
+            codec: "dts".to_string(),
+            bitrate_kbps: 1509,
+        }];
+        let sink = NoopSink;
+        let (_, codec_args) = build_audio_args_from_probe(
+            &streams,
+            &resolved.audio_strategy,
+            &resolved.container_ext,
+            &sink,
+        );
+        assert_eq!(codec_args[1], "aac");
+    }
+
+    /// Compat mode with TrueHD audio: same pipeline, AAC output.
+    #[test]
+    fn test_composed_compat_truehd_becomes_aac() {
+        let mut settings = default_settings();
+        settings.compatibility_mode = true;
+        let encoders = default_encoders();
+        let resolved = resolve_file_settings("hevc", "mkv", &settings, &encoders);
+
+        let streams = vec![AudioStreamInfo {
+            index: 0,
+            codec: "truehd".to_string(),
+            bitrate_kbps: 4000,
+        }];
+        let sink = NoopSink;
+        let (_, codec_args) = build_audio_args_from_probe(
+            &streams,
+            &resolved.audio_strategy,
+            &resolved.container_ext,
+            &sink,
+        );
+        assert_eq!(codec_args[1], "aac");
+    }
+
+    /// Non-compat mode with DTS audio in MKV: CopyCapped, DTS copies
+    /// (below cap, MKV-compatible).
+    #[test]
+    fn test_composed_no_compat_dts_copies_in_mkv() {
+        let settings = default_settings();
+        let encoders = default_encoders();
+        let resolved = resolve_file_settings("hevc", "mkv", &settings, &encoders);
+
+        let streams = vec![AudioStreamInfo {
+            index: 0,
+            codec: "dts".to_string(),
+            bitrate_kbps: 448,
+        }];
+        let sink = NoopSink;
+        let (_, codec_args) = build_audio_args_from_probe(
+            &streams,
+            &resolved.audio_strategy,
+            &resolved.container_ext,
+            &sink,
+        );
+        assert_eq!(codec_args, vec!["-c:a:0", "copy"]);
+    }
+
+    // ══════════════════════════════════════════════════════════════
+    //  8. Remux fallback audio scenarios
+    // ══════════════════════════════════════════════════════════════
+
+    /// Simulate remux fallback in compat mode: DTS source → MP4.
+    /// CompatCapped should re-encode to AAC, never copy DTS into MP4.
+    #[test]
+    fn test_remux_compat_dts_in_mp4_reencodes() {
+        let streams = vec![AudioStreamInfo {
+            index: 0,
+            codec: "dts".to_string(),
+            bitrate_kbps: 1509,
+        }];
+        let strategy = AudioStrategy::CompatCapped { cap_kbps: 640 };
+        let sink = NoopSink;
+        let (map_args, codec_args) = build_audio_args_from_probe(&streams, &strategy, "mp4", &sink);
+        assert_eq!(map_args, vec!["-map", "0:a:0"]);
+        assert_eq!(codec_args[1], "aac");
+        assert!(!codec_args.contains(&"copy".to_string()));
+    }
+
+    /// Simulate remux fallback in compat mode: TrueHD source → MP4.
+    #[test]
+    fn test_remux_compat_truehd_in_mp4_reencodes() {
+        let streams = vec![AudioStreamInfo {
+            index: 0,
+            codec: "truehd".to_string(),
+            bitrate_kbps: 4000,
+        }];
+        let strategy = AudioStrategy::CompatCapped { cap_kbps: 640 };
+        let sink = NoopSink;
+        let (_, codec_args) = build_audio_args_from_probe(&streams, &strategy, "mp4", &sink);
+        assert_eq!(codec_args[1], "aac");
+    }
+
+    /// Simulate remux fallback with CopyCapped + DTS in MP4.
+    /// DTS is not MP4-compatible, so CopyCapped should fall back to EAC3.
+    #[test]
+    fn test_remux_no_compat_dts_in_mp4_falls_back_to_eac3() {
+        let streams = vec![AudioStreamInfo {
+            index: 0,
+            codec: "dts".to_string(),
+            bitrate_kbps: 1509,
+        }];
+        let strategy = AudioStrategy::CopyCapped { cap_kbps: 640 };
+        let sink = NoopSink;
+        let (_, codec_args) = build_audio_args_from_probe(&streams, &strategy, "mp4", &sink);
+        assert_eq!(codec_args[1], "eac3");
+    }
+
+    /// Remux with AAC in compat mode: AAC below cap should be copied.
+    #[test]
+    fn test_remux_compat_aac_below_cap_copies() {
+        let streams = vec![AudioStreamInfo {
+            index: 0,
+            codec: "aac".to_string(),
+            bitrate_kbps: 256,
+        }];
+        let strategy = AudioStrategy::CompatCapped { cap_kbps: 640 };
+        let sink = NoopSink;
+        let (_, codec_args) = build_audio_args_from_probe(&streams, &strategy, "mp4", &sink);
+        assert_eq!(codec_args, vec!["-c:a:0", "copy"]);
+    }
+
+    /// Multi-stream remux: mixed codecs in compat mode + MP4.
+    #[test]
+    fn test_remux_compat_mixed_streams_mp4() {
+        let streams = vec![
+            AudioStreamInfo { index: 0, codec: "aac".to_string(), bitrate_kbps: 256 },
+            AudioStreamInfo { index: 1, codec: "dts".to_string(), bitrate_kbps: 1509 },
+        ];
+        let strategy = AudioStrategy::CompatCapped { cap_kbps: 640 };
+        let sink = NoopSink;
+        let (map_args, codec_args) = build_audio_args_from_probe(&streams, &strategy, "mp4", &sink);
+        assert_eq!(map_args, vec!["-map", "0:a:0", "-map", "0:a:1"]);
+        // Stream 0: AAC below cap → copy
+        assert_eq!(codec_args[0], "-c:a:0");
+        assert_eq!(codec_args[1], "copy");
+        // Stream 1: DTS → AAC re-encode
+        assert_eq!(codec_args[2], "-c:a:1");
+        assert_eq!(codec_args[3], "aac");
     }
 }
