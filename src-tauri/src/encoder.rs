@@ -2801,6 +2801,9 @@ fn get_system_ram_gb_inner() -> u64 {
         extern "system" {
             fn GlobalMemoryStatusEx(lp_buffer: *mut MemoryStatusEx) -> i32;
         }
+        // SAFETY: `status` is zero-initialised with the correct `dw_length`,
+        // and `GlobalMemoryStatusEx` only writes within that fixed-size struct.
+        // Called on the main thread with no concurrent mutation of `status`.
         unsafe {
             let mut status: MemoryStatusEx = mem::zeroed();
             status.dw_length = mem::size_of::<MemoryStatusEx>() as u32;

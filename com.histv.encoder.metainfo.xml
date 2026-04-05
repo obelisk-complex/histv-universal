@@ -99,6 +99,11 @@
   </content_rating>
 
   <releases>
+    <release version="2.5.8" date="2026-04-05">
+      <description>
+        <p>Fix AppImage crash on Wayland (EGL_BAD_PARAMETER) by stripping bundled GPU libraries and disabling GPU compositing</p>
+      </description>
+    </release>
     <release version="2.5.7" date="2026-04-05">
       <description>
         <p>Comprehensive test suite: 366 tests, proptest fuzzing, CI improvements</p>

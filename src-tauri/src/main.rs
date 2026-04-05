@@ -21,6 +21,13 @@ fn main() {
         if env::var_os("__NV_DISABLE_EXPLICIT_SYNC").is_none() {
             env::set_var("__NV_DISABLE_EXPLICIT_SYNC", "1");
         }
+        // Disables GPU compositing entirely, avoiding EGL display
+        // creation failures ("EGL_BAD_PARAMETER") on systems where
+        // the DMA-buf fix alone is not enough. CPU compositing is
+        // imperceptible for a form-based UI.
+        if env::var_os("WEBKIT_DISABLE_COMPOSITING_MODE").is_none() {
+            env::set_var("WEBKIT_DISABLE_COMPOSITING_MODE", "1");
+        }
     }
 
     histv_lib::run()

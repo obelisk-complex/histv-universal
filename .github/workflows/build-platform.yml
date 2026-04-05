@@ -241,6 +241,14 @@ jobs:
           cp ffmpeg-bin/ffprobe squashfs-root/usr/bin/
           cp THIRD-PARTY-LICENCES squashfs-root/
 
+          # Remove bundled Wayland/EGL/GBM libraries so the host's native
+          # GPU driver stack is used. The build host (Ubuntu 22.04) bundles
+          # Mesa libs that conflict with rolling-release distros (Arch,
+          # CachyOS, Fedora), causing "EGL_BAD_PARAMETER" on Wayland.
+          find squashfs-root -name 'libwayland-*.so*' -delete
+          find squashfs-root -name 'libEGL*.so*' -delete
+          find squashfs-root -name 'libgbm*.so*' -delete
+
           # Get appimagetool to repack (pinned version)
           APPIMAGETOOL_URL="https://github.com/AppImage/appimagetool/releases/download/${APPIMAGETOOL_VERSION}/appimagetool-x86_64.AppImage"
           curl -fSL --retry 3 -o appimagetool "$APPIMAGETOOL_URL"

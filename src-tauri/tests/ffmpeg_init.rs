@@ -7,6 +7,11 @@ use std::fs;
 
 mod common;
 
+#[cfg(target_os = "windows")]
+const EXE_EXT: &str = ".exe";
+#[cfg(not(target_os = "windows"))]
+const EXE_EXT: &str = "";
+
 struct NoopSink;
 
 impl histv_lib::events::EventSink for NoopSink {
@@ -30,9 +35,12 @@ fn test_init_then_reinit() {
     let sink = NoopSink;
 
     // Create temp dir with fake binaries for initial init
+    let ffmpeg_name = format!("ffmpeg{EXE_EXT}");
+    let ffprobe_name = format!("ffprobe{EXE_EXT}");
+
     let tmp1 = tempfile::tempdir().unwrap();
-    let ffmpeg1 = tmp1.path().join("ffmpeg");
-    let ffprobe1 = tmp1.path().join("ffprobe");
+    let ffmpeg1 = tmp1.path().join(&ffmpeg_name);
+    let ffprobe1 = tmp1.path().join(&ffprobe_name);
     fs::write(&ffmpeg1, b"fake-v1").unwrap();
     fs::write(&ffprobe1, b"fake-v1").unwrap();
 
@@ -50,8 +58,8 @@ fn test_init_then_reinit() {
 
     // Create a second temp dir for reinit
     let tmp2 = tempfile::tempdir().unwrap();
-    let ffmpeg2 = tmp2.path().join("ffmpeg");
-    let ffprobe2 = tmp2.path().join("ffprobe");
+    let ffmpeg2 = tmp2.path().join(&ffmpeg_name);
+    let ffprobe2 = tmp2.path().join(&ffprobe_name);
     fs::write(&ffmpeg2, b"fake-v2").unwrap();
     fs::write(&ffprobe2, b"fake-v2").unwrap();
 
