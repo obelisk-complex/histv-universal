@@ -31,7 +31,7 @@ jobs:
             label: macos-x64
             bundles: dmg
 
-    uses: ./.github/workflows/build-platform.yml
+    uses: /workflows/build-platform.yml
     with:
       os: ${{ matrix.os }}
       target: ${{ matrix.target }}
