@@ -1,7 +1,7 @@
 # ── Rust / Cargo ──
 target/
 **/*.rs.bk
-/src-tauri/Cargo.lock
+# Cargo.lock is tracked for reproducible builds (required by Flatpak CI)
 
 # ── Node / npm (if frontend tooling is ever added) ──
 node_modules/
