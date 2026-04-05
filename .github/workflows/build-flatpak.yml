@@ -54,7 +54,7 @@ jobs:
       - name: Build Flatpak from source manifest
         run: |
           set -e
-          flatpak-builder --force-clean --disable-appstream-compose --repo=flatpak-repo flatpak-build com.histv.encoder.yml
+          flatpak-builder --force-clean --repo=flatpak-repo flatpak-build com.histv.encoder.yml
 
       - name: Export Flatpak bundle
         run: |

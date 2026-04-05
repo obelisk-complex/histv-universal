@@ -6,6 +6,7 @@ sdk-extensions:
   - org.freedesktop.Sdk.Extension.rust-stable
 
 command: histv
+appstream-compose: false
 
 finish-args:
   - --socket=wayland
