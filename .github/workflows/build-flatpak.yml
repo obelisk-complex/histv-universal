@@ -2,6 +2,8 @@
 name: Build Flatpak
 
 on:
+  release:
+    types: [published]
   workflow_dispatch:
     inputs:
       ref:
@@ -10,7 +12,7 @@ on:
         default: "main"
 
 permissions:
-  contents: read
+  contents: write
 
 env:
   GNOME_RUNTIME_VERSION: "50"
@@ -51,6 +53,10 @@ jobs:
             org.gnome.Sdk//${{ env.GNOME_RUNTIME_VERSION }} \
             org.freedesktop.Sdk.Extension.rust-stable//${{ env.RUST_EXT_VERSION }}
 
+      # Fix root-owned .lock files so actions/cache can tar the directory
+      - name: Fix Flatpak SDK permissions for caching
+        run: sudo chmod -R a+r /var/lib/flatpak
+
       - name: Build Flatpak from source manifest
         run: |
           set -e
@@ -67,3 +73,9 @@ jobs:
           name: histv-linux-flatpak
           path: histv-linux.flatpak
           retention-days: 14
+
+      - name: Upload to GitHub Release
+        if: github.event_name == 'release'
+        uses: softprops/action-gh-release@153bb8e04406b158c6c84fc1615b65b24149a1fe # v2.2.2
+        with:
+          files: histv-linux.flatpak
