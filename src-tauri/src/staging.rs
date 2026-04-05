@@ -190,6 +190,28 @@ impl WavePlanner {
         force_local: bool,
         remote_never: bool,
     ) -> Vec<WaveItem> {
+        let wave_budget = crate::disk_monitor::partition_free_space(staging_dir)
+            .map(|(_, free)| (free as f64 * 0.9) as u64)
+            .unwrap_or(u64::MAX);
+        Self::plan_with_budget(
+            queue,
+            pending_indices,
+            mount_cache,
+            force_local,
+            remote_never,
+            wave_budget,
+        )
+    }
+
+    /// Build a wave plan with an explicit budget (for testing).
+    pub fn plan_with_budget(
+        queue: &[QueueItem],
+        pending_indices: &[usize],
+        mount_cache: &mut MountCache,
+        force_local: bool,
+        remote_never: bool,
+        wave_budget: u64,
+    ) -> Vec<WaveItem> {
         // If staging is disabled, return all files as local
         if force_local || remote_never {
             return pending_indices
@@ -197,15 +219,6 @@ impl WavePlanner {
                 .map(|&idx| WaveItem::Local { queue_index: idx })
                 .collect();
         }
-
-        // Query free space on the staging partition; use 90% as budget.
-        // This is a snapshot at plan time. Since waves are staged and cleaned
-        // up sequentially at runtime, the effective budget per-wave is at least
-        // this much (cleanup frees space for the next wave). Over-constraining
-        // is safe; under-constraining would risk running out of disk space.
-        let wave_budget: u64 = crate::disk_monitor::partition_free_space(staging_dir)
-            .map(|(_, free)| (free as f64 * 0.9) as u64)
-            .unwrap_or(u64::MAX);
 
         let mut plan: Vec<WaveItem> = Vec::with_capacity(pending_indices.len());
         let mut wave_indices: Vec<usize> = Vec::with_capacity(16);
@@ -271,5 +284,164 @@ impl WavePlanner {
         }
 
         plan
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use serial_test::serial;
+
+    // ── resolve_staging_dir ─────────────────────────────────────
+
+    #[test]
+    fn test_resolve_staging_dir_explicit() {
+        let dir = resolve_staging_dir(Some(Path::new("/custom/staging")));
+        assert_eq!(dir, PathBuf::from("/custom/staging"));
+    }
+
+    #[test]
+    #[serial]
+    fn test_resolve_staging_dir_env_var() {
+        let orig = std::env::var("HISTV_TMP").ok();
+        std::env::set_var("HISTV_TMP", "/tmp/histv-test-staging");
+        let dir = resolve_staging_dir(None);
+        match orig {
+            Some(v) => std::env::set_var("HISTV_TMP", v),
+            None => std::env::remove_var("HISTV_TMP"),
+        }
+        assert_eq!(dir, PathBuf::from("/tmp/histv-test-staging"));
+    }
+
+    #[test]
+    #[serial]
+    fn test_resolve_staging_dir_empty_env() {
+        let orig = std::env::var("HISTV_TMP").ok();
+        std::env::set_var("HISTV_TMP", "");
+        let dir = resolve_staging_dir(None);
+        match orig {
+            Some(v) => std::env::set_var("HISTV_TMP", v),
+            None => std::env::remove_var("HISTV_TMP"),
+        }
+        // Empty HISTV_TMP should fall through to platform default
+        assert!(dir.to_string_lossy().contains("histv-staging"));
+    }
+
+    #[test]
+    #[serial]
+    fn test_resolve_staging_dir_platform_default() {
+        let orig = std::env::var("HISTV_TMP").ok();
+        std::env::remove_var("HISTV_TMP");
+        let dir = resolve_staging_dir(None);
+        match orig {
+            Some(v) => std::env::set_var("HISTV_TMP", v),
+            None => {}
+        }
+        assert!(dir.to_string_lossy().contains("histv-staging"));
+    }
+
+    // ── WavePlanner ─────────────────────────────────────────────
+
+    fn local_item(path: &str, bytes: u64) -> crate::queue::QueueItem {
+        crate::test_helpers::make_queue_item_sized(
+            path,
+            crate::queue::QueueItemStatus::Pending,
+            crate::test_helpers::synthetic_probe("hevc", 8.0, 3600.0, false),
+            bytes,
+        )
+    }
+
+    #[test]
+    fn test_wave_planner_force_local() {
+        let queue = vec![
+            local_item("/local/a.mkv", 1000),
+            local_item("/local/b.mkv", 2000),
+        ];
+        let indices = vec![0, 1];
+        let mut cache = MountCache::new();
+        let plan =
+            WavePlanner::plan_with_budget(&queue, &indices, &mut cache, true, false, u64::MAX);
+        assert_eq!(plan.len(), 2);
+        assert!(matches!(plan[0], WaveItem::Local { queue_index: 0 }));
+        assert!(matches!(plan[1], WaveItem::Local { queue_index: 1 }));
+    }
+
+    #[test]
+    fn test_wave_planner_remote_never() {
+        let queue = vec![local_item("/remote/a.mkv", 1000)];
+        let indices = vec![0];
+        let mut cache = MountCache::new();
+        let plan =
+            WavePlanner::plan_with_budget(&queue, &indices, &mut cache, false, true, u64::MAX);
+        assert_eq!(plan.len(), 1);
+        assert!(matches!(plan[0], WaveItem::Local { queue_index: 0 }));
+    }
+
+    #[test]
+    fn test_wave_planner_empty_queue() {
+        let queue: Vec<crate::queue::QueueItem> = vec![];
+        let indices: Vec<usize> = vec![];
+        let mut cache = MountCache::new();
+        let plan =
+            WavePlanner::plan_with_budget(&queue, &indices, &mut cache, false, false, u64::MAX);
+        assert!(plan.is_empty());
+    }
+
+    #[test]
+    fn test_wave_planner_all_local() {
+        // On our local machine, /tmp paths are local
+        let queue = vec![
+            local_item("/tmp/a.mkv", 1_000_000),
+            local_item("/tmp/b.mkv", 2_000_000),
+        ];
+        let indices = vec![0, 1];
+        let mut cache = MountCache::new();
+        let plan =
+            WavePlanner::plan_with_budget(&queue, &indices, &mut cache, false, false, u64::MAX);
+        // Local files should all be WaveItem::Local
+        for item in &plan {
+            assert!(matches!(item, WaveItem::Local { .. }));
+        }
+    }
+
+    // ── StagingContext Drop ──────────────────────────────────────
+
+    #[test]
+    fn test_staging_context_drop_cleans_up() {
+        let tmp = tempfile::tempdir().unwrap();
+        let staged = tmp.path().join("test_staged_file.mkv");
+        std::fs::write(&staged, b"test data").unwrap();
+        assert!(staged.exists());
+
+        {
+            let _ctx = StagingContext {
+                staged_path: staged.clone(),
+                created: true,
+            };
+            // Drop happens here
+        }
+        assert!(!staged.exists(), "Staged file should be cleaned up on drop");
+    }
+
+    #[test]
+    fn test_staging_context_drop_already_cleaned() {
+        let tmp = tempfile::tempdir().unwrap();
+        let staged = tmp.path().join("already_gone.mkv");
+        // File doesn't exist - drop should not panic
+        {
+            let _ctx = StagingContext {
+                staged_path: staged,
+                created: false,
+            };
+        }
+    }
+
+    #[test]
+    fn test_staging_context_local_path() {
+        let ctx = StagingContext {
+            staged_path: PathBuf::from("/tmp/test.mkv"),
+            created: false,
+        };
+        assert_eq!(ctx.local_path(), Path::new("/tmp/test.mkv"));
     }
 }

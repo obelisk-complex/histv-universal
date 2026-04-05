@@ -1,0 +1,19 @@
+{
+  "videoCodec": "hevc",
+  "videoWidth": 1920,
+  "videoHeight": 1080,
+  "videoBitrateBps": 8000000.0,
+  "videoBitrateMbps": 8.0,
+  "isHdr": false,
+  "colorTransfer": "bt709",
+  "audioStreams": [
+    { "index": 0, "codec": "aac", "bitrateKbps": 192 },
+    { "index": 1, "codec": "ac3", "bitrateKbps": 640 }
+  ],
+  "durationSecs": 3600.0,
+  "doviProfile": null,
+  "doviBlCompatId": null,
+  "hasHdr10plus": false,
+  "videoFps": 23.976,
+  "subtitleStreamCount": 1
+}

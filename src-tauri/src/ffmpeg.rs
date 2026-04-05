@@ -365,7 +365,9 @@ pub async fn download_to_dir(
         }
     }
     if !succeeded {
-        return Err(format!("All download mirrors failed. Last error: {last_err}"));
+        return Err(format!(
+            "All download mirrors failed. Last error: {last_err}"
+        ));
     }
 
     // On macOS, ffprobe is a separate download from evermeet.cx
@@ -551,8 +553,8 @@ fn extract_from_tar_xz(
     // binaries we need. Using tempfile::TempDir avoids race conditions
     // when multiple instances download concurrently — each gets a unique
     // directory that is automatically cleaned up on drop.
-    let tmp_extract = tempfile::tempdir_in(target_dir)
-        .map_err(|e| format!("Failed to create temp dir: {e}"))?;
+    let tmp_extract =
+        tempfile::tempdir_in(target_dir).map_err(|e| format!("Failed to create temp dir: {e}"))?;
 
     let mut extract_cmd = std::process::Command::new("tar");
     extract_cmd.args([
@@ -852,4 +854,168 @@ fn resolve_binary(resource_dir: Option<&Path>, name: &str) -> PathBuf {
 
     // 6. Bare name — let the OS find it on PATH
     PathBuf::from(name)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use serial_test::serial;
+    use std::fs;
+
+    // ── app_data_bin_dir ────────────────────────────────────────
+
+    #[cfg(target_os = "linux")]
+    #[test]
+    #[serial]
+    fn test_app_data_bin_dir_xdg() {
+        let orig = std::env::var("XDG_DATA_HOME").ok();
+        std::env::set_var("XDG_DATA_HOME", "/tmp/test-xdg-data");
+        let result = app_data_bin_dir();
+        // Restore
+        match orig {
+            Some(v) => std::env::set_var("XDG_DATA_HOME", v),
+            None => std::env::remove_var("XDG_DATA_HOME"),
+        }
+        assert_eq!(
+            result,
+            Some(PathBuf::from("/tmp/test-xdg-data/com.histv.encoder/bin"))
+        );
+    }
+
+    #[cfg(target_os = "linux")]
+    #[test]
+    #[serial]
+    fn test_app_data_bin_dir_home_fallback() {
+        let orig_xdg = std::env::var("XDG_DATA_HOME").ok();
+        let orig_home = std::env::var("HOME").ok();
+        std::env::remove_var("XDG_DATA_HOME");
+        std::env::set_var("HOME", "/tmp/test-home");
+        let result = app_data_bin_dir();
+        // Restore
+        match orig_xdg {
+            Some(v) => std::env::set_var("XDG_DATA_HOME", v),
+            None => {}
+        }
+        match orig_home {
+            Some(v) => std::env::set_var("HOME", v),
+            None => std::env::remove_var("HOME"),
+        }
+        assert_eq!(
+            result,
+            Some(PathBuf::from(
+                "/tmp/test-home/.local/share/com.histv.encoder/bin"
+            ))
+        );
+    }
+
+    #[cfg(target_os = "linux")]
+    #[test]
+    #[serial]
+    fn test_app_data_bin_dir_no_env() {
+        let orig_xdg = std::env::var("XDG_DATA_HOME").ok();
+        let orig_home = std::env::var("HOME").ok();
+        std::env::remove_var("XDG_DATA_HOME");
+        std::env::remove_var("HOME");
+        let result = app_data_bin_dir();
+        // Restore
+        match orig_xdg {
+            Some(v) => std::env::set_var("XDG_DATA_HOME", v),
+            None => {}
+        }
+        match orig_home {
+            Some(v) => std::env::set_var("HOME", v),
+            None => {}
+        }
+        assert_eq!(result, None);
+    }
+
+    // ── resolve_binary ──────────────────────────────────────────
+
+    #[test]
+    fn test_resolve_binary_resource_dir() {
+        let tmp = tempfile::tempdir().unwrap();
+        let fake_ffmpeg = tmp.path().join("ffmpeg");
+        fs::write(&fake_ffmpeg, b"fake").unwrap();
+
+        let result = resolve_binary(Some(tmp.path()), "ffmpeg");
+        assert_eq!(result, fake_ffmpeg);
+    }
+
+    #[test]
+    fn test_resolve_binary_bare_name_fallback() {
+        // When no candidate exists in any known location, should return
+        // the bare name for PATH lookup.
+        let result = resolve_binary(None, "totally_nonexistent_binary_xyz");
+        assert_eq!(result, PathBuf::from("totally_nonexistent_binary_xyz"));
+    }
+
+    #[test]
+    fn test_resolve_binary_resource_dir_none() {
+        // With no resource dir and a nonexistent binary, falls through
+        // to bare name.
+        let result = resolve_binary(None, "ffmpeg_test_missing");
+        assert_eq!(result, PathBuf::from("ffmpeg_test_missing"));
+    }
+
+    #[test]
+    fn test_resolve_binary_resource_dir_missing_file() {
+        let tmp = tempfile::tempdir().unwrap();
+        // Resource dir exists but doesn't contain the binary
+        let result = resolve_binary(Some(tmp.path()), "ffmpeg");
+        // Should fall through to other locations or bare name
+        // (won't be the resource dir path)
+        assert!(!result.starts_with(tmp.path()));
+    }
+
+    // ── log_resolved_path ───────────────────────────────────────
+
+    #[test]
+    fn test_log_resolved_path_exists() {
+        let sink = crate::test_helpers::RecordingSink::new();
+        let tmp = tempfile::tempdir().unwrap();
+        let path = tmp.path().join("ffmpeg");
+        fs::write(&path, b"fake").unwrap();
+
+        log_resolved_path(&sink, "ffmpeg", &path);
+        let logs = sink.take_logs();
+        assert_eq!(logs.len(), 1);
+        assert!(logs[0].contains("resolved:"));
+    }
+
+    #[test]
+    fn test_log_resolved_path_bare_name() {
+        let sink = crate::test_helpers::RecordingSink::new();
+        log_resolved_path(&sink, "ffmpeg", Path::new("ffmpeg"));
+        let logs = sink.take_logs();
+        assert_eq!(logs.len(), 1);
+        assert!(logs[0].contains("will try PATH"));
+    }
+
+    #[test]
+    fn test_log_resolved_path_not_yet_exists() {
+        let sink = crate::test_helpers::RecordingSink::new();
+        log_resolved_path(&sink, "ffmpeg", Path::new("/some/specific/path/ffmpeg"));
+        let logs = sink.take_logs();
+        assert_eq!(logs.len(), 1);
+        assert!(logs[0].contains("does not exist yet"));
+    }
+
+    // ── exe_dir ─────────────────────────────────────────────────
+
+    #[test]
+    fn test_exe_dir_returns_some() {
+        // We're running from a real binary, so exe_dir should work
+        let result = exe_dir();
+        assert!(result.is_some());
+        assert!(result.unwrap().exists());
+    }
+
+    // ── is_available (async) ────────────────────────────────────
+
+    #[tokio::test]
+    async fn test_is_available_returns_bool() {
+        // Just verify it doesn't panic; the result depends on the
+        // host environment (ffmpeg may or may not be installed).
+        let _ = is_available().await;
+    }
 }

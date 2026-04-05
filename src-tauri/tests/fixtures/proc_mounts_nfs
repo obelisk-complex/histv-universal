@@ -1,0 +1,10 @@
+sysfs /sys sysfs rw,nosuid,nodev,noexec,relatime 0 0
+proc /proc proc rw,nosuid,nodev,noexec,relatime 0 0
+/dev/sda2 / ext4 rw,relatime,errors=remount-ro 0 0
+/dev/sda1 /boot/efi vfat rw,relatime 0 0
+nas.local:/volume1/media /mnt/media nfs4 rw,relatime,vers=4.2,rsize=1048576,wsize=1048576,namlen=255,hard,proto=tcp,timeo=600,retrans=2 0 0
+//192.168.1.100/share /mnt/share cifs rw,relatime,vers=3.1.1,cache=strict,username=user,uid=1000,forceuid,gid=1000,forcegid 0 0
+user@fileserver:/data /mnt/sshfs fuse.sshfs rw,nosuid,nodev,relatime,user_id=1000,group_id=1000 0 0
+rclone:gdrive /mnt/gdrive fuse.rclone rw,nosuid,nodev,relatime,user_id=1000,group_id=1000 0 0
+/dev/sdb1 /mnt/external ext4 rw,relatime 0 0
+s3fs#mybucket /mnt/s3 fuse.s3fs rw,nosuid,nodev,relatime 0 0

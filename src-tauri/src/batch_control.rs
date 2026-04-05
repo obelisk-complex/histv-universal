@@ -179,3 +179,113 @@ fn read_tty_line() -> String {
     let _ = std::io::stdin().read_line(&mut line);
     line
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use histv_lib::events::BatchControl;
+
+    // Helper: construct a CliBatchControl with given policies.
+    // The ctrlc handler may fail to register in test environments
+    // (already registered by another test) — that's fine, the
+    // atomic fields are what we're testing.
+    fn make_ctrl(ow: OverwritePolicy, fb: FallbackPolicy) -> Arc<CliBatchControl> {
+        CliBatchControl::new(ow, fb)
+    }
+
+    // ── Initial state ──────────────────────────────────────────
+
+    #[test]
+    fn test_initial_state() {
+        let ctrl = make_ctrl(OverwritePolicy::Ask, FallbackPolicy::Ask);
+        assert!(!ctrl.should_cancel_current());
+        assert!(!ctrl.should_cancel_all());
+        assert!(!ctrl.is_paused());
+        assert!(!ctrl.overwrite_always());
+        assert!(!ctrl.hw_fallback_offered());
+    }
+
+    // ── Cancel state transitions ───────────────────────────────
+
+    #[test]
+    fn test_cancel_current_and_clear() {
+        let ctrl = make_ctrl(OverwritePolicy::Ask, FallbackPolicy::Ask);
+        ctrl.cancel_current.store(true, Ordering::SeqCst);
+        assert!(ctrl.should_cancel_current());
+        ctrl.clear_cancel_current();
+        assert!(!ctrl.should_cancel_current());
+    }
+
+    #[test]
+    fn test_cancel_all() {
+        let ctrl = make_ctrl(OverwritePolicy::Ask, FallbackPolicy::Ask);
+        ctrl.cancel_all.store(true, Ordering::SeqCst);
+        assert!(ctrl.should_cancel_all());
+    }
+
+    // ── Overwrite policy dispatch ──────────────────────────────
+
+    #[test]
+    fn test_overwrite_policy_yes() {
+        let ctrl = make_ctrl(OverwritePolicy::Yes, FallbackPolicy::Ask);
+        assert_eq!(ctrl.overwrite_prompt("test.mkv"), "yes");
+    }
+
+    #[test]
+    fn test_overwrite_policy_skip() {
+        let ctrl = make_ctrl(OverwritePolicy::Skip, FallbackPolicy::Ask);
+        assert_eq!(ctrl.overwrite_prompt("test.mkv"), "no");
+    }
+
+    #[test]
+    fn test_overwrite_policy_ask_non_tty() {
+        // In test environments, stderr is typically not a TTY
+        let ctrl = make_ctrl(OverwritePolicy::Ask, FallbackPolicy::Ask);
+        if !ctrl.is_tty {
+            assert_eq!(ctrl.overwrite_prompt("test.mkv"), "no");
+        }
+    }
+
+    // ── Fallback policy dispatch ───────────────────────────────
+
+    #[test]
+    fn test_fallback_policy_yes() {
+        let ctrl = make_ctrl(OverwritePolicy::Ask, FallbackPolicy::Yes);
+        assert_eq!(ctrl.fallback_prompt("test.mkv"), "yes");
+    }
+
+    #[test]
+    fn test_fallback_policy_no() {
+        let ctrl = make_ctrl(OverwritePolicy::Ask, FallbackPolicy::No);
+        assert_eq!(ctrl.fallback_prompt("test.mkv"), "no");
+    }
+
+    #[test]
+    fn test_fallback_policy_ask_non_tty() {
+        let ctrl = make_ctrl(OverwritePolicy::Ask, FallbackPolicy::Ask);
+        if !ctrl.is_tty {
+            // Non-TTY default for fallback is "yes" (auto-fallback)
+            assert_eq!(ctrl.fallback_prompt("test.mkv"), "yes");
+        }
+    }
+
+    // ── Overwrite-always flag ──────────────────────────────────
+
+    #[test]
+    fn test_set_overwrite_always() {
+        let ctrl = make_ctrl(OverwritePolicy::Ask, FallbackPolicy::Ask);
+        assert!(!ctrl.overwrite_always());
+        ctrl.set_overwrite_always();
+        assert!(ctrl.overwrite_always());
+    }
+
+    // ── HW fallback offered flag ───────────────────────────────
+
+    #[test]
+    fn test_set_hw_fallback_offered() {
+        let ctrl = make_ctrl(OverwritePolicy::Ask, FallbackPolicy::Ask);
+        assert!(!ctrl.hw_fallback_offered());
+        ctrl.set_hw_fallback_offered();
+        assert!(ctrl.hw_fallback_offered());
+    }
+}

@@ -150,3 +150,66 @@ pub fn save_config(app: &AppHandle, config: &AppConfig) -> Result<(), Box<dyn st
     fs::rename(&tmp, &path)?;
     Ok(())
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn test_default_round_trip() {
+        let config = AppConfig::default();
+        let json = serde_json::to_string(&config).unwrap();
+        let deserialized: AppConfig = serde_json::from_str(&json).unwrap();
+        // Spot-check key fields
+        assert_eq!(deserialized.theme, "Default Dark");
+        assert_eq!(deserialized.video_codec, "HEVC");
+        assert_eq!(deserialized.rate_control_mode, "QP");
+        assert_eq!(deserialized.audio_bitrate_cap, 640);
+        assert!(!deserialized.overwrite);
+        assert!(!deserialized.compatibility_mode);
+        assert!(!deserialized.preserve_av1);
+    }
+
+    #[test]
+    fn test_forward_compat_unknown_fields() {
+        // JSON with an unknown field should deserialize without error
+        let json = r#"{"theme":"Nord","unknownNewField":42,"videoCodec":"H.264"}"#;
+        let config: AppConfig = serde_json::from_str(json).unwrap();
+        assert_eq!(config.theme, "Nord");
+        assert_eq!(config.video_codec, "H.264");
+        // Other fields should have defaults
+        assert_eq!(config.output_folder, "output");
+    }
+
+    #[test]
+    fn test_backward_compat_missing_fields() {
+        // Minimal JSON with only one field - all others should get defaults
+        let json = r#"{"theme":"Custom"}"#;
+        let config: AppConfig = serde_json::from_str(json).unwrap();
+        assert_eq!(config.theme, "Custom");
+        assert_eq!(config.output_mode, "folder");
+        assert_eq!(config.crf, 20);
+        assert_eq!(config.peak_multiplier, 1.5);
+        assert!(!config.force_local);
+    }
+
+    #[test]
+    fn test_empty_json_uses_defaults() {
+        let config: AppConfig = serde_json::from_str("{}").unwrap();
+        let default = AppConfig::default();
+        assert_eq!(config.theme, default.theme);
+        assert_eq!(config.video_codec, default.video_codec);
+        assert_eq!(config.threads, default.threads);
+    }
+
+    #[test]
+    fn test_camel_case_serialization() {
+        let config = AppConfig::default();
+        let json = serde_json::to_string(&config).unwrap();
+        // serde(rename_all = "camelCase") should produce camelCase keys
+        assert!(json.contains("outputFolder"));
+        assert!(json.contains("ratControlMode") || json.contains("rateControlMode"));
+        assert!(json.contains("peakMultiplier"));
+        assert!(!json.contains("output_folder")); // Should NOT have snake_case
+    }
+}

@@ -620,7 +620,10 @@ pub async fn deep_repair(
                 sink.log(&format!("[repair] Subtitle stream {}: {} bytes", i, bytes));
                 non_video_bytes += bytes;
             }
-            Err(e) => sink.log(&format!("[repair] WARNING: Subtitle {} scan failed: {}", i, e)),
+            Err(e) => sink.log(&format!(
+                "[repair] WARNING: Subtitle {} scan failed: {}",
+                i, e
+            )),
         }
     }
 
@@ -971,5 +974,30 @@ mod tests {
         assert_eq!(header.data_size, 10);
         assert_eq!(header.header_len, 2);
         assert!(!header.unknown_size);
+    }
+
+    // ── Property-based tests ─────────────────────────────────────
+
+    use proptest::prelude::*;
+
+    proptest! {
+        #[test]
+        fn read_vint_no_panic(data in proptest::collection::vec(any::<u8>(), 0..16)) {
+            let mut cur = Cursor::new(&data);
+            // Should never panic - only Ok or Err
+            let _ = read_vint(&mut cur);
+        }
+
+        #[test]
+        fn read_element_id_no_panic(data in proptest::collection::vec(any::<u8>(), 0..16)) {
+            let mut cur = Cursor::new(&data);
+            let _ = read_element_id(&mut cur);
+        }
+
+        #[test]
+        fn read_element_header_no_panic(data in proptest::collection::vec(any::<u8>(), 0..32)) {
+            let mut cur = Cursor::new(&data);
+            let _ = read_element_header(&mut cur);
+        }
     }
 }

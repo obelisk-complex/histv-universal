@@ -373,9 +373,7 @@ async fn discover_gpac_release(
                 .get("tag_name")
                 .and_then(|v: &serde_json::Value| v.as_str())
                 .unwrap_or("unknown");
-            sink.log(&format!(
-                "[dovi] Found GPAC release {tag}: {name}"
-            ));
+            sink.log(&format!("[dovi] Found GPAC release {tag}: {name}"));
             return Some(GpacDownload {
                 url,
                 // Dynamic releases have no pre-computed checksum; integrity
@@ -425,11 +423,9 @@ fn validate_archive_header(bytes: &[u8]) -> Result<(), String> {
     #[cfg(target_os = "windows")]
     {
         if &bytes[..2] != b"MZ" {
-            return Err(
-                "Downloaded file does not appear to be a valid .exe \
+            return Err("Downloaded file does not appear to be a valid .exe \
                  (bad magic bytes)"
-                    .to_string(),
-            );
+                .to_string());
         }
     }
 
@@ -549,8 +545,8 @@ fn extract_from_deb(
 ) -> Result<(), String> {
     // Use tempfile::TempDir to avoid race conditions when multiple
     // instances attempt to download concurrently.
-    let tmp_dir = tempfile::tempdir_in(target_dir)
-        .map_err(|e| format!("Failed to create temp dir: {e}"))?;
+    let tmp_dir =
+        tempfile::tempdir_in(target_dir).map_err(|e| format!("Failed to create temp dir: {e}"))?;
 
     let deb_path = tmp_dir.path().join("gpac.deb");
     std::fs::write(&deb_path, deb_bytes).map_err(|e| format!("Failed to write .deb: {e}"))?;
@@ -617,7 +613,10 @@ fn extract_from_deb(
     let lib_dir = target_dir.join("lib");
     let _ = std::fs::create_dir_all(&lib_dir);
     if let Some(libgpac) = find_file_recursive(&deb_extract, "libgpac.so") {
-        let _ = std::fs::copy(&libgpac, lib_dir.join(libgpac.file_name().unwrap_or_default()));
+        let _ = std::fs::copy(
+            &libgpac,
+            lib_dir.join(libgpac.file_name().unwrap_or_default()),
+        );
         let soname = libgpac.file_name().unwrap_or_default().to_string_lossy();
         if soname.contains(".so.") {
             let base = soname.split('.').take(3).collect::<Vec<_>>().join(".");
@@ -649,8 +648,8 @@ fn extract_from_deb(
 #[cfg(all(feature = "downloader", target_os = "linux"))]
 fn extract_deb_manual(deb_path: &Path, dest: &Path) -> Result<bool, String> {
     let parent = dest.parent().unwrap_or(dest);
-    let tmp = tempfile::tempdir_in(parent)
-        .map_err(|e| format!("Failed to create temp dir: {e}"))?;
+    let tmp =
+        tempfile::tempdir_in(parent).map_err(|e| format!("Failed to create temp dir: {e}"))?;
 
     let ar_out = std::process::Command::new("ar")
         .args(["x", &deb_path.to_string_lossy()])
@@ -725,8 +724,8 @@ fn extract_from_pkg(
     target_dir: &Path,
     _sink: &dyn EventSink,
 ) -> Result<(), String> {
-    let tmp_dir = tempfile::tempdir_in(target_dir)
-        .map_err(|e| format!("Failed to create temp dir: {e}"))?;
+    let tmp_dir =
+        tempfile::tempdir_in(target_dir).map_err(|e| format!("Failed to create temp dir: {e}"))?;
 
     let pkg_path = tmp_dir.path().join("gpac.pkg");
     std::fs::write(&pkg_path, pkg_bytes).map_err(|e| format!("Failed to write .pkg: {e}"))?;
@@ -779,8 +778,8 @@ fn extract_from_exe(
     target_dir: &Path,
     _sink: &dyn EventSink,
 ) -> Result<(), String> {
-    let tmp_dir = tempfile::tempdir_in(target_dir)
-        .map_err(|e| format!("Failed to create temp dir: {e}"))?;
+    let tmp_dir =
+        tempfile::tempdir_in(target_dir).map_err(|e| format!("Failed to create temp dir: {e}"))?;
 
     let exe_path = tmp_dir.path().join("gpac_installer.exe");
     std::fs::write(&exe_path, exe_bytes).map_err(|e| format!("Failed to write installer: {e}"))?;

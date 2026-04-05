@@ -1,0 +1,4 @@
+/dev/sda2 / ext4 rw,relatime,errors=remount-ro 0 0
+/dev/sdb1 /mnt/My\040Videos ext4 rw,relatime 0 0
+nas:/vol /mnt/M\303\251dias nfs4 rw,relatime,vers=4.2 0 0
+/dev/sdc1 /mnt/\346\227\245\346\234\254\350\252\236 ext4 rw,relatime 0 0

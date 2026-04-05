@@ -231,7 +231,11 @@ pub async fn probe_file(file_path: &str, sink: &dyn EventSink) -> Result<ProbeRe
                         if parts.len() == 2 {
                             let num: f64 = parts[0].parse().ok()?;
                             let den: f64 = parts[1].parse().ok()?;
-                            if den > 0.0 { Some(num / den) } else { None }
+                            if den > 0.0 {
+                                Some(num / den)
+                            } else {
+                                None
+                            }
                         } else {
                             None
                         }

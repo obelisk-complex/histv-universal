@@ -257,7 +257,13 @@ fn parse_mount_table() -> Vec<MountEntry> {
         Ok(c) => c,
         Err(_) => return Vec::new(),
     };
+    parse_mount_table_from_str(&contents)
+}
 
+/// Parse mount table contents (in `/proc/mounts` format) into entries.
+/// Extracted from `parse_mount_table` for testability.
+#[cfg(target_os = "linux")]
+fn parse_mount_table_from_str(contents: &str) -> Vec<MountEntry> {
     let mut entries: Vec<MountEntry> = contents
         .lines()
         .filter_map(|line| {
@@ -414,9 +420,7 @@ fn parse_mount_table() -> Vec<MountEntry> {
 /// or bare local paths.
 #[cfg(target_os = "macos")]
 fn is_remote_macfuse_device(device: &str) -> bool {
-    device.starts_with("sshfs#")
-        || device.starts_with("rclone:")
-        || device.contains("://")
+    device.starts_with("sshfs#") || device.starts_with("rclone:") || device.contains("://")
 }
 
 // ── Windows drive type check ───────────────────────────────────
@@ -449,4 +453,248 @@ fn check_drive_type_windows(drive_letter: char) -> bool {
 #[cfg(not(any(target_os = "linux", target_os = "macos", target_os = "windows")))]
 fn parse_mount_table() -> Vec<MountEntry> {
     Vec::new()
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    // ── Linux-only tests ──────────────────────────────────────────
+
+    #[cfg(target_os = "linux")]
+    mod linux {
+        use super::super::*;
+
+        // ── unescape_mount_path ───────────────────────────────────
+
+        #[test]
+        fn test_unescape_space() {
+            assert_eq!(unescape_mount_path("hello\\040world"), "hello world");
+        }
+
+        #[test]
+        fn test_unescape_utf8_multibyte() {
+            assert_eq!(unescape_mount_path("M\\303\\251dias"), "Médias");
+        }
+
+        #[test]
+        fn test_unescape_no_escapes() {
+            assert_eq!(unescape_mount_path("/mnt/data"), "/mnt/data");
+        }
+
+        #[test]
+        fn test_unescape_empty() {
+            assert_eq!(unescape_mount_path(""), "");
+        }
+
+        #[test]
+        fn test_unescape_partial_escape() {
+            // Only two octal digits after backslash - not a valid 3-digit escape
+            assert_eq!(unescape_mount_path("test\\04"), "test\\04");
+        }
+
+        #[test]
+        fn test_unescape_trailing_backslash() {
+            assert_eq!(unescape_mount_path("test\\"), "test\\");
+        }
+
+        #[test]
+        fn test_unescape_japanese_utf8() {
+            assert_eq!(
+                unescape_mount_path("\\346\\227\\245\\346\\234\\254\\350\\252\\236"),
+                "日本語"
+            );
+        }
+
+        // ── parse_mount_table_from_str ────────────────────────────
+
+        #[test]
+        fn test_parse_basic_local_only() {
+            let contents = include_str!("../tests/fixtures/proc_mounts_basic");
+            let entries = parse_mount_table_from_str(contents);
+            assert!(!entries.is_empty());
+            for entry in &entries {
+                assert!(
+                    !entry.is_remote,
+                    "Expected all entries to be local, but {:?} is remote",
+                    entry.mount_point
+                );
+            }
+        }
+
+        #[test]
+        fn test_parse_nfs_cifs_detected() {
+            let contents = include_str!("../tests/fixtures/proc_mounts_nfs");
+            let entries = parse_mount_table_from_str(contents);
+
+            let find = |path: &str| -> Option<&MountEntry> {
+                entries
+                    .iter()
+                    .find(|e| e.mount_point == PathBuf::from(path))
+            };
+
+            let media = find("/mnt/media").expect("/mnt/media not found");
+            assert_eq!(media.fs_type, "nfs4");
+            assert!(media.is_remote);
+
+            let share = find("/mnt/share").expect("/mnt/share not found");
+            assert_eq!(share.fs_type, "cifs");
+            assert!(share.is_remote);
+
+            let sshfs = find("/mnt/sshfs").expect("/mnt/sshfs not found");
+            assert_eq!(sshfs.fs_type, "fuse.sshfs");
+            assert!(sshfs.is_remote);
+
+            let gdrive = find("/mnt/gdrive").expect("/mnt/gdrive not found");
+            assert_eq!(gdrive.fs_type, "fuse.rclone");
+            assert!(gdrive.is_remote);
+
+            let s3 = find("/mnt/s3").expect("/mnt/s3 not found");
+            assert_eq!(s3.fs_type, "fuse.s3fs");
+            assert!(s3.is_remote);
+
+            let external = find("/mnt/external").expect("/mnt/external not found");
+            assert_eq!(external.fs_type, "ext4");
+            assert!(!external.is_remote);
+
+            let root = find("/").expect("/ not found");
+            assert_eq!(root.fs_type, "ext4");
+            assert!(!root.is_remote);
+        }
+
+        #[test]
+        fn test_parse_autofs_filtered() {
+            let contents = include_str!("../tests/fixtures/proc_mounts_autofs");
+            let entries = parse_mount_table_from_str(contents);
+
+            // autofs entries should be filtered out
+            assert!(
+                !entries.iter().any(|e| e.fs_type == "autofs"),
+                "autofs entries should be filtered out"
+            );
+
+            // The cifs mount at /mnt/1tb should still be present and remote
+            let onetb = entries
+                .iter()
+                .find(|e| e.mount_point == PathBuf::from("/mnt/1tb"))
+                .expect("/mnt/1tb not found");
+            assert!(onetb.is_remote);
+            assert_eq!(onetb.fs_type, "cifs");
+        }
+
+        #[test]
+        fn test_parse_empty_input() {
+            let entries = parse_mount_table_from_str("");
+            assert!(entries.is_empty());
+        }
+
+        #[test]
+        fn test_parse_malformed_line() {
+            let entries = parse_mount_table_from_str("onlyone");
+            assert!(entries.is_empty());
+        }
+
+        #[test]
+        fn test_parse_sorted_longest_first() {
+            let contents = include_str!("../tests/fixtures/proc_mounts_nfs");
+            let entries = parse_mount_table_from_str(contents);
+            assert!(entries.len() >= 2);
+            for pair in entries.windows(2) {
+                assert!(
+                    pair[0].mount_point.as_os_str().len() >= pair[1].mount_point.as_os_str().len(),
+                    "Entries not sorted longest first: {:?} before {:?}",
+                    pair[0].mount_point,
+                    pair[1].mount_point
+                );
+            }
+        }
+
+        // ── is_remote_fuse ────────────────────────────────────────
+
+        #[test]
+        fn test_is_remote_fuse_sshfs() {
+            assert!(is_remote_fuse("fuse.sshfs"));
+        }
+
+        #[test]
+        fn test_is_remote_fuse_rclone() {
+            assert!(is_remote_fuse("fuse.rclone"));
+        }
+
+        #[test]
+        fn test_is_remote_fuse_unknown() {
+            assert!(!is_remote_fuse("fuse.ntfs3g"));
+        }
+    }
+
+    // ── Platform-independent tests ────────────────────────────────
+
+    #[test]
+    fn test_mount_cache_new_is_empty() {
+        let mut cache = MountCache::new();
+        // On Linux, /tmp is always a local filesystem
+        #[cfg(target_os = "linux")]
+        {
+            assert!(
+                !cache.is_remote(Path::new("/tmp")),
+                "/tmp should not be detected as remote"
+            );
+        }
+        // On any platform, a fresh cache should have an empty dir_canon_cache
+        let _ = cache;
+    }
+
+    #[test]
+    fn test_mount_cache_dir_canon_reuse() {
+        let mut cache = MountCache::new();
+        // Use /tmp as a known-existing directory on all Unix-like systems
+        let path_a = Path::new("/tmp/file_a.txt");
+        let path_b = Path::new("/tmp/file_b.txt");
+
+        let result_a = cache.canonicalize_cached(path_a);
+        let result_b = cache.canonicalize_cached(path_b);
+
+        // Both should resolve to the same parent directory
+        assert_eq!(
+            result_a.parent(),
+            result_b.parent(),
+            "Files in the same directory should have the same canonical parent"
+        );
+
+        // The dir_canon_cache should have exactly one entry for /tmp
+        // (not separate entries for each file)
+        assert!(
+            cache.dir_canon_cache.contains_key(Path::new("/tmp")),
+            "dir_canon_cache should have an entry for /tmp"
+        );
+    }
+
+    // ── Property-based tests ─────────────────────────────────────
+
+    #[cfg(target_os = "linux")]
+    mod proptest_linux {
+        use super::*;
+        use proptest::prelude::*;
+
+        proptest! {
+            #[test]
+            fn unescape_mount_path_no_panic(s in ".*") {
+                // Should never panic on any string input
+                let _ = unescape_mount_path(&s);
+            }
+
+            #[test]
+            fn parse_mount_table_no_panic(s in ".*") {
+                // Should never panic on arbitrary text
+                let _ = parse_mount_table_from_str(&s);
+            }
+
+            #[test]
+            fn unescape_preserves_plain_ascii(s in "[a-zA-Z0-9/._-]+") {
+                // Plain ASCII paths without escapes should round-trip unchanged
+                let result = unescape_mount_path(&s);
+                prop_assert_eq!(&s, &result);
+            }
+        }
+    }
 }

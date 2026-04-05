@@ -131,10 +131,7 @@ impl LiveDisplay {
     /// Draw the live display. Returns the buffer to write to stderr.
     fn draw(&mut self, is_tty: bool) -> String {
         let term_width = if is_tty {
-            console::Term::stderr()
-                .size()
-                .1
-                .max(60) as usize
+            console::Term::stderr().size().1.max(60) as usize
         } else {
             120
         };
@@ -149,10 +146,7 @@ impl LiveDisplay {
         let mut lines: u32 = 0;
 
         // ── Header ───────────────────────────────────────────
-        let header = format!(
-            "Queue [{}/{}]",
-            self.file_counter, self.total_files
-        );
+        let header = format!("Queue [{}/{}]", self.file_counter, self.total_files);
         buf.push_str(&format!("\x1b[1m{}\x1b[0m\x1b[K\n", header));
         lines += 1;
 
@@ -164,19 +158,30 @@ impl LiveDisplay {
 
         buf.push_str(&format!(
             "  \x1b[2m{:<nw$}  {:>9}  {:>10}  {:>10}  {:<6}  {:>10}  {:<20}  {:<10}\x1b[0m\x1b[K\n",
-            "File", "From", "To (est.)", "Resolution", "HDR", "From B/R", "To B/R", "Status",
+            "File",
+            "From",
+            "To (est.)",
+            "Resolution",
+            "HDR",
+            "From B/R",
+            "To B/R",
+            "Status",
             nw = name_width,
         ));
         lines += 1;
 
-        buf.push_str(&format!("  \x1b[2m{}\x1b[0m\x1b[K\n", "-".repeat(term_width.saturating_sub(2))));
+        buf.push_str(&format!(
+            "  \x1b[2m{}\x1b[0m\x1b[K\n",
+            "-".repeat(term_width.saturating_sub(2))
+        ));
         lines += 1;
 
         // ── Partition items into completed / current / upcoming ──
         let current_idx = self.current_index.unwrap_or(0);
 
         // Completed: terminal-status items before current (zero-alloc)
-        let completed_count = self.items[..current_idx].iter()
+        let completed_count = self.items[..current_idx]
+            .iter()
             .filter(|item| item.status.is_terminal())
             .count();
         let hidden_completed = completed_count.saturating_sub(WINDOW_COMPLETED);
@@ -205,7 +210,8 @@ impl LiveDisplay {
 
         // Upcoming: pending items after current (zero-alloc)
         let upcoming_start = current_idx + 1;
-        let upcoming_total = self.items[upcoming_start..].iter()
+        let upcoming_total = self.items[upcoming_start..]
+            .iter()
             .filter(|item| item.status == DisplayStatus::Pending)
             .count();
         let upcoming_indices = (upcoming_start..self.items.len())
@@ -296,11 +302,11 @@ impl LiveDisplay {
 
         // Status colouring
         let (status_colour, name_colour, reset) = match item.status {
-            DisplayStatus::Done => ("\x1b[32m", "", "\x1b[0m"),       // green
+            DisplayStatus::Done => ("\x1b[32m", "", "\x1b[0m"), // green
             DisplayStatus::Failed => ("\x1b[31m", "\x1b[31m", "\x1b[0m"), // red
             DisplayStatus::Encoding => ("\x1b[36m", "\x1b[1m", "\x1b[0m"), // cyan/bold
-            DisplayStatus::Skipped => ("\x1b[33m", "", "\x1b[0m"),    // yellow
-            DisplayStatus::Cancelled => ("\x1b[33m", "", "\x1b[0m"),  // yellow
+            DisplayStatus::Skipped => ("\x1b[33m", "", "\x1b[0m"), // yellow
+            DisplayStatus::Cancelled => ("\x1b[33m", "", "\x1b[0m"), // yellow
             DisplayStatus::Pending => ("\x1b[2m", "\x1b[2m", "\x1b[0m"), // dim
         };
 
@@ -421,7 +427,10 @@ impl CliSink {
 
     /// Get the cached pass label, updating it only if the pass value changed (#17).
     fn pass_label(&self, pass: Option<(u8, u8)>) -> String {
-        let mut cached = self.cached_pass_label.lock().unwrap_or_else(|e| e.into_inner());
+        let mut cached = self
+            .cached_pass_label
+            .lock()
+            .unwrap_or_else(|e| e.into_inner());
         if cached.0 != pass {
             cached.1 = match pass {
                 Some((cur, tot)) => format!(" (pass {}/{})", cur, tot),
@@ -521,7 +530,10 @@ impl EventSink for CliSink {
             // Simple mode: print at 10% increments, skip duplicates
             let pct = percent.round() as u32;
             if pct.is_multiple_of(10) {
-                let mut last = self.last_simple_pct.lock().unwrap_or_else(|e| e.into_inner());
+                let mut last = self
+                    .last_simple_pct
+                    .lock()
+                    .unwrap_or_else(|e| e.into_inner());
                 if *last != pct {
                     *last = pct;
                     let _ = writeln!(std::io::stderr(), "  {}%{}", pct, pass_label);
@@ -567,7 +579,10 @@ impl EventSink for CliSink {
         }
         // Clear any existing per-file progress bar before the new file header
         self.clear_progress();
-        *self.last_simple_pct.lock().unwrap_or_else(|e| e.into_inner()) = u32::MAX; // reset for new file
+        *self
+            .last_simple_pct
+            .lock()
+            .unwrap_or_else(|e| e.into_inner()) = u32::MAX; // reset for new file
         self.eprintln(message);
     }
 
@@ -630,11 +645,7 @@ impl EventSink for CliSink {
                     );
                     let _ = std::io::stderr().write_all(clear.as_bytes());
                     // Move back up after clearing
-                    let _ = write!(
-                        std::io::stderr(),
-                        "\x1b[{}A",
-                        display.last_draw_lines
-                    );
+                    let _ = write!(std::io::stderr(), "\x1b[{}A", display.last_draw_lines);
                     let _ = std::io::stderr().flush();
                 }
             }

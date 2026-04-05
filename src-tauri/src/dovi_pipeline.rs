@@ -360,6 +360,117 @@ pub async fn inject_and_package(
     })
 }
 
+/// Determine whether a DV profile requires conversion to 8.1.
+pub fn needs_profile_conversion(dovi_profile: u8, dovi_bl_compat_id: Option<u8>) -> bool {
+    dovi_profile == 5 || (dovi_profile == 7 && dovi_bl_compat_id.map(|id| id == 0).unwrap_or(true))
+}
+
+/// Map source profile + conversion state to (profile_num, compat_id) for MP4Box.
+pub fn dv_profile_mapping(source_profile: u8, converted_to_81: bool) -> (u8, u8) {
+    if converted_to_81 {
+        (8, 1)
+    } else {
+        match source_profile {
+            5 => (5, 0),
+            7 => (7, 6),
+            8 => (8, 1),
+            _ => (8, 1),
+        }
+    }
+}
+
+/// Format the DV profile string for MP4Box container flags.
+pub fn dv_profile_string(profile_num: u8, compat: u8) -> String {
+    format!("dvhe.{:02}.{:02}", profile_num, compat)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    // ── needs_profile_conversion ────────────────────────────────
+
+    #[test]
+    fn test_profile5_needs_conversion() {
+        assert!(needs_profile_conversion(5, None));
+        assert!(needs_profile_conversion(5, Some(0)));
+        assert!(needs_profile_conversion(5, Some(1)));
+    }
+
+    #[test]
+    fn test_profile7_compat0_needs_conversion() {
+        assert!(needs_profile_conversion(7, Some(0)));
+    }
+
+    #[test]
+    fn test_profile7_no_compat_needs_conversion() {
+        // None defaults to true (no compat info = assume no HDR10 fallback)
+        assert!(needs_profile_conversion(7, None));
+    }
+
+    #[test]
+    fn test_profile7_nonzero_compat_no_conversion() {
+        assert!(!needs_profile_conversion(7, Some(1)));
+        assert!(!needs_profile_conversion(7, Some(6)));
+    }
+
+    #[test]
+    fn test_profile8_no_conversion() {
+        assert!(!needs_profile_conversion(8, None));
+        assert!(!needs_profile_conversion(8, Some(1)));
+    }
+
+    #[test]
+    fn test_other_profiles_no_conversion() {
+        assert!(!needs_profile_conversion(4, None));
+        assert!(!needs_profile_conversion(10, Some(0)));
+    }
+
+    // ── dv_profile_mapping ─────────────────────────────────────
+
+    #[test]
+    fn test_mapping_converted_to_81() {
+        assert_eq!(dv_profile_mapping(5, true), (8, 1));
+        assert_eq!(dv_profile_mapping(7, true), (8, 1));
+        assert_eq!(dv_profile_mapping(8, true), (8, 1));
+    }
+
+    #[test]
+    fn test_mapping_profile5_not_converted() {
+        assert_eq!(dv_profile_mapping(5, false), (5, 0));
+    }
+
+    #[test]
+    fn test_mapping_profile7_not_converted() {
+        assert_eq!(dv_profile_mapping(7, false), (7, 6));
+    }
+
+    #[test]
+    fn test_mapping_profile8_not_converted() {
+        assert_eq!(dv_profile_mapping(8, false), (8, 1));
+    }
+
+    #[test]
+    fn test_mapping_unknown_profile_fallback() {
+        assert_eq!(dv_profile_mapping(10, false), (8, 1));
+        assert_eq!(dv_profile_mapping(0, false), (8, 1));
+    }
+
+    // ── dv_profile_string ──────────────────────────────────────
+
+    #[test]
+    fn test_profile_string_formatting() {
+        assert_eq!(dv_profile_string(8, 1), "dvhe.08.01");
+        assert_eq!(dv_profile_string(5, 0), "dvhe.05.00");
+        assert_eq!(dv_profile_string(7, 6), "dvhe.07.06");
+    }
+
+    #[test]
+    fn test_profile_string_zero_padded() {
+        assert_eq!(dv_profile_string(1, 2), "dvhe.01.02");
+    }
+}
+
 // ── Stubs for non-dovi builds ─────────────────────────────────────
 
 #[cfg(not(feature = "dovi"))]

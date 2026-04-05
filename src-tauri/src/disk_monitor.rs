@@ -37,9 +37,7 @@ pub struct BatchEstimate {
 
 /// Estimate disk-space impact for a single file given its encoding decision.
 pub fn estimate_file(item: &QueueItem, decision: &EncodeDecision) -> FileEstimate {
-    let source_bytes = std::fs::metadata(&item.full_path)
-        .map(|m| m.len())
-        .unwrap_or(0);
+    let source_bytes = item.source_bytes;
 
     let estimated_output_bytes = match decision {
         EncodeDecision::Copy => {
@@ -154,11 +152,11 @@ fn partition_free_space_unix(path: &Path) -> Option<(u64, u64)> {
 
     #[repr(C)]
     struct Statvfs {
-        f_bsize: u64,   // unsigned long
-        f_frsize: u64,  // unsigned long
-        f_blocks: u64,  // fsblkcnt_t = unsigned long on Linux x86_64
-        f_bfree: u64,   // fsblkcnt_t
-        f_bavail: u64,  // fsblkcnt_t
+        f_bsize: u64,  // unsigned long
+        f_frsize: u64, // unsigned long
+        f_blocks: u64, // fsblkcnt_t = unsigned long on Linux x86_64
+        f_bfree: u64,  // fsblkcnt_t
+        f_bavail: u64, // fsblkcnt_t
         _rest: [u8; 256],
     }
 
@@ -204,9 +202,9 @@ fn partition_free_space_unix(path: &Path) -> Option<(u64, u64)> {
     //   fsblkcnt_t     f_bavail   (unsigned int)
     #[repr(C)]
     struct Statvfs {
-        f_bsize: std::ffi::c_ulong,   // 64-bit on 64-bit macOS
+        f_bsize: std::ffi::c_ulong, // 64-bit on 64-bit macOS
         f_frsize: std::ffi::c_ulong,
-        f_blocks: u32,                 // fsblkcnt_t = unsigned int
+        f_blocks: u32, // fsblkcnt_t = unsigned int
         f_bfree: u32,
         f_bavail: u32,
         _rest: [u8; 256],
@@ -341,6 +339,29 @@ impl DiskMonitor {
         })
     }
 
+    /// Create a DiskMonitor with explicit baseline values (for testing).
+    pub fn new_with_baseline(
+        limit_pct: u8,
+        output_path: PathBuf,
+        staging_path: Option<PathBuf>,
+        baseline_total: u64,
+        baseline_free: u64,
+        disk_resume: Option<u8>,
+    ) -> Self {
+        let resume_bytes = if let Some(pct) = disk_resume {
+            (baseline_total as f64 * (pct as f64 / 100.0)) as u64
+        } else {
+            baseline_free
+        };
+        Self {
+            output_path,
+            staging_path,
+            limit_pct,
+            resume_bytes,
+            baseline_free,
+        }
+    }
+
     /// Check disk usage and wait if over the limit (#18 - now async).
     /// Returns `true` if encoding should continue, `false` if cancelled
     /// during wait.
@@ -429,5 +450,231 @@ impl DiskMonitor {
     /// The baseline free space recorded at monitor creation.
     pub fn baseline_free(&self) -> u64 {
         self.baseline_free
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::encoder::EncodeDecision;
+    use crate::queue::QueueItemStatus;
+    use crate::test_helpers::{make_queue_item_sized, synthetic_probe};
+
+    // ── format_bytes ──────────────────────────────────────────────
+
+    #[test]
+    fn test_format_bytes_zero() {
+        assert_eq!(format_bytes(0), "0.0MB");
+    }
+
+    #[test]
+    fn test_format_bytes_mb_range() {
+        assert_eq!(format_bytes(500_000_000), "500.0MB");
+    }
+
+    #[test]
+    fn test_format_bytes_gb_range() {
+        assert_eq!(format_bytes(2_500_000_000), "2.5GB");
+    }
+
+    #[test]
+    fn test_format_bytes_exact_gb() {
+        assert_eq!(format_bytes(1_000_000_000), "1.0GB");
+    }
+
+    #[test]
+    fn test_format_bytes_large() {
+        let result = format_bytes(u64::MAX);
+        assert!(result.contains("GB"));
+    }
+
+    // ── estimate_file ─────────────────────────────────────────────
+
+    fn item_with_size(source_bytes: u64, duration_secs: f64) -> QueueItem {
+        make_queue_item_sized(
+            "/fake/video.mkv",
+            QueueItemStatus::Pending,
+            synthetic_probe("hevc", 10.0, duration_secs, false),
+            source_bytes,
+        )
+    }
+
+    #[test]
+    fn test_estimate_file_copy() {
+        let item = item_with_size(1_000_000_000, 3600.0);
+        let est = estimate_file(&item, &EncodeDecision::Copy);
+        assert_eq!(est.estimated_output_bytes, 1_000_000_000);
+        assert_eq!(est.peak_transient_bytes, 2_000_000_000);
+    }
+
+    #[test]
+    fn test_estimate_file_vbr() {
+        let item = item_with_size(2_000_000_000, 3600.0);
+        let decision = EncodeDecision::Vbr {
+            target_bps: 4_000_000,
+            peak_bps: 6_000_000,
+        };
+        let est = estimate_file(&item, &decision);
+        // (4_000_000 * 3600) / 8 = 1_800_000_000
+        assert_eq!(est.estimated_output_bytes, 1_800_000_000);
+    }
+
+    #[test]
+    fn test_estimate_file_cqp() {
+        let item = item_with_size(1_000_000_000, 3600.0);
+        let decision = EncodeDecision::Cqp { qi: 20, qp: 22 };
+        let est = estimate_file(&item, &decision);
+        assert_eq!(est.estimated_output_bytes, 1_000_000_000);
+    }
+
+    #[test]
+    fn test_estimate_file_crf() {
+        let item = item_with_size(1_000_000_000, 3600.0);
+        let decision = EncodeDecision::Crf {
+            crf: 20,
+            qi_fallback: 20,
+            qp_fallback: 22,
+        };
+        let est = estimate_file(&item, &decision);
+        assert_eq!(est.estimated_output_bytes, 1_000_000_000);
+    }
+
+    #[test]
+    fn test_estimate_file_vbr_zero_duration() {
+        let item = item_with_size(1_500_000_000, 0.0);
+        let decision = EncodeDecision::Vbr {
+            target_bps: 4_000_000,
+            peak_bps: 6_000_000,
+        };
+        let est = estimate_file(&item, &decision);
+        // Can't estimate with zero duration, falls back to source_bytes
+        assert_eq!(est.estimated_output_bytes, 1_500_000_000);
+    }
+
+    #[test]
+    fn test_estimate_file_zero_source() {
+        let item = item_with_size(0, 3600.0);
+        let est_copy = estimate_file(&item, &EncodeDecision::Copy);
+        assert_eq!(est_copy.estimated_output_bytes, 0);
+        assert_eq!(est_copy.peak_transient_bytes, 0);
+        assert_eq!(est_copy.source_bytes, 0);
+
+        let decision_vbr = EncodeDecision::Vbr {
+            target_bps: 4_000_000,
+            peak_bps: 6_000_000,
+        };
+        let est_vbr = estimate_file(&item, &decision_vbr);
+        // VBR with duration estimates from bitrate, not source
+        // (4_000_000 * 3600) / 8 = 1_800_000_000 - source_bytes is 0 but
+        // the bitrate estimate still produces a value
+        assert_eq!(est_vbr.source_bytes, 0);
+    }
+
+    // ── estimate_batch ────────────────────────────────────────────
+
+    #[test]
+    fn test_estimate_batch_single() {
+        let item = item_with_size(1_000_000_000, 3600.0);
+        let decision = EncodeDecision::Copy;
+        let single = estimate_file(&item, &decision);
+        let batch = estimate_batch(&[&item], &[decision]);
+        assert_eq!(batch.total_output_bytes, single.estimated_output_bytes);
+    }
+
+    #[test]
+    fn test_estimate_batch_multiple() {
+        let item1 = item_with_size(1_000_000_000, 3600.0);
+        let item2 = item_with_size(2_000_000_000, 3600.0);
+        let d1 = EncodeDecision::Copy;
+        let d2 = EncodeDecision::Vbr {
+            target_bps: 4_000_000,
+            peak_bps: 6_000_000,
+        };
+        let est1 = estimate_file(&item1, &d1);
+        let est2 = estimate_file(&item2, &d2);
+        let batch = estimate_batch(&[&item1, &item2], &[d1, d2]);
+        assert_eq!(
+            batch.total_output_bytes,
+            est1.estimated_output_bytes + est2.estimated_output_bytes
+        );
+    }
+
+    #[test]
+    fn test_estimate_batch_empty() {
+        let batch = estimate_batch(&[], &[]);
+        assert_eq!(batch.total_output_bytes, 0);
+        assert_eq!(batch.peak_additional_bytes, 0);
+        assert_eq!(batch.peak_additional_bytes_with_delete, 0);
+        assert_eq!(batch.net_change_with_delete, 0);
+        assert_eq!(batch.net_change_without_delete, 0);
+    }
+
+    // ── partition_free_space ──────────────────────────────────────
+
+    #[cfg(target_os = "linux")]
+    #[test]
+    fn test_partition_free_space_tmp() {
+        let result = partition_free_space(Path::new("/tmp"));
+        let (total, free) = result.expect("/tmp should be queryable on Linux");
+        assert!(total > 0, "total should be > 0");
+        assert!(free <= total, "free should be <= total");
+    }
+
+    #[test]
+    fn test_partition_free_space_nonexistent() {
+        let result = partition_free_space(Path::new("/nonexistent/path/xyz"));
+        assert!(result.is_none());
+    }
+
+    // ── DiskMonitor::new / new_with_baseline ─────────────────────
+
+    #[test]
+    fn test_disk_monitor_off() {
+        assert!(DiskMonitor::new("off", None, Path::new("/tmp"), None).is_none());
+    }
+
+    #[test]
+    fn test_disk_monitor_empty() {
+        assert!(DiskMonitor::new("", None, Path::new("/tmp"), None).is_none());
+    }
+
+    #[test]
+    fn test_disk_monitor_below_min() {
+        assert!(DiskMonitor::new("49", None, Path::new("/tmp"), None).is_none());
+    }
+
+    #[cfg(target_os = "linux")]
+    #[test]
+    fn test_disk_monitor_min_valid() {
+        assert!(DiskMonitor::new("50", None, Path::new("/tmp"), None).is_some());
+    }
+
+    #[cfg(target_os = "linux")]
+    #[test]
+    fn test_disk_monitor_max_valid() {
+        assert!(DiskMonitor::new("99", None, Path::new("/tmp"), None).is_some());
+    }
+
+    #[test]
+    fn test_disk_monitor_above_max() {
+        assert!(DiskMonitor::new("100", None, Path::new("/tmp"), None).is_none());
+    }
+
+    #[test]
+    fn test_disk_monitor_non_numeric() {
+        assert!(DiskMonitor::new("abc", None, Path::new("/tmp"), None).is_none());
+    }
+
+    #[test]
+    fn test_disk_monitor_baseline_recorded() {
+        let monitor = DiskMonitor::new_with_baseline(
+            90,
+            PathBuf::from("/tmp"),
+            None,
+            1_000_000_000_000, // 1 TB total
+            500_000_000_000,   // 500 GB free
+            None,
+        );
+        assert_eq!(monitor.baseline_free(), 500_000_000_000);
     }
 }

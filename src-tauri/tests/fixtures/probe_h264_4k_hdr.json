@@ -1,0 +1,18 @@
+{
+  "videoCodec": "h264",
+  "videoWidth": 3840,
+  "videoHeight": 2160,
+  "videoBitrateBps": 25000000.0,
+  "videoBitrateMbps": 25.0,
+  "isHdr": true,
+  "colorTransfer": "smpte2084",
+  "audioStreams": [
+    { "index": 0, "codec": "eac3", "bitrateKbps": 768 }
+  ],
+  "durationSecs": 7200.0,
+  "doviProfile": null,
+  "doviBlCompatId": null,
+  "hasHdr10plus": true,
+  "videoFps": 24.0,
+  "subtitleStreamCount": 3
+}

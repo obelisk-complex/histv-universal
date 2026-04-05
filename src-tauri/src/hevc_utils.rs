@@ -457,6 +457,48 @@ mod tests {
         assert!(reader.next_nalu().unwrap().is_none());
     }
 
+    // ── Property-based tests ─────────────────────────────────────
+
+    use proptest::prelude::*;
+
+    proptest! {
+        #[test]
+        fn nal_reader_no_panic(data in proptest::collection::vec(any::<u8>(), 0..4096)) {
+            let cursor = std::io::Cursor::new(&data);
+            let mut reader = NalReader::new(cursor);
+            // Should never panic, only return Ok(Some/None) or Err
+            while let Ok(Some(_)) = reader.next_nalu() {}
+        }
+
+        #[test]
+        fn nal_round_trip(
+            payloads in proptest::collection::vec(
+                proptest::collection::vec(any::<u8>(), 1..256),
+                1..16
+            )
+        ) {
+            // Write NALUs then read them back
+            let mut buf = Vec::new();
+            {
+                let mut writer = NalWriter::new(&mut buf);
+                for p in &payloads {
+                    writer.write_nalu(p).unwrap();
+                }
+                writer.flush().unwrap();
+            }
+
+            let mut reader = NalReader::new(std::io::Cursor::new(&buf));
+            let mut read_back = Vec::new();
+            while let Ok(Some(nalu)) = reader.next_nalu() {
+                read_back.push(nalu.data);
+            }
+            prop_assert_eq!(payloads.len(), read_back.len());
+            for (orig, read) in payloads.iter().zip(read_back.iter()) {
+                prop_assert_eq!(orig, read);
+            }
+        }
+    }
+
     #[test]
     fn make_tempdir_near_valid_dir() {
         let td = super::make_tempdir("histv_test_", Some(std::path::Path::new("/tmp")));

@@ -995,10 +995,7 @@ fn run_batch(
                     file_name: item.file_name.clone(),
                     source_size: histv_lib::disk_monitor::format_bytes(item.source_bytes),
                     estimated_size: format_estimated_size(item, decision),
-                    resolution: format!(
-                        "{}x{}",
-                        item.probe.video_width, item.probe.video_height
-                    ),
+                    resolution: format!("{}x{}", item.probe.video_width, item.probe.video_height),
                     hdr_label: hdr_type_label(item),
                     source_br: from_br,
                     target_br: target_bitrate_label(decision),
@@ -1254,9 +1251,7 @@ fn estimate_output_size(item: &QueueItem, decision: &EncodeDecision) -> Option<(
                 Some((item.source_bytes, true))
             }
         }
-        EncodeDecision::Cqp { .. } | EncodeDecision::Crf { .. } => {
-            Some((item.source_bytes, true))
-        }
+        EncodeDecision::Cqp { .. } | EncodeDecision::Crf { .. } => Some((item.source_bytes, true)),
     }
 }
 
@@ -1266,5 +1261,373 @@ fn format_estimated_size(item: &QueueItem, decision: &EncodeDecision) -> String 
         Some((bytes, true)) => format!("~{}", histv_lib::disk_monitor::format_bytes(bytes)),
         Some((bytes, false)) => histv_lib::disk_monitor::format_bytes(bytes),
         None => "-".to_string(),
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn synthetic_probe(
+        codec: &str,
+        bitrate_mbps: f64,
+        duration: f64,
+        hdr: bool,
+    ) -> histv_lib::probe::ProbeResult {
+        histv_lib::probe::ProbeResult {
+            video_codec: codec.to_string(),
+            video_bitrate_bps: bitrate_mbps * 1_000_000.0,
+            video_bitrate_mbps: bitrate_mbps,
+            duration_secs: duration,
+            is_hdr: hdr,
+            color_transfer: if hdr {
+                "smpte2084".to_string()
+            } else {
+                String::new()
+            },
+            ..Default::default()
+        }
+    }
+
+    fn make_item(
+        path: &str,
+        codec: &str,
+        bitrate_mbps: f64,
+        duration: f64,
+        source_bytes: u64,
+    ) -> QueueItem {
+        let probe = synthetic_probe(codec, bitrate_mbps, duration, false);
+        let p = std::path::Path::new(path);
+        let file_name = p
+            .file_name()
+            .unwrap_or_default()
+            .to_string_lossy()
+            .to_string();
+        let base_name = p
+            .file_stem()
+            .unwrap_or_default()
+            .to_string_lossy()
+            .to_string();
+        QueueItem {
+            full_path: path.to_string(),
+            file_name,
+            base_name,
+            status: QueueItemStatus::Pending,
+            probe,
+            source_bytes,
+        }
+    }
+
+    fn make_hdr_item(path: &str, codec: &str, bitrate_mbps: f64, duration: f64) -> QueueItem {
+        let source_bytes = (bitrate_mbps * 1_000_000.0 * duration / 8.0) as u64;
+        let probe = synthetic_probe(codec, bitrate_mbps, duration, true);
+        let p = std::path::Path::new(path);
+        let file_name = p
+            .file_name()
+            .unwrap_or_default()
+            .to_string_lossy()
+            .to_string();
+        let base_name = p
+            .file_stem()
+            .unwrap_or_default()
+            .to_string_lossy()
+            .to_string();
+        QueueItem {
+            full_path: path.to_string(),
+            file_name,
+            base_name,
+            status: QueueItemStatus::Pending,
+            probe,
+            source_bytes,
+        }
+    }
+
+    fn default_encoders() -> Vec<EncoderInfo> {
+        vec![
+            EncoderInfo {
+                name: "libx265".to_string(),
+                codec_family: "hevc".to_string(),
+                is_hardware: false,
+            },
+            EncoderInfo {
+                name: "libx264".to_string(),
+                codec_family: "h264".to_string(),
+                is_hardware: false,
+            },
+        ]
+    }
+
+    // ── truncate_filename ──────────────────────────────────────
+
+    #[test]
+    fn test_truncate_short_name() {
+        assert_eq!(truncate_filename("a.mkv", 20), "a.mkv");
+    }
+
+    #[test]
+    fn test_truncate_exact_width() {
+        assert_eq!(truncate_filename("12345", 5), "12345");
+    }
+
+    #[test]
+    fn test_truncate_long_name() {
+        assert_eq!(
+            truncate_filename("very_long_filename.mkv", 10),
+            "very_lo..."
+        );
+    }
+
+    #[test]
+    fn test_truncate_width_3() {
+        assert_eq!(truncate_filename("abcdef", 3), "abc");
+    }
+
+    #[test]
+    fn test_truncate_width_4() {
+        assert_eq!(truncate_filename("abcdef", 4), "a...");
+    }
+
+    // ── hdr_type_label ─────────────────────────────────────────
+
+    #[test]
+    fn test_hdr_label_sdr() {
+        let item = make_item("/a.mkv", "hevc", 8.0, 60.0, 60_000_000);
+        assert_eq!(hdr_type_label(&item), "SDR");
+    }
+
+    #[test]
+    fn test_hdr_label_hdr10() {
+        let item = make_hdr_item("/a.mkv", "hevc", 40.0, 60.0);
+        assert_eq!(hdr_type_label(&item), "HDR10");
+    }
+
+    #[test]
+    fn test_hdr_label_dv_profiles() {
+        for (profile, expected) in [(5, "DV5"), (7, "DV7"), (8, "DV8")] {
+            let mut item = make_hdr_item("/a.mkv", "hevc", 40.0, 60.0);
+            item.probe.dovi_profile = Some(profile);
+            assert_eq!(hdr_type_label(&item), expected);
+        }
+    }
+
+    #[test]
+    fn test_hdr_label_hdr10plus() {
+        let mut item = make_hdr_item("/a.mkv", "hevc", 40.0, 60.0);
+        item.probe.has_hdr10plus = true;
+        assert_eq!(hdr_type_label(&item), "HDR10+");
+    }
+
+    #[test]
+    fn test_hdr_label_hlg() {
+        let mut item = make_hdr_item("/a.mkv", "hevc", 40.0, 60.0);
+        item.probe.color_transfer = "arib-std-b67".to_string();
+        assert_eq!(hdr_type_label(&item), "HLG");
+    }
+
+    // ── target_bitrate_label ───────────────────────────────────
+
+    #[test]
+    fn test_target_label_copy() {
+        assert_eq!(target_bitrate_label(&EncodeDecision::Copy), "Copy");
+    }
+
+    #[test]
+    fn test_target_label_vbr() {
+        let label = target_bitrate_label(&EncodeDecision::Vbr {
+            target_bps: 4_000_000,
+            peak_bps: 6_000_000,
+        });
+        assert_eq!(label, "4.0/6.0Mbps (VBR)");
+    }
+
+    #[test]
+    fn test_target_label_cqp() {
+        let label = target_bitrate_label(&EncodeDecision::Cqp { qi: 20, qp: 22 });
+        assert_eq!(label, "CQP (20/22)");
+    }
+
+    #[test]
+    fn test_target_label_crf() {
+        let label = target_bitrate_label(&EncodeDecision::Crf {
+            crf: 20,
+            qi_fallback: 20,
+            qp_fallback: 22,
+        });
+        assert_eq!(label, "CRF 20");
+    }
+
+    // ── source_bitrate_label ───────────────────────────────────
+
+    #[test]
+    fn test_source_label_normal() {
+        let item = make_item("/a.mkv", "hevc", 8.5, 60.0, 60_000_000);
+        assert_eq!(source_bitrate_label(&item), "8.50Mbps");
+    }
+
+    #[test]
+    fn test_source_label_zero() {
+        let item = make_item("/a.mkv", "hevc", 0.0, 60.0, 0);
+        assert_eq!(source_bitrate_label(&item), "-");
+    }
+
+    // ── estimate_output_size ───────────────────────────────────
+
+    #[test]
+    fn test_estimate_copy() {
+        let item = make_item("/a.mkv", "hevc", 2.0, 60.0, 15_000_000);
+        let (bytes, approx) = estimate_output_size(&item, &EncodeDecision::Copy).unwrap();
+        assert_eq!(bytes, 15_000_000);
+        assert!(!approx);
+    }
+
+    #[test]
+    fn test_estimate_vbr() {
+        let item = make_item("/a.mkv", "hevc", 10.0, 100.0, 125_000_000);
+        let (bytes, approx) = estimate_output_size(
+            &item,
+            &EncodeDecision::Vbr {
+                target_bps: 4_000_000,
+                peak_bps: 6_000_000,
+            },
+        )
+        .unwrap();
+        // 4_000_000 * 100 / 8 = 50_000_000
+        assert_eq!(bytes, 50_000_000);
+        assert!(!approx);
+    }
+
+    #[test]
+    fn test_estimate_cqp_approximate() {
+        let item = make_item("/a.mkv", "hevc", 10.0, 60.0, 75_000_000);
+        let (bytes, approx) =
+            estimate_output_size(&item, &EncodeDecision::Cqp { qi: 20, qp: 22 }).unwrap();
+        assert_eq!(bytes, 75_000_000); // Uses source_bytes as estimate
+        assert!(approx);
+    }
+
+    #[test]
+    fn test_estimate_zero_source() {
+        let item = make_item("/a.mkv", "hevc", 10.0, 60.0, 0);
+        assert!(estimate_output_size(&item, &EncodeDecision::Copy).is_none());
+    }
+
+    // ── merge_job_into_args ────────────────────────────────────
+
+    #[test]
+    fn test_merge_job_adds_files() {
+        let mut args = cli::CliArgs::parse_from(["histv-cli", "a.mkv"]);
+        let job = cli::JobFile {
+            files: vec!["b.mkv".into(), "c.mkv".into()],
+            ..Default::default()
+        };
+        merge_job_into_args(&mut args, &job);
+        assert_eq!(args.inputs.len(), 3);
+    }
+
+    #[test]
+    fn test_merge_job_applies_settings() {
+        let mut args = cli::CliArgs::parse_from(["histv-cli", "a.mkv"]);
+        let job = cli::JobFile {
+            bitrate: Some(8.0),
+            codec: Some("h264".into()),
+            threads: Some(4),
+            precision_mode: Some(true),
+            ..Default::default()
+        };
+        merge_job_into_args(&mut args, &job);
+        assert_eq!(args.bitrate, 8.0);
+        assert!(matches!(args.codec, cli::CodecFamily::H264));
+        assert_eq!(args.threads, 4);
+        assert!(args.precision_mode);
+    }
+
+    #[test]
+    fn test_merge_job_clamps_qp() {
+        let mut args = cli::CliArgs::parse_from(["histv-cli", "a.mkv"]);
+        let job = cli::JobFile {
+            qp_i: Some(999),
+            qp_p: Some(100),
+            crf: Some(200),
+            threads: Some(999),
+            ..Default::default()
+        };
+        merge_job_into_args(&mut args, &job);
+        assert_eq!(args.qp_i, 51);
+        assert_eq!(args.qp_p, 51);
+        assert_eq!(args.crf, 51);
+        assert_eq!(args.threads, 64);
+    }
+
+    #[test]
+    fn test_merge_job_empty_no_change() {
+        let mut args = cli::CliArgs::parse_from(["histv-cli", "a.mkv"]);
+        let original_bitrate = args.bitrate;
+        let job = cli::JobFile::default();
+        merge_job_into_args(&mut args, &job);
+        assert_eq!(args.bitrate, original_bitrate);
+    }
+
+    #[test]
+    fn test_merge_job_hdr_flag() {
+        let mut args = cli::CliArgs::parse_from(["histv-cli", "a.mkv"]);
+        let job = cli::JobFile {
+            hdr: Some(true),
+            ..Default::default()
+        };
+        merge_job_into_args(&mut args, &job);
+        assert!(args.hdr);
+        assert!(!args.no_hdr);
+    }
+
+    #[test]
+    fn test_merge_job_invalid_codec_ignored() {
+        let mut args = cli::CliArgs::parse_from(["histv-cli", "a.mkv"]);
+        let job = cli::JobFile {
+            codec: Some("invalid_codec".into()),
+            ..Default::default()
+        };
+        merge_job_into_args(&mut args, &job);
+        // Should remain at default (auto)
+        assert!(matches!(args.codec, cli::CodecFamily::Auto));
+    }
+
+    // ── resolve_encoder ────────────────────────────────────────
+
+    #[test]
+    fn test_resolve_encoder_forced() {
+        let args = cli::CliArgs::parse_from(["histv-cli", "-e", "hevc_nvenc", "a.mkv"]);
+        let encoders = default_encoders();
+        assert_eq!(resolve_encoder(&args, &encoders), "hevc_nvenc");
+    }
+
+    #[test]
+    fn test_resolve_encoder_auto_hevc() {
+        let args = cli::CliArgs::parse_from(["histv-cli", "a.mkv"]);
+        let encoders = default_encoders();
+        let result = resolve_encoder(&args, &encoders);
+        // Should find an HEVC encoder from the list or fall back to libx265
+        assert!(
+            result.contains("hevc") || result.contains("x265") || result.contains("265"),
+            "Expected HEVC encoder, got: {result}"
+        );
+    }
+
+    #[test]
+    fn test_resolve_encoder_compat_h264() {
+        let args = cli::CliArgs::parse_from(["histv-cli", "--compat", "a.mkv"]);
+        let encoders = default_encoders();
+        let result = resolve_encoder(&args, &encoders);
+        assert!(
+            result.contains("264") || result.contains("h264"),
+            "Compat mode should select H.264 encoder, got: {result}"
+        );
+    }
+
+    #[test]
+    fn test_resolve_encoder_empty_list_fallback() {
+        let args = cli::CliArgs::parse_from(["histv-cli", "a.mkv"]);
+        let result = resolve_encoder(&args, &[]);
+        // Should fall back to software encoder
+        assert_eq!(result, "libx265");
     }
 }

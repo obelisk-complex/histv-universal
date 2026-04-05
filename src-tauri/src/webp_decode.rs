@@ -323,6 +323,9 @@ impl Canvas {
 
     /// Clear a rectangular region to transparent black.
     fn clear_rect(&mut self, x: u32, y: u32, w: u32, h: u32) {
+        if x >= self.width || y >= self.height || w == 0 || h == 0 {
+            return;
+        }
         let y_end = (y + h).min(self.height);
         let x_end = (x + w).min(self.width);
         for row in y..y_end {
@@ -455,7 +458,12 @@ pub async fn transcode_animated_webp(
     let frame_byte_size = (padded_w as usize)
         .checked_mul(padded_h as usize)
         .and_then(|v| v.checked_mul(4))
-        .ok_or_else(|| format!("Padded canvas dimensions too large: {}x{}", padded_w, padded_h))?;
+        .ok_or_else(|| {
+            format!(
+                "Padded canvas dimensions too large: {}x{}",
+                padded_w, padded_h
+            )
+        })?;
 
     // ── Spawn the output encoder ──
     let mut enc_args: Vec<String> = vec![
@@ -767,11 +775,15 @@ mod tests {
                 let idx = ((row * 4 + col) * 4) as usize;
                 let pixel = &canvas.pixels[idx..idx + 4];
                 if row >= 1 && row < 3 && col >= 1 && col < 3 {
-                    assert!(pixel.iter().all(|&b| b == 0),
-                        "pixel ({col},{row}) should be zeroed");
+                    assert!(
+                        pixel.iter().all(|&b| b == 0),
+                        "pixel ({col},{row}) should be zeroed"
+                    );
                 } else {
-                    assert!(pixel.iter().all(|&b| b == 0xFF),
-                        "pixel ({col},{row}) should still be 0xFF");
+                    assert!(
+                        pixel.iter().all(|&b| b == 0xFF),
+                        "pixel ({col},{row}) should still be 0xFF"
+                    );
                 }
             }
         }
@@ -790,11 +802,15 @@ mod tests {
                 let idx = ((row * 4 + col) * 4) as usize;
                 let pixel = &canvas.pixels[idx..idx + 4];
                 if row >= 1 && row < 3 && col >= 1 && col < 3 {
-                    assert!(pixel.iter().all(|&b| b == 0xFF),
-                        "pixel ({col},{row}) should be 0xFF");
+                    assert!(
+                        pixel.iter().all(|&b| b == 0xFF),
+                        "pixel ({col},{row}) should be 0xFF"
+                    );
                 } else {
-                    assert!(pixel.iter().all(|&b| b == 0),
-                        "pixel ({col},{row}) should be 0");
+                    assert!(
+                        pixel.iter().all(|&b| b == 0),
+                        "pixel ({col},{row}) should be 0"
+                    );
                 }
             }
         }
@@ -816,11 +832,17 @@ mod tests {
                 let idx = ((row * 4 + col) * 4) as usize;
                 let pixel = &canvas.pixels[idx..idx + 4];
                 if row >= 1 && row < 3 && col >= 1 && col < 3 {
-                    assert_eq!(pixel, &[200, 200, 200, 255],
-                        "pixel ({col},{row}) should be overwritten by opaque source");
+                    assert_eq!(
+                        pixel,
+                        &[200, 200, 200, 255],
+                        "pixel ({col},{row}) should be overwritten by opaque source"
+                    );
                 } else {
-                    assert_eq!(pixel, &[50, 100, 150, 255],
-                        "pixel ({col},{row}) should be unchanged");
+                    assert_eq!(
+                        pixel,
+                        &[50, 100, 150, 255],
+                        "pixel ({col},{row}) should be unchanged"
+                    );
                 }
             }
         }
@@ -855,11 +877,15 @@ mod tests {
                 let idx = ((row * 4 + col) * 4) as usize;
                 let pixel = &canvas.pixels[idx..idx + 4];
                 if row == 3 && col == 3 {
-                    assert!(pixel.iter().all(|&b| b == 0xFF),
-                        "pixel (3,3) should be written");
+                    assert!(
+                        pixel.iter().all(|&b| b == 0xFF),
+                        "pixel (3,3) should be written"
+                    );
                 } else {
-                    assert!(pixel.iter().all(|&b| b == 0),
-                        "pixel ({col},{row}) should be unchanged");
+                    assert!(
+                        pixel.iter().all(|&b| b == 0),
+                        "pixel ({col},{row}) should be unchanged"
+                    );
                 }
             }
         }
@@ -884,12 +910,66 @@ mod tests {
         //         = (25600 + 12700) / (128 + 127) = 38300/255 ≈ 150
         //   out_a = sa + da*inv_sa/255 = 128 + 127 = 255
         // Allow tolerance of ±2 for integer rounding.
-        assert!((pixel[0] as i32 - 150).abs() <= 2,
-            "red channel: expected ~150, got {}", pixel[0]);
-        assert!((pixel[1] as i32 - 150).abs() <= 2,
-            "green channel: expected ~150, got {}", pixel[1]);
-        assert!((pixel[2] as i32 - 150).abs() <= 2,
-            "blue channel: expected ~150, got {}", pixel[2]);
+        assert!(
+            (pixel[0] as i32 - 150).abs() <= 2,
+            "red channel: expected ~150, got {}",
+            pixel[0]
+        );
+        assert!(
+            (pixel[1] as i32 - 150).abs() <= 2,
+            "green channel: expected ~150, got {}",
+            pixel[1]
+        );
+        assert!(
+            (pixel[2] as i32 - 150).abs() <= 2,
+            "blue channel: expected ~150, got {}",
+            pixel[2]
+        );
         assert_eq!(pixel[3], 255, "alpha should be 255");
+    }
+
+    // ── Property-based tests ─────────────────────────────────────
+
+    use proptest::prelude::*;
+
+    proptest! {
+        #[test]
+        fn canvas_new_no_panic(w in 0u32..=8192, h in 0u32..=8192) {
+            // Should never panic - only Ok or Err
+            let _ = Canvas::new(w, h);
+        }
+
+        #[test]
+        fn canvas_composite_no_panic(
+            canvas_w in 1u32..=64,
+            canvas_h in 1u32..=64,
+            frame_w in 1u32..=64,
+            frame_h in 1u32..=64,
+            x in 0u32..=128,
+            y in 0u32..=128,
+            blend in any::<bool>(),
+        ) {
+            if let Ok(mut canvas) = Canvas::new(canvas_w, canvas_h) {
+                let frame_size = (frame_w as usize) * (frame_h as usize) * 4;
+                let frame_data = vec![128u8; frame_size];
+                // Should never panic even with out-of-bounds coordinates
+                canvas.composite(&frame_data, x, y, frame_w, frame_h, blend);
+            }
+        }
+
+        #[test]
+        fn canvas_clear_rect_no_panic(
+            canvas_w in 1u32..=64,
+            canvas_h in 1u32..=64,
+            x in 0u32..=128,
+            y in 0u32..=128,
+            w in 0u32..=128,
+            h in 0u32..=128,
+        ) {
+            if let Ok(mut canvas) = Canvas::new(canvas_w, canvas_h) {
+                // Should never panic even with out-of-bounds rectangle
+                canvas.clear_rect(x, y, w, h);
+            }
+        }
     }
 }

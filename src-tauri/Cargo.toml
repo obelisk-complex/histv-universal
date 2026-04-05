@@ -1,6 +1,6 @@
 [package]
 name = "histv"
-version = "2.5.6"
+version = "2.5.7"
 description = "Honey, I Shrunk The Vids - batch video encoder"
 authors = ["claude.ai", "obelisk-complex"]
 license = "GPL-3.0-or-later"
@@ -27,7 +27,7 @@ tauri-plugin-fs = { version = "2", optional = true }
 tauri-plugin-shell = { version = "2", optional = true }
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
-tokio = { version = "1", features = ["rt-multi-thread", "macros", "process", "fs", "time", "sync", "io-util", "io-std"] }
+tokio = { version = "1", features = ["rt-multi-thread", "macros", "process", "fs", "time", "sync", "io-util", "io-std", "test-util"] }
 uuid = { version = "1", features = ["v4"], optional = true }
 chrono = "0.4"
 regex = "1"
@@ -57,3 +57,7 @@ custom-protocol = [
 downloader = ["dep:reqwest", "dep:futures-util"]
 cli = ["dep:clap", "dep:indicatif", "dep:ctrlc", "dep:console"]
 dovi = ["dep:dolby_vision", "dep:hdr10plus"]
+
+[dev-dependencies]
+proptest = "1"
+serial_test = "3"

@@ -15,6 +15,9 @@ pub mod remote;
 pub mod staging;
 pub mod webp_decode;
 
+#[cfg(test)]
+pub mod test_helpers;
+
 #[cfg(feature = "custom-protocol")]
 mod config;
 #[cfg(feature = "custom-protocol")]
