@@ -134,13 +134,13 @@ pub fn vbr_flags(encoder: &str, target: &str, peak: &str) -> Vec<String> {
             "-maxrate".into(),
             peak.into(),
         ],
+        // SVT-AV1 rejects -maxrate in VBR mode (rate_control_mode=1);
+        // it only accepts max_bit_rate with CRF (capped-CRF).
         "libsvtav1" => vec![
             "-preset".into(),
             "6".into(),
             "-b:v".into(),
             target.into(),
-            "-maxrate".into(),
-            peak.into(),
         ],
         _ => vec!["-b:v".into(), target.into(), "-maxrate".into(), peak.into()],
     }
@@ -4339,6 +4339,8 @@ mod tests {
         let flags = vbr_flags("libsvtav1", "4M", "6M");
         assert!(flags.contains(&"-preset".to_string()));
         assert!(flags.contains(&"6".to_string()));
+        // SVT-AV1 rejects -maxrate in VBR mode
+        assert!(!flags.contains(&"-maxrate".to_string()));
     }
 
     #[test]

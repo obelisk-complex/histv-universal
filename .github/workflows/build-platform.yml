@@ -283,7 +283,8 @@ jobs:
 
           mkdir -p dmg-contents
           cp -R /tmp/dmg_src/* dmg-contents/
-          hdiutil detach /tmp/dmg_src
+          hdiutil detach /tmp/dmg_src -force
+          sleep 2  # let diskimages-helper exit before hdiutil create
 
           APP=$(find dmg-contents -maxdepth 1 -name "*.app" | head -1)
           cp ffmpeg-bin/ffmpeg "$APP/Contents/MacOS/"

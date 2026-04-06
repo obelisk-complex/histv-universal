@@ -69,9 +69,10 @@ fn test_init_then_reinit() {
     // After reinit, the command should point to the new location
     let cmd2 = histv_lib::ffmpeg::ffmpeg_command();
     let program2 = format!("{:?}", cmd2.as_std().get_program());
-    // Should now reference tmp2's path
+    // Canonicalize to handle Windows 8.3 short paths (e.g. RUNNER~1)
+    let tmp2_canon = tmp2.path().canonicalize().unwrap();
     assert!(
-        program2.contains(tmp2.path().to_str().unwrap()),
+        program2.contains(tmp2_canon.to_str().unwrap()),
         "After reinit, ffmpeg should point to new dir. Got: {program2}"
     );
 }
