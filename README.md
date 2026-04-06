@@ -106,6 +106,27 @@ The Flatpak bundles ffmpeg and has host filesystem access for encoding. The CLI 
 
 All binaries are portable - no installation needed. On Linux, mark the AppImage executable (`chmod +x`). On macOS, open the DMG and drag to Applications. On Windows, extract the zip to a folder.
 
+<details>
+<summary><strong>Linux display troubleshooting</strong></summary>
+
+HISTV sets three environment variables before GTK initialises to work around WebKitGTK rendering issues on Wayland. These are only set if you haven't already set them yourself:
+
+| Variable | Default | What it does |
+|----------|---------|-------------|
+| `WEBKIT_DISABLE_DMABUF_RENDERER` | `1` | Disables DMA-buf buffer sharing. Fixes `EGL_BAD_PARAMETER` and GBM buffer failures on AMD RDNA3+, some Intel iGPUs, and NVIDIA with Wayland. |
+| `WEBKIT_DISABLE_COMPOSITING_MODE` | `1` | Disables GPU compositing entirely. Catches EGL display creation failures that the DMA-buf fix alone doesn't cover. |
+| `__NV_DISABLE_EXPLICIT_SYNC` | `1` | Disables NVIDIA explicit sync. Fixes blank/flickering windows on NVIDIA 545+ drivers with Wayland. |
+
+If your system handles Wayland rendering correctly and you want GPU compositing back, override any of these before launching:
+
+```bash
+WEBKIT_DISABLE_COMPOSITING_MODE=0 WEBKIT_DISABLE_DMABUF_RENDERER=0 ./histv
+```
+
+The Flatpak respects these overrides via `flatpak run --env=VARIABLE=VALUE com.histv.encoder` or by setting them in your shell before `flatpak run`.
+
+</details>
+
 If you use a standard build, ffmpeg is required. The GUI offers to download it on first launch. The CLI expects it on your PATH (`apt install ffmpeg`, `brew install ffmpeg`, `choco install ffmpeg`, etc.).
 
 | OS | Architecture | GPU encoders |
