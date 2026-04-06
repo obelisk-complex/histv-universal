@@ -49,8 +49,7 @@ fn test_init_then_reinit() {
 
     // After init, ffmpeg_command() should work (returns a Command)
     let cmd = histv_lib::ffmpeg::ffmpeg_command();
-    // The command's program should point to our fake binary
-    let program = format!("{:?}", cmd.as_std().get_program());
+    let program = cmd.as_std().get_program().to_string_lossy();
     assert!(
         program.contains("ffmpeg"),
         "ffmpeg_command program should contain 'ffmpeg', got: {program}"
@@ -68,11 +67,11 @@ fn test_init_then_reinit() {
 
     // After reinit, the command should point to the new location
     let cmd2 = histv_lib::ffmpeg::ffmpeg_command();
-    let program2 = format!("{:?}", cmd2.as_std().get_program());
-    // Canonicalize to handle Windows 8.3 short paths (e.g. RUNNER~1)
-    let tmp2_canon = tmp2.path().canonicalize().unwrap();
+    // Use to_string_lossy (not Debug {:?}) to avoid escaped backslashes on Windows
+    let program2 = cmd2.as_std().get_program().to_string_lossy();
+    let expected = tmp2.path().to_str().unwrap();
     assert!(
-        program2.contains(tmp2_canon.to_str().unwrap()),
+        program2.contains(expected),
         "After reinit, ffmpeg should point to new dir. Got: {program2}"
     );
 }
