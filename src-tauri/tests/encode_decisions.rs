@@ -258,15 +258,142 @@ fn precision_mode_forces_software() {
     );
 }
 
-// ── DV source forces MP4 ───────────────────────────────────────
+// ── DV source: container derivation ────────────────────────────
 
+// DV content is always MP4-wrapped in practice, so resolve_file_settings
+// with a DV source that is already MP4 should keep MP4.  The encode-time
+// override via resolve_container(is_dovi_tier1=true) is a separate path
+// that handles the rare case of DV packaged in a non-MP4 container.
 #[test]
-fn dv_source_forces_mp4_container() {
+fn dv_mp4_source_produces_mp4_container() {
     let settings = base_settings();
     let encoders = sw_encoders();
 
+    // DV sources are MP4 in practice; auto mode should derive mp4 from the
+    // source extension, matching what the wave cleanup now does via
+    // resolve_file_settings.
+    let resolved = encoder::resolve_file_settings("hevc", "mp4", &settings, &encoders);
+    assert_eq!(
+        resolved.container_ext, "mp4",
+        "DV source in MP4 container should resolve to mp4"
+    );
+}
+
+// ── Wave cleanup extension fix: compat, explicit container, auto ──
+//
+// These tests validate the three cases that were broken before the fix
+// (resolve_container was called instead of resolve_file_settings):
+//
+// 1. Compat mode forces MP4 regardless of source extension or --container.
+// 2. Explicit --container override (mp4/mkv) is respected.
+// 3. Auto mode derives the container from the source extension.
+//
+// The wave cleanup now calls resolve_file_settings for all three, so
+// these assertions confirm that function produces the right answer.
+
+/// Compat mode must produce mp4 for any source extension, even when the
+/// user set --container mkv.  Before the fix, resolve_container was called
+/// with is_dovi_tier1=false and no compat awareness, so it would honour
+/// --container mkv and produce mkv -- silently mismatching the encoder's
+/// output.
+#[test]
+fn wave_cleanup_compat_mode_forces_mp4_over_mkv_container() {
+    let mut settings = base_settings();
+    settings.compatibility_mode = true;
+    settings.output_container = "mkv".to_string(); // explicit override that compat must win over
+    let encoders = sw_encoders();
+
+    for source_ext in &["mkv", "avi", "mp4", "ts"] {
+        let resolved = encoder::resolve_file_settings("hevc", source_ext, &settings, &encoders);
+        assert_eq!(
+            resolved.container_ext, "mp4",
+            "compat mode must force mp4 for source_ext={source_ext} even with --container mkv"
+        );
+    }
+}
+
+/// Explicit --container mp4 must be respected when compat mode is off.
+/// The old code also passed --container through resolve_container, so this
+/// case happened to work - but we verify it here to guard against regression.
+#[test]
+fn wave_cleanup_explicit_mp4_container_respected() {
+    let mut settings = base_settings();
+    settings.output_container = "mp4".to_string();
+    let encoders = sw_encoders();
+
     let resolved = encoder::resolve_file_settings("hevc", "mkv", &settings, &encoders);
-    // The container override for DV happens at encode time, not resolve time,
-    // so we just verify the resolve doesn't break with DV content
-    assert!(!resolved.codec_family.is_empty());
+    assert_eq!(
+        resolved.container_ext, "mp4",
+        "explicit --container mp4 should produce mp4"
+    );
+}
+
+/// Explicit --container mkv must be respected when compat mode is off.
+#[test]
+fn wave_cleanup_explicit_mkv_container_respected() {
+    let mut settings = base_settings();
+    settings.output_container = "mkv".to_string();
+    let encoders = sw_encoders();
+
+    // Source is mp4 but --container mkv overrides the auto derivation.
+    let resolved = encoder::resolve_file_settings("hevc", "mp4", &settings, &encoders);
+    assert_eq!(
+        resolved.container_ext, "mkv",
+        "explicit --container mkv should produce mkv even for an mp4 source"
+    );
+}
+
+/// Auto mode (output_container = "auto") derives the container from the
+/// source file extension.  Before the fix the wave cleanup used
+/// resolve_container with the original remote path, which would strip the
+/// staging prefix correctly but ignore compat mode.  With the fix it calls
+/// resolve_file_settings using only the extension, which should give the
+/// same auto-derivation result for the normal (non-compat) case.
+#[test]
+fn wave_cleanup_auto_container_derives_from_source_ext() {
+    let settings = base_settings(); // output_container = "auto"
+    let encoders = sw_encoders();
+
+    let mp4 = encoder::resolve_file_settings("hevc", "mp4", &settings, &encoders);
+    assert_eq!(mp4.container_ext, "mp4", "auto + mp4 source → mp4");
+
+    let mkv = encoder::resolve_file_settings("hevc", "mkv", &settings, &encoders);
+    assert_eq!(mkv.container_ext, "mkv", "auto + mkv source → mkv");
+
+    let avi = encoder::resolve_file_settings("hevc", "avi", &settings, &encoders);
+    assert_eq!(avi.container_ext, "mkv", "auto + avi source → mkv (default)");
+
+    let ts = encoder::resolve_file_settings("hevc", "ts", &settings, &encoders);
+    assert_eq!(ts.container_ext, "mkv", "auto + ts source → mkv (default)");
+}
+
+// ── resolve_container unit tests ───────────────────────────────
+
+/// resolve_container with is_dovi_tier1=true always forces mp4, regardless
+/// of the container_setting or source extension.
+#[test]
+fn resolve_container_dovi_tier1_always_forces_mp4() {
+    for container in &["auto", "mkv", "mp4"] {
+        let result = encoder::resolve_container("video.mkv", container, true);
+        assert_eq!(
+            result, "mp4",
+            "DV Tier 1 must force mp4 with container={container}"
+        );
+    }
+}
+
+/// resolve_container without DV, explicit settings.
+#[test]
+fn resolve_container_explicit_settings_respected() {
+    assert_eq!(encoder::resolve_container("video.mkv", "mp4", false), "mp4");
+    assert_eq!(encoder::resolve_container("video.mp4", "mkv", false), "mkv");
+}
+
+/// resolve_container auto mode derives from source extension.
+#[test]
+fn resolve_container_auto_derives_from_source() {
+    assert_eq!(encoder::resolve_container("video.mp4", "auto", false), "mp4");
+    assert_eq!(encoder::resolve_container("video.mkv", "auto", false), "mkv");
+    assert_eq!(encoder::resolve_container("video.avi", "auto", false), "mkv");
+    assert_eq!(encoder::resolve_container("video.ts", "auto", false), "mkv");
 }

@@ -2406,7 +2406,19 @@ pub async fn run_encode_loop(
                 let remote = std::path::Path::new(&original_path);
                 let remote_dir = remote.parent().unwrap_or(std::path::Path::new("."));
                 let base_name = remote.file_stem().unwrap_or_default().to_string_lossy();
-                let ext = resolve_container(&original_path, &settings.output_container, false);
+                // Resolve the extension using the same logic as encode_single_file:
+                // compat mode forces mp4, otherwise derive from source.
+                let source_ext = remote
+                    .extension()
+                    .map(|e| e.to_string_lossy().to_lowercase())
+                    .unwrap_or_default();
+                let resolved = resolve_file_settings(
+                    &queue[idx].probe.video_codec,
+                    &source_ext,
+                    settings,
+                    detected_encoders,
+                );
+                let ext = resolved.container_ext.as_str();
                 let is_replace = settings.output_mode == "replace";
 
                 let (local_output, final_remote) = if is_replace {
