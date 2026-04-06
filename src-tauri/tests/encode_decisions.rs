@@ -361,7 +361,10 @@ fn wave_cleanup_auto_container_derives_from_source_ext() {
     assert_eq!(mkv.container_ext, "mkv", "auto + mkv source → mkv");
 
     let avi = encoder::resolve_file_settings("hevc", "avi", &settings, &encoders);
-    assert_eq!(avi.container_ext, "mkv", "auto + avi source → mkv (default)");
+    assert_eq!(
+        avi.container_ext, "mkv",
+        "auto + avi source → mkv (default)"
+    );
 
     let ts = encoder::resolve_file_settings("hevc", "ts", &settings, &encoders);
     assert_eq!(ts.container_ext, "mkv", "auto + ts source → mkv (default)");
@@ -392,8 +395,17 @@ fn resolve_container_explicit_settings_respected() {
 /// resolve_container auto mode derives from source extension.
 #[test]
 fn resolve_container_auto_derives_from_source() {
-    assert_eq!(encoder::resolve_container("video.mp4", "auto", false), "mp4");
-    assert_eq!(encoder::resolve_container("video.mkv", "auto", false), "mkv");
-    assert_eq!(encoder::resolve_container("video.avi", "auto", false), "mkv");
+    assert_eq!(
+        encoder::resolve_container("video.mp4", "auto", false),
+        "mp4"
+    );
+    assert_eq!(
+        encoder::resolve_container("video.mkv", "auto", false),
+        "mkv"
+    );
+    assert_eq!(
+        encoder::resolve_container("video.avi", "auto", false),
+        "mkv"
+    );
     assert_eq!(encoder::resolve_container("video.ts", "auto", false), "mkv");
 }
