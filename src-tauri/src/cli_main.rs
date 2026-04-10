@@ -813,28 +813,14 @@ fn run_batch(
 ) -> i32 {
     // ── Pre-batch setup ───────────────────────────────────────
 
-    // Create output folder if needed (only in "folder" mode)
+    // Create + probe output folder (only in "folder" mode). Shared helper (#4c)
+    // covers both create-if-missing and writable-probe; CLI translates the
+    // helper's human-readable error to an eprintln + exit(4).
     if matches!(args.output_mode, cli::OutputMode::Folder) {
-        let out_path = std::path::Path::new(&args.output);
-        if !out_path.exists() {
-            if let Err(e) = std::fs::create_dir_all(out_path) {
-                eprintln!(
-                    "ERROR: Could not create output folder '{}': {e}",
-                    args.output.display()
-                );
-                std::process::exit(4);
-            }
-        }
-        // Verify writable
-        let test_path = out_path.join(".histv_write_test");
-        if let Err(e) = std::fs::write(&test_path, b"") {
-            eprintln!(
-                "ERROR: Output folder '{}' is not writable: {e}",
-                args.output.display()
-            );
+        if let Err(e) = histv_lib::encoder::validate_output_folder(&args.output) {
+            eprintln!("ERROR: {e}");
             std::process::exit(4);
         }
-        let _ = std::fs::remove_file(&test_path);
     }
 
     // Disk-aware mode

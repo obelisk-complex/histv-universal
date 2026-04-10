@@ -151,6 +151,15 @@ cargo tauri build
 cargo build --manifest-path src-tauri/Cargo.toml --release --bin histv-cli --no-default-features --features cli
 ```
 
+**Cargo features:**
+
+| Feature | Default | What it gates |
+|---------|---------|---------------|
+| `custom-protocol` | GUI | Tauri custom-protocol handler (required for release GUI builds) |
+| `downloader` | GUI | In-app ffmpeg downloader (pulls in `reqwest` + `futures-util`); GUI-only — the CLI expects ffmpeg on your PATH |
+| `dovi` | GUI, CLI | Dolby Vision RPU preservation and HDR10+ pipelines |
+| `cli` | CLI | Builds the headless `histv-cli` binary without any Tauri/GTK/WebKit dependencies |
+
 </details>
 
 ## How it works

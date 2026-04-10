@@ -774,7 +774,7 @@ mod tests {
             for col in 0..4u32 {
                 let idx = ((row * 4 + col) * 4) as usize;
                 let pixel = &canvas.pixels[idx..idx + 4];
-                if row >= 1 && row < 3 && col >= 1 && col < 3 {
+                if (1..3).contains(&row) && (1..3).contains(&col) {
                     assert!(
                         pixel.iter().all(|&b| b == 0),
                         "pixel ({col},{row}) should be zeroed"
@@ -801,7 +801,7 @@ mod tests {
             for col in 0..4u32 {
                 let idx = ((row * 4 + col) * 4) as usize;
                 let pixel = &canvas.pixels[idx..idx + 4];
-                if row >= 1 && row < 3 && col >= 1 && col < 3 {
+                if (1..3).contains(&row) && (1..3).contains(&col) {
                     assert!(
                         pixel.iter().all(|&b| b == 0xFF),
                         "pixel ({col},{row}) should be 0xFF"
@@ -831,7 +831,7 @@ mod tests {
             for col in 0..4u32 {
                 let idx = ((row * 4 + col) * 4) as usize;
                 let pixel = &canvas.pixels[idx..idx + 4];
-                if row >= 1 && row < 3 && col >= 1 && col < 3 {
+                if (1..3).contains(&row) && (1..3).contains(&col) {
                     assert_eq!(
                         pixel,
                         &[200, 200, 200, 255],

@@ -9,6 +9,7 @@ use serde::Serialize;
 use tauri::{AppHandle, Emitter};
 
 use crate::events::EventSink;
+use crate::queue::QueueItem;
 
 // ── Typed event payloads (#16) ─────────────────────────────────
 
@@ -108,8 +109,10 @@ impl EventSink for TauriSink {
         let _ = self.app.emit("queue-item-updated", (index, status));
     }
 
-    fn queue_item_probed(&self, index: usize) {
-        let _ = self.app.emit("queue-item-probed", index);
+    fn queue_item_probed(&self, index: usize, item: &QueueItem) {
+        // Payload carries the full post-probe row so the frontend can patch
+        // queueData[index] without refetching the entire queue (#3c).
+        let _ = self.app.emit("queue-item-probed", (index, item));
     }
 
     fn batch_started(&self) {

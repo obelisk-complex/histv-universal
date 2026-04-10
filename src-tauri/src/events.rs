@@ -5,6 +5,8 @@
 //! `app.emit`); the CLI will implement it as terminal output. All methods are
 //! fire-and-forget — they never return data to the caller.
 
+use crate::queue::QueueItem;
+
 /// One-way output channel for logging, progress, and status events.
 ///
 /// Every place the core modules previously called `app.emit(...)` now calls
@@ -16,7 +18,10 @@ pub trait EventSink: Send + Sync {
     fn batch_progress(&self, current: u32, total: usize);
     fn batch_status(&self, message: &str);
     fn queue_item_updated(&self, index: usize, status: &str);
-    fn queue_item_probed(&self, index: usize);
+    /// Emitted after a queue item's probe (or repair) completes. The full
+    /// post-probe `QueueItem` snapshot travels with the event so the frontend
+    /// can patch a single row without refetching the whole queue (#3c).
+    fn queue_item_probed(&self, index: usize, item: &QueueItem);
     fn batch_started(&self);
     fn batch_finished(&self, done: u32, failed: u32, skipped: u32, duration: &str);
     fn ffmpeg_stderr(&self, line: &str);
@@ -50,8 +55,8 @@ impl<T: EventSink> EventSink for std::sync::Arc<T> {
     fn queue_item_updated(&self, index: usize, status: &str) {
         (**self).queue_item_updated(index, status)
     }
-    fn queue_item_probed(&self, index: usize) {
-        (**self).queue_item_probed(index)
+    fn queue_item_probed(&self, index: usize, item: &QueueItem) {
+        (**self).queue_item_probed(index, item)
     }
     fn batch_started(&self) {
         (**self).batch_started()
@@ -116,4 +121,79 @@ pub trait BatchControl: Send + Sync {
     /// Prompt the user about falling back to software encoding.
     /// Returns "yes" | "no".
     fn fallback_prompt(&self, filename: &str) -> String;
+}
+
+// ── Unit tests ─────────────────────────────────────────────────
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::queue::{QueueItem, QueueItemStatus};
+    use crate::test_helpers::{synthetic_probe, CapturingSink};
+    use std::sync::Arc;
+
+    fn make_item(path: &str, status: QueueItemStatus) -> QueueItem {
+        QueueItem {
+            full_path: path.to_string(),
+            file_name: "test.mkv".to_string(),
+            base_name: "test".to_string(),
+            status,
+            source_bytes: 0,
+            probe: synthetic_probe("hevc", 8.0, 60.0, false),
+        }
+    }
+
+    // ── queue_item_probed contract (#3c) ─────────────────────────
+
+    /// The sink receives exactly one call with the correct index and the
+    /// post-mutation item state. This pins the #3c contract so that a
+    /// revert to the old bare-index payload or wrong index would be caught.
+    #[test]
+    fn test_queue_item_probed_captures_index_and_item() {
+        let sink = CapturingSink::new();
+        let item = make_item("/videos/movie.mkv", QueueItemStatus::Pending);
+
+        sink.queue_item_probed(3, &item);
+
+        let captured = sink.take_probed();
+        assert_eq!(captured.len(), 1, "expected exactly one probed event");
+        let (idx, captured_item) = &captured[0];
+        assert_eq!(*idx, 3, "index must be forwarded unchanged");
+        assert_eq!(captured_item.full_path, "/videos/movie.mkv");
+        assert!(
+            matches!(captured_item.status, QueueItemStatus::Pending),
+            "item status must reflect post-mutation state"
+        );
+    }
+
+    /// Arc<CapturingSink> delegates through the blanket impl — verifies
+    /// the Arc wrapper does not silently swallow the call.
+    #[test]
+    fn test_queue_item_probed_arc_delegation() {
+        let sink = Arc::new(CapturingSink::new());
+        let item = make_item("/videos/arc_test.mkv", QueueItemStatus::Pending);
+
+        sink.queue_item_probed(7, &item);
+
+        let captured = sink.take_probed();
+        assert_eq!(captured.len(), 1);
+        assert_eq!(captured[0].0, 7);
+        assert_eq!(captured[0].1.full_path, "/videos/arc_test.mkv");
+    }
+
+    /// Multiple sequential calls all land in the sink in order, preserving
+    /// the index for each.
+    #[test]
+    fn test_queue_item_probed_multiple_calls_ordered() {
+        let sink = CapturingSink::new();
+        for i in 0..5usize {
+            let item = make_item("/videos/file.mkv", QueueItemStatus::Pending);
+            sink.queue_item_probed(i, &item);
+        }
+        let captured = sink.take_probed();
+        assert_eq!(captured.len(), 5);
+        for (i, (idx, _)) in captured.iter().enumerate() {
+            assert_eq!(*idx, i);
+        }
+    }
 }

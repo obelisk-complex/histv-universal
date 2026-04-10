@@ -208,7 +208,7 @@ mod tests {
         let json = serde_json::to_string(&config).unwrap();
         // serde(rename_all = "camelCase") should produce camelCase keys
         assert!(json.contains("outputFolder"));
-        assert!(json.contains("ratControlMode") || json.contains("rateControlMode"));
+        assert!(json.contains("rateControlMode"));
         assert!(json.contains("peakMultiplier"));
         assert!(!json.contains("output_folder")); // Should NOT have snake_case
     }

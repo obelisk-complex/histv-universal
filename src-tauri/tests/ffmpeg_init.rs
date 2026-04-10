@@ -20,7 +20,7 @@ impl histv_lib::events::EventSink for NoopSink {
     fn batch_progress(&self, _: u32, _: usize) {}
     fn batch_status(&self, _: &str) {}
     fn queue_item_updated(&self, _: usize, _: &str) {}
-    fn queue_item_probed(&self, _: usize) {}
+    fn queue_item_probed(&self, _: usize, _: &histv_lib::queue::QueueItem) {}
     fn batch_started(&self) {}
     fn batch_finished(&self, _: u32, _: u32, _: u32, _: &str) {}
     fn ffmpeg_stderr(&self, _: &str) {}

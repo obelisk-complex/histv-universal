@@ -818,6 +818,25 @@ fn extract_from_exe(
     Ok(())
 }
 
+/// Recursively find a binary by name in a directory tree.
+#[cfg(feature = "downloader")]
+fn find_binary_recursive(dir: &Path, name: &str) -> Option<PathBuf> {
+    if let Ok(entries) = std::fs::read_dir(dir) {
+        for entry in entries.flatten() {
+            let p = entry.path();
+            if p.is_file() && p.file_name().map(|n| n == name).unwrap_or(false) {
+                return Some(p);
+            }
+            if p.is_dir() {
+                if let Some(found) = find_binary_recursive(&p, name) {
+                    return Some(found);
+                }
+            }
+        }
+    }
+    None
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -865,23 +884,4 @@ mod tests {
         assert!(!mp4box_supports_dvp(""));
         assert!(!mp4box_supports_dvp("not a version string"));
     }
-}
-
-/// Recursively find a binary by name in a directory tree.
-#[cfg(feature = "downloader")]
-fn find_binary_recursive(dir: &Path, name: &str) -> Option<PathBuf> {
-    if let Ok(entries) = std::fs::read_dir(dir) {
-        for entry in entries.flatten() {
-            let p = entry.path();
-            if p.is_file() && p.file_name().map(|n| n == name).unwrap_or(false) {
-                return Some(p);
-            }
-            if p.is_dir() {
-                if let Some(found) = find_binary_recursive(&p, name) {
-                    return Some(found);
-                }
-            }
-        }
-    }
-    None
 }

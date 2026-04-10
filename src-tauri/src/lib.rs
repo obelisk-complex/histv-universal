@@ -98,9 +98,9 @@ mod gui_commands {
             let mapped = self.index_map.get(index).copied().unwrap_or(index);
             self.inner.queue_item_updated(mapped, status);
         }
-        fn queue_item_probed(&self, index: usize) {
+        fn queue_item_probed(&self, index: usize, item: &queue::QueueItem) {
             let mapped = self.index_map.get(index).copied().unwrap_or(index);
-            self.inner.queue_item_probed(mapped);
+            self.inner.queue_item_probed(mapped, item);
         }
         fn batch_started(&self) {
             self.inner.batch_started();
@@ -380,8 +380,9 @@ mod gui_commands {
 
         let result = probe::probe_file(&file_path, &sink).await;
 
-        // Update the queue item with probe results
-        {
+        // Update the queue item with probe results and capture a snapshot
+        // for the delta event (#3c).
+        let item_snapshot: Option<queue::QueueItem> = {
             let mut q = state.queue.write().await;
             if index < q.len() {
                 match &result {
@@ -406,9 +407,14 @@ mod gui_commands {
                         q[index].status = QueueItemStatus::Failed;
                     }
                 }
+                Some(q[index].clone())
+            } else {
+                None
             }
+        };
+        if let Some(ref item) = item_snapshot {
+            sink.queue_item_probed(index, item);
         }
-        sink.queue_item_probed(index);
 
         result
     }
@@ -448,14 +454,19 @@ mod gui_commands {
                         if n == 1 { "" } else { "s" },
                         mbps
                     ));
-                    {
+                    let item_snapshot: Option<queue::QueueItem> = {
                         let mut q = state.queue.write().await;
                         if index < q.len() {
                             q[index].probe.video_bitrate_bps = bps as f64;
                             q[index].probe.video_bitrate_mbps = mbps;
+                            Some(q[index].clone())
+                        } else {
+                            None
                         }
+                    };
+                    if let Some(ref item) = item_snapshot {
+                        sink.queue_item_probed(index, item);
                     }
-                    sink.queue_item_probed(index);
                     repaired += 1;
                 }
                 Ok(_) => {
@@ -512,14 +523,19 @@ mod gui_commands {
                         if n == 1 { "" } else { "s" },
                         mbps
                     ));
-                    {
+                    let item_snapshot: Option<queue::QueueItem> = {
                         let mut q = state.queue.write().await;
                         if index < q.len() {
                             q[index].probe.video_bitrate_bps = bps as f64;
                             q[index].probe.video_bitrate_mbps = mbps;
+                            Some(q[index].clone())
+                        } else {
+                            None
                         }
+                    };
+                    if let Some(ref item) = item_snapshot {
+                        sink.queue_item_probed(index, item);
                     }
-                    sink.queue_item_probed(index);
                     repaired += 1;
                 }
                 Ok(_) => {
@@ -579,25 +595,11 @@ mod gui_commands {
             batch_settings.output_folder = resolved.to_string_lossy().to_string();
         }
 
-        // Validate output folder (only in folder mode)
+        // Validate output folder (only in folder mode). Shared helper (#4c)
+        // covers both create-if-missing and writable-probe.
         if batch_settings.output_mode == "folder" {
             let out_path = std::path::Path::new(&batch_settings.output_folder);
-            if !out_path.exists() {
-                std::fs::create_dir_all(out_path).map_err(|e| {
-                    format!(
-                        "Could not create output folder '{}': {e}",
-                        batch_settings.output_folder
-                    )
-                })?;
-            }
-            let test_path = out_path.join(".histv_write_test");
-            std::fs::write(&test_path, b"").map_err(|e| {
-                format!(
-                    "Output folder '{}' is not writable: {e}",
-                    batch_settings.output_folder
-                )
-            })?;
-            let _ = std::fs::remove_file(&test_path);
+            encoder::validate_output_folder(out_path)?;
         }
 
         // Reset batch state and set running

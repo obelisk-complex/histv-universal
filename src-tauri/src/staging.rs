@@ -333,9 +333,8 @@ mod tests {
         let orig = std::env::var("HISTV_TMP").ok();
         std::env::remove_var("HISTV_TMP");
         let dir = resolve_staging_dir(None);
-        match orig {
-            Some(v) => std::env::set_var("HISTV_TMP", v),
-            None => {}
+        if let Some(v) = orig {
+            std::env::set_var("HISTV_TMP", v);
         }
         assert!(dir.to_string_lossy().contains("histv-staging"));
     }

@@ -8,7 +8,7 @@ In TTY mode, the CLI shows a persistent queue table during encoding - completed 
 
 #### Can I use this with Sonarr/Radarr?
 
-Yes! Please see the [Sonarr-Radarr Guide](https://github.com/obelisk-complex/histv-universal/Sonarr-Radarr-Integration.md) for details.
+Yes! Please see the [Sonarr-Radarr Guide](https://github.com/obelisk-complex/histv-universal/blob/main/Sonarr-Radarr-Integration.md) for details.
 
 ## Installation
 

@@ -1017,6 +1017,22 @@
 		checkAv1Auto();
       }, 80);
 	}
+
+    // ── Debounced render-only (no IPC) ──
+    // Used by delta events (queue-item-probed) that already patch
+    // queueData locally — we just need a single coalesced renderQueue()
+    // call rather than one per event. Separate timer from
+    // scheduleQueueRefresh so a pending delta-render doesn't cancel
+    // an in-flight full refresh.
+    let queueRenderDebounce = null;
+    function scheduleQueueRender() {
+      if (queueRenderDebounce) clearTimeout(queueRenderDebounce);
+      queueRenderDebounce = setTimeout(() => {
+        renderQueue();
+        checkHdrAuto();
+        checkAv1Auto();
+      }, 80);
+    }
 	  
 	  async function fetchQueue() {
       queueData = await invoke('get_queue');
@@ -1049,12 +1065,15 @@
     }
 
     // ── Probe a single file (async, non-blocking) ──
-    // Schedules a debounced queue refresh on completion rather than
-    // fetching + rendering immediately - prevents N fetches for N files.
+    // The backend emits a queue-item-probed event on both success and
+    // failure paths (#3c), carrying the post-probe row. That listener
+    // patches queueData[index] and schedules the render, so we don't
+    // need to refetch here. On invoke error (Rust command-level
+    // failure, not probe failure), schedule a full refresh as a
+    // belt-and-braces fallback in case the event never fired.
     async function probeFileAt(index) {
       try {
         await invoke('probe_file', { index });
-        scheduleQueueRefresh();
       } catch (e) {
         console.warn(`Probe failed for index ${index}:`, e);
         scheduleQueueRefresh();
@@ -2658,10 +2677,23 @@
         updateBatchButtons();
       });
 
-      // Queue item probed - debounced (probeFileAt also schedules a
-      // refresh, so this just ensures we don't miss backend-initiated probes)
-      listen('queue-item-probed', () => {
-        scheduleQueueRefresh();
+      // Queue item probed - the backend emits the full post-probe row as
+      // payload (#3c), so we patch queueData[index] in place and schedule
+      // a debounced render instead of refetching the whole queue. This
+      // keeps the probe storm on large queues (~15k files) off the IPC
+      // critical path: no get_queue clone, no ~6.5 MB JSON round trip per
+      // probe event. renderQueue() is already a differential update, so
+      // the DOM cost is bounded to cells that actually changed.
+      listen('queue-item-probed', (event) => {
+        const [index, item] = event.payload;
+        if (index >= queueData.length) {
+          // Index out of sync with frontend state — fall back to a full
+          // refresh so we don't silently desync.
+          scheduleQueueRefresh();
+          return;
+        }
+        queueData[index] = item;
+        scheduleQueueRender();
       });
 
       // Batch started

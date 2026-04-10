@@ -597,44 +597,70 @@ pub async fn deep_repair(
         .map(|m| m.len())
         .map_err(|e| format!("stat: {e}"))?;
 
-    // Count how many audio and subtitle streams exist
     let audio_count = probe.audio_streams.len();
+    let sub_count = probe.subtitle_stream_count as usize;
 
-    // Scan audio stream bytes (fast - audio is small relative to video)
-    let mut non_video_bytes: u64 = 0;
-    for i in 0..audio_count {
-        let selector = format!("a:{}", i);
-        sink.log(&format!("[repair] Scanning audio stream {}...", i));
-        match packet_scan_stream_bytes(path, &selector).await {
-            Ok(bytes) => non_video_bytes += bytes,
-            Err(e) => sink.log(&format!("[repair] WARNING: Audio {} scan failed: {}", i, e)),
-        }
+    // Scan all audio streams in one ffprobe call, all subtitle streams in
+    // another. `-select_streams a` matches every audio stream in the file;
+    // `-select_streams s` matches every subtitle stream. This keeps
+    // deep_repair at a constant 4 ffprobe/ffmpeg invocations (probe,
+    // audio scan, subtitle scan, frame count) regardless of how many
+    // audio or subtitle streams the file has — previously it was
+    // 2 + N + M (#3h).
+    //
+    // After the probe returns stream counts and duration, the audio
+    // scan, subtitle scan, and frame count are independent and run in
+    // parallel via tokio::join!. On typical files the frame count
+    // dominates wall time, so overlapping it with the audio scan
+    // roughly halves deep_repair latency.
+    if audio_count > 0 {
+        sink.log(&format!(
+            "[repair] Scanning {} audio stream{}...",
+            audio_count,
+            if audio_count == 1 { "" } else { "s" }
+        ));
+    }
+    if sub_count > 0 {
+        sink.log(&format!(
+            "[repair] Scanning {} subtitle stream{}...",
+            sub_count,
+            if sub_count == 1 { "" } else { "s" }
+        ));
     }
 
-    // Scan subtitle stream bytes (fast - subs are tiny)
-    let sub_count = probe.subtitle_stream_count as usize;
-    for i in 0..sub_count {
-        let selector = format!("s:{}", i);
-        match packet_scan_stream_bytes(path, &selector).await {
-            Ok(bytes) => {
-                sink.log(&format!("[repair] Subtitle stream {}: {} bytes", i, bytes));
-                non_video_bytes += bytes;
-            }
-            Err(e) => sink.log(&format!(
-                "[repair] WARNING: Subtitle {} scan failed: {}",
-                i, e
-            )),
+    let audio_fut = async {
+        if audio_count > 0 {
+            packet_scan_stream_bytes(path, "a").await
+        } else {
+            Ok(0u64)
         }
+    };
+    let sub_fut = async {
+        if sub_count > 0 {
+            packet_scan_stream_bytes(path, "s").await
+        } else {
+            Ok(0u64)
+        }
+    };
+    let frames_fut = count_frames_with_progress(path, probe.duration_secs, sink);
+
+    let (audio_res, sub_res, frames_res) = tokio::join!(audio_fut, sub_fut, frames_fut);
+
+    let mut non_video_bytes: u64 = 0;
+    match audio_res {
+        Ok(bytes) => non_video_bytes += bytes,
+        Err(e) => sink.log(&format!("[repair] WARNING: Audio scan failed: {}", e)),
+    }
+    match sub_res {
+        Ok(bytes) => non_video_bytes += bytes,
+        Err(e) => sink.log(&format!("[repair] WARNING: Subtitle scan failed: {}", e)),
     }
 
     // Video bytes = file size minus all non-video content
     let video_bytes = file_size.saturating_sub(non_video_bytes);
     let video_bps = (video_bytes as f64 * 8.0 / probe.duration_secs) as u64;
 
-    // Frame count via ffmpeg -c copy -f null, with live progress.
-    let video_frames = count_frames_with_progress(path, probe.duration_secs, sink)
-        .await
-        .unwrap_or(0);
+    let video_frames = frames_res.unwrap_or(0);
 
     let patched = patch_first_statistics_tag(
         path,
@@ -697,7 +723,12 @@ pub async fn repair_file_tags(
 
 // ── ffprobe packet scanning helpers ────────────────────────────
 
-/// Sum all packet sizes for a given stream selector (e.g. "v:0", "a:0").
+/// Sum all packet sizes for a given ffprobe stream selector. Accepts any
+/// specifier ffprobe understands — e.g. `"v:0"` (first video stream),
+/// `"a:0"` (first audio stream), `"a"` (all audio streams), `"s"` (all
+/// subtitle streams). Aggregate forms let callers scan every audio or
+/// subtitle stream in a single process invocation.
+///
 /// Uses CSV output and line-by-line parsing to avoid building a multi-MB
 /// JSON DOM for large files.
 async fn packet_scan_stream_bytes(path: &Path, stream_selector: &str) -> Result<u64, String> {

@@ -10,7 +10,7 @@ use std::sync::Mutex;
 use crate::encoder::{BatchSettings, EncoderInfo};
 use crate::events::{BatchControl, EventSink};
 use crate::probe::ProbeResult;
-use crate::queue::AudioStreamInfo;
+use crate::queue::{AudioStreamInfo, QueueItem};
 
 // ── NoopSink ────────────────────────────────────────────────────
 
@@ -24,7 +24,7 @@ impl EventSink for NoopSink {
     fn batch_progress(&self, _: u32, _: usize) {}
     fn batch_status(&self, _: &str) {}
     fn queue_item_updated(&self, _: usize, _: &str) {}
-    fn queue_item_probed(&self, _: usize) {}
+    fn queue_item_probed(&self, _: usize, _: &QueueItem) {}
     fn batch_started(&self) {}
     fn batch_finished(&self, _: u32, _: u32, _: u32, _: &str) {}
     fn ffmpeg_stderr(&self, _: &str) {}
@@ -54,6 +54,12 @@ impl RecordingSink {
     }
 }
 
+impl Default for RecordingSink {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
 impl EventSink for RecordingSink {
     fn log(&self, message: &str) {
         self.logs.lock().unwrap().push(message.to_string());
@@ -62,7 +68,7 @@ impl EventSink for RecordingSink {
     fn batch_progress(&self, _: u32, _: usize) {}
     fn batch_status(&self, _: &str) {}
     fn queue_item_updated(&self, _: usize, _: &str) {}
-    fn queue_item_probed(&self, _: usize) {}
+    fn queue_item_probed(&self, _: usize, _: &QueueItem) {}
     fn batch_started(&self) {}
     fn batch_finished(&self, _: u32, _: u32, _: u32, _: &str) {}
     fn ffmpeg_stderr(&self, _: &str) {}
@@ -124,6 +130,12 @@ impl CancellableBatchControl {
     }
 }
 
+impl Default for CancellableBatchControl {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
 impl BatchControl for CancellableBatchControl {
     fn should_cancel_current(&self) -> bool {
         self.cancel_current.load(Ordering::SeqCst)
@@ -151,6 +163,52 @@ impl BatchControl for CancellableBatchControl {
     fn fallback_prompt(&self, _: &str) -> String {
         "yes".to_string()
     }
+}
+
+// ── CapturingSink ───────────────────────────────────────────────
+
+/// `EventSink` that records every `queue_item_probed` call.
+/// Use this to pin the contract: index forwarded correctly, and the
+/// `QueueItem` snapshot reflects the post-mutation state (#3c).
+pub struct CapturingSink {
+    pub probed: Mutex<Vec<(usize, QueueItem)>>,
+}
+
+impl CapturingSink {
+    pub fn new() -> Self {
+        Self {
+            probed: Mutex::new(Vec::new()),
+        }
+    }
+
+    /// Return a snapshot of all recorded probed events.
+    pub fn take_probed(&self) -> Vec<(usize, QueueItem)> {
+        self.probed.lock().unwrap().clone()
+    }
+}
+
+impl Default for CapturingSink {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
+impl EventSink for CapturingSink {
+    fn log(&self, _: &str) {}
+    fn file_progress(&self, _: f64, _: f64, _: f64, _: Option<(u8, u8)>) {}
+    fn batch_progress(&self, _: u32, _: usize) {}
+    fn batch_status(&self, _: &str) {}
+    fn queue_item_updated(&self, _: usize, _: &str) {}
+    fn queue_item_probed(&self, index: usize, item: &QueueItem) {
+        self.probed.lock().unwrap().push((index, item.clone()));
+    }
+    fn batch_started(&self) {}
+    fn batch_finished(&self, _: u32, _: u32, _: u32, _: &str) {}
+    fn ffmpeg_stderr(&self, _: &str) {}
+    fn batch_command(&self, _: &str) {}
+    fn ffmpeg_download_progress(&self, _: &str) {}
+    fn toast(&self, _: &str) {}
+    fn post_batch(&self, _: &str, _: u32) {}
 }
 
 // ── Factory functions ──────────���────────────────────────────────

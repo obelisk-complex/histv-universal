@@ -1330,10 +1330,6 @@ async fn encode_single_file(
 
     sink.batch_status(&format!("[{}/{}] {}", file_counter, total, item_file_name));
 
-    if tonemap_filter.is_some() {
-        sink.log("  HDR → SDR: tonemapping with Hable curve");
-    }
-
     queue[idx].status = QueueItemStatus::Encoding;
     sink.queue_item_updated(idx, "Encoding");
 
@@ -1408,6 +1404,10 @@ async fn encode_single_file(
     sink.log(&log_msg);
     write_log(log_writer, &log_msg);
 
+    if tonemap_filter.is_some() {
+        sink.log("  HDR → SDR: tonemapping with Hable curve");
+    }
+
     // Overwrite check - in replace mode, we're replacing the source so
     // no overwrite prompt is needed. In other modes, check the final output.
     if !is_replace_mode && output_file.exists() && !batch_control.overwrite_always() {
@@ -1466,6 +1466,30 @@ async fn encode_single_file(
         },
         settings.peak_multiplier,
     );
+
+    // Tonemapping requires re-encoding — a stream copy can't apply a
+    // `-vf` filter. If the decision is Copy but we've committed to an
+    // HDR→SDR tonemap, ffmpeg will reject `-c:v copy -vf zscale=...`
+    // with EINVAL (exit 234). Override to a quality-based transcode so
+    // the user's SDR request is actually honoured. We use CRF/CQP
+    // (not VBR) because the source is already at/below the bitrate
+    // threshold — VBR would risk inflating the file.
+    let decision = if tonemap_filter.is_some() && matches!(decision, EncodeDecision::Copy) {
+        if settings.rate_control_mode.eq_ignore_ascii_case("CRF") {
+            EncodeDecision::Crf {
+                crf: settings.crf_val,
+                qi_fallback: settings.qp_i,
+                qp_fallback: settings.qp_p,
+            }
+        } else {
+            EncodeDecision::Cqp {
+                qi: settings.qp_i,
+                qp: settings.qp_p,
+            }
+        }
+    } else {
+        decision
+    };
 
     // ── Pre-encode: DV/HDR10+ metadata extraction ────────────
     // Only extract when actually re-encoding (not copy). Extraction is
@@ -3047,6 +3071,20 @@ struct FfmpegAssemblyParts<'a> {
 /// Used by both the primary encode and the software-fallback path
 /// to avoid duplicating the invocation pattern.
 fn assemble_ffmpeg_args(parts: &FfmpegAssemblyParts<'_>) -> Vec<String> {
+    // A tonemap filter requires an encode — ffmpeg cannot apply `-vf`
+    // when the video stream is being copied (`-c:v copy -vf ...` fails
+    // with EINVAL, exit 234). The caller must rewrite the decision to
+    // a transcode before assembling. Guarded with debug_assert so
+    // future call sites can't reintroduce the contradiction silently.
+    debug_assert!(
+        !(parts.tonemap_filter.is_some()
+            && parts
+                .video_args
+                .windows(2)
+                .any(|w| w[0] == "-c:v" && w[1] == "copy")),
+        "assemble_ffmpeg_args: tonemap_filter is incompatible with -c:v copy"
+    );
+
     let mut args: Vec<String> = vec![
         "-err_detect".into(),
         "ignore_err".into(),
@@ -3607,6 +3645,26 @@ pub fn resolve_base_dir() -> std::path::PathBuf {
         }
         std::env::current_dir().unwrap_or_else(|_| std::path::PathBuf::from("."))
     }
+}
+
+/// Validate that `path` is usable as an output folder. Creates it if
+/// it does not exist, then performs a write/remove round-trip to verify
+/// the caller has write permission. Returns a human-readable error on
+/// failure; callers translate this to their own error channel (CLI
+/// eprintln+exit, GUI Tauri `Result<(), String>`).
+///
+/// Extracted from the duplicated blocks in `gui_commands::start_batch`
+/// and `cli_main::run_batch` (#4c).
+pub fn validate_output_folder(path: &std::path::Path) -> Result<(), String> {
+    if !path.exists() {
+        std::fs::create_dir_all(path)
+            .map_err(|e| format!("Could not create output folder '{}': {e}", path.display()))?;
+    }
+    let test_path = path.join(".histv_write_test");
+    std::fs::write(&test_path, b"")
+        .map_err(|e| format!("Output folder '{}' is not writable: {e}", path.display()))?;
+    let _ = std::fs::remove_file(&test_path);
+    Ok(())
 }
 
 #[cfg(test)]
@@ -4641,6 +4699,55 @@ mod tests {
         assert!(!args.contains(&"mov_text".to_string()));
     }
 
+    /// HDR→SDR tonemap must emit a -vf filter before -pix_fmt when
+    /// re-encoding. Regression test for the HDR H.264 batch bug where
+    /// the tonemap filter was paired with -c:v copy and ffmpeg refused
+    /// with EINVAL (exit 234).
+    #[test]
+    fn test_assemble_tonemap_with_reencode_emits_vf_filter() {
+        let args = assemble_ffmpeg_args(&FfmpegAssemblyParts {
+            input_path: "input.mkv",
+            output_path: "output.mkv",
+            video_args: &["-c:v", "libx265"],
+            pix_fmt: "yuv420p",
+            audio_map_args: &[],
+            audio_codec_args: &[],
+            is_image_source: false,
+            threads: 0,
+            tonemap_filter: Some(TONEMAP_HABLE),
+            codec_family: "hevc",
+        });
+        assert!(args.contains(&"-vf".to_string()));
+        assert!(args.iter().any(|a| a.contains("tonemap=hable")));
+        // -vf must precede -pix_fmt so the tonemap runs before format
+        // conversion.
+        let vf_pos = args.iter().position(|a| a == "-vf").unwrap();
+        let pix_pos = args.iter().position(|a| a == "-pix_fmt").unwrap();
+        assert!(vf_pos < pix_pos);
+    }
+
+    /// The assemble helper must refuse -c:v copy paired with a tonemap
+    /// filter. ffmpeg rejects this combination at runtime (EINVAL), so
+    /// the debug_assert is a defence-in-depth guard against future
+    /// regressions where a caller forgets to override a Copy decision
+    /// when tonemapping is required.
+    #[test]
+    #[should_panic(expected = "tonemap_filter is incompatible with -c:v copy")]
+    fn test_assemble_tonemap_with_copy_panics() {
+        let _ = assemble_ffmpeg_args(&FfmpegAssemblyParts {
+            input_path: "input.mkv",
+            output_path: "output.mkv",
+            video_args: &["-c:v", "copy"],
+            pix_fmt: "yuv420p",
+            audio_map_args: &[],
+            audio_codec_args: &[],
+            is_image_source: false,
+            threads: 0,
+            tonemap_filter: Some(TONEMAP_HABLE),
+            codec_family: "h264",
+        });
+    }
+
     // ══════════════════════════════════════════════════════════════
     //  6. Compat mode invariants
     // ══════════════════════════════════════════════════════════════
@@ -4882,4 +4989,33 @@ mod tests {
         assert_eq!(codec_args[2], "-c:a:1");
         assert_eq!(codec_args[3], "aac");
     }
+
+    // ══════════════════════════════════════════════════════════════
+    //  validate_output_folder (#4c)
+    // ══════════════════════════════════════════════════════════════
+
+    #[test]
+    fn test_validate_output_folder_creates_missing_dir() {
+        let tmp = tempfile::tempdir().unwrap();
+        let nested = tmp.path().join("sub").join("dir");
+        assert!(!nested.exists());
+        validate_output_folder(&nested).expect("should create and validate");
+        assert!(nested.is_dir());
+        // Probe file must have been cleaned up.
+        assert!(!nested.join(".histv_write_test").exists());
+    }
+
+    #[test]
+    fn test_validate_output_folder_accepts_existing_writable_dir() {
+        let tmp = tempfile::tempdir().unwrap();
+        validate_output_folder(tmp.path()).expect("existing writable dir should pass");
+        assert!(!tmp.path().join(".histv_write_test").exists());
+    }
+
+    // Note: a "read-only dir is rejected" test would be ideal, but
+    // filesystem DAC checks are bypassed by root (which CI may run as
+    // on some platforms) and by filesystems without permission
+    // semantics. The existing Ok-path tests cover the happy path; the
+    // writability probe is a simple write-then-remove which any std
+    // lib regression would surface broadly.
 }

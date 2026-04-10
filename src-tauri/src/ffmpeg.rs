@@ -892,9 +892,8 @@ mod tests {
         std::env::set_var("HOME", "/tmp/test-home");
         let result = app_data_bin_dir();
         // Restore
-        match orig_xdg {
-            Some(v) => std::env::set_var("XDG_DATA_HOME", v),
-            None => {}
+        if let Some(v) = orig_xdg {
+            std::env::set_var("XDG_DATA_HOME", v);
         }
         match orig_home {
             Some(v) => std::env::set_var("HOME", v),
@@ -918,13 +917,11 @@ mod tests {
         std::env::remove_var("HOME");
         let result = app_data_bin_dir();
         // Restore
-        match orig_xdg {
-            Some(v) => std::env::set_var("XDG_DATA_HOME", v),
-            None => {}
+        if let Some(v) = orig_xdg {
+            std::env::set_var("XDG_DATA_HOME", v);
         }
-        match orig_home {
-            Some(v) => std::env::set_var("HOME", v),
-            None => {}
+        if let Some(v) = orig_home {
+            std::env::set_var("HOME", v);
         }
         assert_eq!(result, None);
     }

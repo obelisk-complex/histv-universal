@@ -617,7 +617,7 @@ impl EventSink for CliSink {
         }
     }
 
-    fn queue_item_probed(&self, _index: usize) {
+    fn queue_item_probed(&self, _index: usize, _item: &crate::queue::QueueItem) {
         // Probing progress is shown via log messages
     }
 

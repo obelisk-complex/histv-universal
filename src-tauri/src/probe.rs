@@ -643,7 +643,7 @@ mod tests {
 
     #[test]
     fn test_parse_numeric_decimal() {
-        assert_eq!(parse_numeric("3.14"), Some(3.14));
+        assert_eq!(parse_numeric("2.71"), Some(2.71));
     }
 
     #[test]

@@ -528,9 +528,7 @@ mod tests {
             let entries = parse_mount_table_from_str(contents);
 
             let find = |path: &str| -> Option<&MountEntry> {
-                entries
-                    .iter()
-                    .find(|e| e.mount_point == PathBuf::from(path))
+                entries.iter().find(|e| e.mount_point == Path::new(path))
             };
 
             let media = find("/mnt/media").expect("/mnt/media not found");
@@ -576,7 +574,7 @@ mod tests {
             // The cifs mount at /mnt/1tb should still be present and remote
             let onetb = entries
                 .iter()
-                .find(|e| e.mount_point == PathBuf::from("/mnt/1tb"))
+                .find(|e| e.mount_point == Path::new("/mnt/1tb"))
                 .expect("/mnt/1tb not found");
             assert!(onetb.is_remote);
             assert_eq!(onetb.fs_type, "cifs");
