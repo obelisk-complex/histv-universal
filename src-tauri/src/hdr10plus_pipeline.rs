@@ -160,7 +160,7 @@ pub async fn inject_hdr10plus(
 
     if let Err(e) =
         hevc_utils::transform_bitstream(&encoded_hevc, &injected_hevc, |nalu, writer| {
-            nal_diag.observe(&nalu, false);
+            nal_diag.observe(nalu, false);
 
             // Inject SEI before the first slice of each new picture
             if nalu.is_first_slice_of_picture() && sei_index < sei_ref.len() {

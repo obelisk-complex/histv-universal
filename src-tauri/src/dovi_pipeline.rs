@@ -194,7 +194,7 @@ pub async fn inject_and_package(
 
     if let Err(e) =
         hevc_utils::transform_bitstream(&encoded_hevc, &injected_hevc, |nalu, writer| {
-            nal_diag.observe(&nalu, in_frame);
+            nal_diag.observe(nalu, in_frame);
 
             let is_new_picture = nalu.is_first_slice_of_picture();
             let is_non_vcl_after_vcl = in_frame && !nalu.is_vcl();
