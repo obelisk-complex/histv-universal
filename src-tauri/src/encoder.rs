@@ -5476,9 +5476,16 @@ mod tests {
 
     /// QSV encoder must emit `-init_hw_device qsv=qs` and
     /// `-filter_hw_device qs` before `-i`, and the hwupload filter
-    /// must appear in `-vf`.
+    /// must appear in `-vf`. Skipped when no DRI render node exists
+    /// (e.g. CI without a GPU); the no-render-node path is covered
+    /// by `test_assemble_qsv_missing_render_node_emits_sentinel`.
+    #[cfg(target_os = "linux")]
     #[test]
     fn test_assemble_qsv_emits_hw_device_init_and_upload() {
+        if find_dri_render_node().is_none() {
+            eprintln!("skipping: no /dev/dri/renderD* available");
+            return;
+        }
         let empty: &[String] = &[];
         let args = assemble_ffmpeg_args(&FfmpegAssemblyParts {
             input_path: "input.mkv",
@@ -5511,6 +5518,38 @@ mod tests {
         // hwupload filter must be present in -vf
         let vf_pos = args.iter().position(|a| a == "-vf").unwrap();
         assert!(args[vf_pos + 1].contains("hwupload=extra_hw_frames=64"));
+    }
+
+    /// QSV must always emit `-init_hw_device`. When no render node exists the
+    /// value is a sentinel so ffmpeg fails loudly rather than silently.
+    #[cfg(target_os = "linux")]
+    #[test]
+    fn test_assemble_qsv_missing_render_node_emits_sentinel() {
+        let empty: &[String] = &[];
+        let args = assemble_ffmpeg_args(&FfmpegAssemblyParts {
+            input_path: "input.mkv",
+            output_path: "output.mkv",
+            video_args: &["-c:v", "hevc_qsv"],
+            pix_fmt: "nv12",
+            audio_map_args: empty,
+            audio_codec_args: empty,
+            is_image_source: false,
+            threads: 0,
+            tonemap_filter: None,
+            codec_family: "hevc",
+            colour_metadata: None,
+            vaapi_hevc_bsf: None,
+        });
+        assert!(
+            args.iter().any(|a| a == "-init_hw_device"),
+            "QSV encode must always include -init_hw_device"
+        );
+        let hw_init_pos = args.iter().position(|a| a == "-init_hw_device").unwrap();
+        let init_value = &args[hw_init_pos + 1];
+        assert!(
+            init_value == "qsv=qs" || init_value == "qsv=qs_child_device_missing",
+            "unexpected QSV init device value: {init_value}"
+        );
     }
 
     /// VAAPI encoder must emit `-vaapi_device` before `-i` and
