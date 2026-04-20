@@ -10,7 +10,9 @@ appstream-compose: false
 
 inherit-extensions:
   - org.freedesktop.Platform.VAAPI.Intel
-  - org.freedesktop.Platform.VAAPI.Mesa
+  # Note: Mesa VAAPI drivers (radeonsi, etc.) are shipped inside
+  # org.freedesktop.Platform.GL.default, not as a separate extension
+  # point, so only VAAPI.Intel is listed here.
 
 finish-args:
   - --socket=wayland
