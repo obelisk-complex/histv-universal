@@ -851,6 +851,10 @@ mod gui_commands {
         // Re-resolve MP4Box path now that it's installed
         let resource_dir = app.path().resource_dir().ok();
         dovi_tools::reinit(resource_dir.as_deref(), &sink);
+
+        // Restore encoder summary in case it was overwritten by any
+        // download-progress events that leaked into the wrong UI element.
+        let _ = app.emit("encoder-detection-done", ());
         Ok(())
     }
 

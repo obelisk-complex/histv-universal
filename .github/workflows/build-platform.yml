@@ -249,6 +249,15 @@ jobs:
           find squashfs-root -name 'libEGL*.so*' -delete
           find squashfs-root -name 'libgbm*.so*' -delete
 
+          # Fix .DirIcon: Tauri generates an absolute-path symlink that dangles
+          # when the AppImage is mounted on a different machine. Replace with a
+          # real copy so file managers can display the icon.
+          rm -f squashfs-root/.DirIcon
+          ICON_SRC=$(find squashfs-root/usr/share/icons/hicolor -name 'histv.png' -path '*/512x512/*' -print -quit 2>/dev/null || find squashfs-root/usr/share/icons/hicolor -name 'histv.png' -print -quit 2>/dev/null)
+          if [ -n "$ICON_SRC" ]; then
+            cp "$ICON_SRC" squashfs-root/.DirIcon
+          fi
+
           # Get appimagetool to repack (pinned version)
           APPIMAGETOOL_URL="https://github.com/AppImage/appimagetool/releases/download/${APPIMAGETOOL_VERSION}/appimagetool-x86_64.AppImage"
           curl -fSL --retry 3 -o appimagetool "$APPIMAGETOOL_URL"

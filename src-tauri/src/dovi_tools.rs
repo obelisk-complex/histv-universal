@@ -64,13 +64,23 @@ pub fn init(resource_dir: Option<&Path>, sink: &dyn EventSink) {
     let is_bare = path.components().count() == 1;
     log_resolved(sink, &path, found);
 
-    let dvp_ok = if found || is_bare {
-        check_mp4box_version(&path, sink)
+    // Run MP4Box -version to verify the binary actually works. A binary that
+    // exists on disk but fails to execute (missing shared libraries, wrong
+    // architecture, permission denied) is not usable - treat it as absent so
+    // the download prompt reappears on next launch.
+    let (dvp_ok, binary_works) = if found || is_bare {
+        let dvp = check_mp4box_version(&path, sink);
+        // check_mp4box_version returns false for two reasons: (1) the binary
+        // can't run at all (missing libs), or (2) it runs but is too old for
+        // :dvp= syntax. In case (2) the binary is still usable for basic
+        // MP4 muxing, so check whether it can at least execute.
+        let works = dvp || can_execute(&path);
+        (dvp, works)
     } else {
-        false
+        (false, false)
     };
     MP4BOX_DVP_OK.store(dvp_ok, std::sync::atomic::Ordering::Relaxed);
-    MP4BOX_EXISTS.store(found, std::sync::atomic::Ordering::Relaxed);
+    MP4BOX_EXISTS.store(binary_works, std::sync::atomic::Ordering::Relaxed);
 
     if let Ok(mut w) = MP4BOX_PATH.write() {
         *w = Some(path);
@@ -125,6 +135,18 @@ fn check_mp4box_version(path: &Path, sink: &dyn EventSink) -> bool {
             false
         }
     }
+}
+
+/// Check whether a binary can execute at all (exit code 0 or non-zero, as long
+/// as the OS can launch it). Returns false if the binary is missing shared
+/// libraries, has the wrong architecture, or lacks execute permission.
+fn can_execute(path: &Path) -> bool {
+    std::process::Command::new(path)
+        .arg("-version")
+        .stdout(std::process::Stdio::null())
+        .stderr(std::process::Stdio::null())
+        .status()
+        .is_ok()
 }
 
 /// Parse the GPAC major version from `MP4Box -version` output.
@@ -465,7 +487,6 @@ pub async fn download_mp4box(sink: &dyn EventSink) -> Result<(), String> {
     let url = &info.url;
 
     sink.log(&format!("[dovi] Downloading GPAC (MP4Box) from {url}..."));
-    sink.ffmpeg_download_progress("Downloading MP4Box...");
 
     let response = client
         .get(url)
@@ -504,7 +525,7 @@ pub async fn download_mp4box(sink: &dyn EventSink) -> Result<(), String> {
         );
     }
 
-    sink.ffmpeg_download_progress("Extracting MP4Box...");
+    sink.log("[dovi] Extracting MP4Box...");
 
     #[cfg(target_os = "linux")]
     extract_from_deb(&bytes, &target_dir, sink)?;
@@ -521,7 +542,7 @@ pub async fn download_mp4box(sink: &dyn EventSink) -> Result<(), String> {
         return Err("Extraction completed but MP4Box not found".to_string());
     }
 
-    sink.ffmpeg_download_progress("MP4Box ready!");
+    sink.log("[dovi] MP4Box ready!");
     sink.log(&format!(
         "[dovi] MP4Box installed to {}",
         mp4box_path.display()

@@ -188,8 +188,14 @@ pub async fn inject_and_package(
     let mut in_frame = false;
     let rpus_ref = &rpus.rpus;
 
+    // NAL diagnostics to help debug bitstream issues (e.g. VAAPI producing
+    // unexpected NAL structure that corrupts on RPU injection).
+    let mut nal_diag = hevc_utils::NalDiagnostics::new();
+
     if let Err(e) =
         hevc_utils::transform_bitstream(&encoded_hevc, &injected_hevc, |nalu, writer| {
+            nal_diag.observe(&nalu, in_frame);
+
             let is_new_picture = nalu.is_first_slice_of_picture();
             let is_non_vcl_after_vcl = in_frame && !nalu.is_vcl();
 
@@ -237,9 +243,10 @@ pub async fn inject_and_package(
         ));
     }
     sink.log(&format!(
-        "  DV: Injected {} RPUs into encoded bitstream",
-        rpu_index
+        "  DV: Injected {} RPUs into encoded bitstream ({} NALUs: {} first-slice, {} non-VCL-after-VCL)",
+        rpu_index, nal_diag.total(), nal_diag.first_slice_count(), nal_diag.non_vcl_after_vcl_count(),
     ));
+    sink.log(&format!("  DV: NAL types: {}", nal_diag.type_summary()));
 
     // Step 3: Extract audio from original source
     let audio_aac = temp_dir.path().join("audio.aac");
@@ -289,13 +296,29 @@ pub async fn inject_and_package(
 
     // GPAC 26.02 syntax: `:dvp=PROFILE.COMPAT` replaces the old
     // `:dv-profile=` / `:dv-bl-signal-comp-id=` flags.
+    // Do NOT set :bitdepth here — GPAC's :bitdepth sets the per-component
+    // bit depth in the hvcC box. Using :bitdepth=30 (intended as 10×3
+    // channels total) writes 30 bits per channel, causing decoders to
+    // misinterpret 10-bit HEVC as 30-bit and render solid green frames.
+    // GPAC 26.02 reads the correct profile and bit depth from the SPS in
+    // the raw HEVC bitstream, so the override is unnecessary.
+    //
+    // Set :colr to preserve BT.2020/PQ colour metadata. Without this,
+    // MP4Box does not propagate colour information from the SPS VUI to
+    // the container, and DV players see "unknown" colour primaries and
+    // transfer, producing green or red frames.
+    // GPAC :colr syntax: nclc,P,T,M (CICP numeric codes or strings).
+    // 9=bt2020, 16=smpte2084 (PQ), 9=bt2020nc (non-constant luminance).
+    // All DV profiles use BT.2020/PQ colour volume.
+    let dv_colour = "nclc,9,16,9";
     let mut mp4box_args: Vec<String> = vec![
         "-add".into(),
         format!(
-            "{}#video:hdlr=vide:lang=und:group=1:dvp={}.{}",
+            "{}#video:hdlr=vide:lang=und:group=1:dvp={}.{}:colr={}",
             injected_hevc.display(),
             dv_profile_num,
             dv_compat,
+            dv_colour,
         ),
     ];
 

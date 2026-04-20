@@ -232,6 +232,92 @@ impl<W: Write> NalWriter<W> {
     }
 }
 
+// ── NAL diagnostics ────────────────────────────────────────────────
+
+/// Human-readable name for an HEVC NAL unit type (for diagnostics).
+pub fn nal_type_name(t: u8) -> &'static str {
+    match t {
+        0 | 1 => "TRAIL",       // Trailing pictures (non-IRAP)
+        2 | 3 => "TSA",         // Temporal sub-layer access
+        4 | 5 => "STSA",        // Step-wise temporal sub-layer access
+        6 | 7 => "RADL",        // Random access decodable leading
+        8 | 9 => "RASL",        // Random access skippable leading
+        16 | 17 | 18 => "BLA",  // Broken link access (IRAP)
+        19 | 20 => "IDR",       // Instantaneous decoding refresh (IRAP)
+        21 => "CRA",            // Clean random access (IRAP)
+        22..=31 => "VCL_OTHER",
+        32 => "VPS",
+        33 => "SPS",
+        34 => "PPS",
+        35 => "AUD",
+        36 => "EOS",
+        37 => "EOB",
+        38 => "FD",
+        39 => "SEI_PREFIX",
+        40 => "SEI_SUFFIX",
+        62 => "RPU",
+        _ => "UNKNOWN",
+    }
+}
+
+/// Accumulates NAL unit statistics during a bitstream transform.
+/// Used by DV and HDR10+ injection pipelines for diagnostic logging.
+pub struct NalDiagnostics {
+    nal_counts: std::collections::HashMap<u8, usize>,
+    total_nalus: usize,
+    first_slice_count: usize,
+    non_vcl_after_vcl_count: usize,
+}
+
+impl NalDiagnostics {
+    pub fn new() -> Self {
+        Self {
+            nal_counts: std::collections::HashMap::new(),
+            total_nalus: 0,
+            first_slice_count: 0,
+            non_vcl_after_vcl_count: 0,
+        }
+    }
+
+    /// Record a NAL unit observed during bitstream processing.
+    pub fn observe(&mut self, nalu: &NalUnit, in_frame: bool) {
+        self.total_nalus += 1;
+        *self.nal_counts.entry(nalu.nal_type).or_insert(0) += 1;
+        if nalu.is_first_slice_of_picture() {
+            self.first_slice_count += 1;
+        }
+        if in_frame && !nalu.is_vcl() {
+            self.non_vcl_after_vcl_count += 1;
+        }
+    }
+
+    /// Total NAL units observed.
+    pub fn total(&self) -> usize {
+        self.total_nalus
+    }
+
+    /// Number of first-slice-of-picture NAL units.
+    pub fn first_slice_count(&self) -> usize {
+        self.first_slice_count
+    }
+
+    /// Number of non-VCL NAL units that followed VCL NAL units.
+    pub fn non_vcl_after_vcl_count(&self) -> usize {
+        self.non_vcl_after_vcl_count
+    }
+
+    /// Formatted summary of NAL type distribution (e.g. "VPS:1,SPS:1,PPS:1,VCL_IRAP:100").
+    pub fn type_summary(&self) -> String {
+        let mut sorted: Vec<_> = self.nal_counts.iter().collect();
+        sorted.sort_by_key(|(&t, _)| t);
+        sorted
+            .iter()
+            .map(|(t, c)| format!("{}:{}", nal_type_name(**t), c))
+            .collect::<Vec<_>>()
+            .join(",")
+    }
+}
+
 // ── Convenience functions ─────────────────────────────────────────
 
 /// Extract specific NAL units from a bitstream file using streaming I/O.
@@ -473,7 +559,22 @@ mod tests {
         #[test]
         fn nal_round_trip(
             payloads in proptest::collection::vec(
-                proptest::collection::vec(any::<u8>(), 1..256),
+                proptest::collection::vec(
+                    proptest::strategy::Just(()).prop_flat_map(|_| {
+                        // Generate Annex B safe payloads: no 0x00 0x00 0x0[0-3]
+                        // sequences allowed (start codes or emulation prevention
+                        // triggers). NalWriter writes raw payloads; it does not
+                        // add emulation prevention bytes, so the test must only
+                        // use data that is already safe.
+                        any::<u8>().prop_filter(
+                            "byte in safe Annex B payload",
+                            |_| true, // individual bytes are fine; filter at sequence level below
+                        )
+                    }),
+                    1..256
+                ).prop_filter("avoid Annex B start-code patterns",
+                    |v| !v.windows(3).any(|w| w[0] == 0 && w[1] == 0 && w[2] <= 3)
+                ),
                 1..16
             )
         ) {

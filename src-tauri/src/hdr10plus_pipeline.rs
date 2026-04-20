@@ -156,8 +156,12 @@ pub async fn inject_hdr10plus(
     let mut sei_index: usize = 0;
     let sei_ref = sei_nalus;
 
+    let mut nal_diag = hevc_utils::NalDiagnostics::new();
+
     if let Err(e) =
         hevc_utils::transform_bitstream(&encoded_hevc, &injected_hevc, |nalu, writer| {
+            nal_diag.observe(&nalu, false);
+
             // Inject SEI before the first slice of each new picture
             if nalu.is_first_slice_of_picture() && sei_index < sei_ref.len() {
                 writer.write_nalu(&sei_ref[sei_index])?;
@@ -172,6 +176,12 @@ pub async fn inject_hdr10plus(
     }
 
     let _ = std::fs::remove_file(&encoded_hevc);
+
+    sink.log(&format!(
+        "  HDR10+: Injected {} SEIs ({} NALUs: {} first-slice)",
+        sei_index, nal_diag.total(), nal_diag.first_slice_count(),
+    ));
+    sink.log(&format!("  HDR10+: NAL types: {}", nal_diag.type_summary()));
 
     if sei_index < sei_nalus.len() {
         return Err(format!(

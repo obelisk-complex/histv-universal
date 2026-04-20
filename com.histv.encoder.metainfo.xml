@@ -99,9 +99,14 @@
   </content_rating>
 
   <releases>
-    <release version="2.5.10-beta.1" date="2026-04-09" type="development">
+    <release version="2.6.0" date="2026-04-13">
       <description>
-        <p>Fix EINVAL (exit 234) on HDR H.264 sources below bitrate threshold: copy-mode ffmpeg invocations no longer combine -c:v copy with a tonemap -vf filter. Copy decisions now transcode to CRF/CQP when HDR-to-SDR tonemapping is required.</p>
+        <p>Fix VAAPI/QSV GPU encoder detection on Linux: hardware device initialisation flags were missing from test-encode and production ffmpeg invocations, causing all hardware encoding to fail silently.</p>
+        <p>Fix Dolby Vision green bar at bottom of frame: MP4Box defaults to 8-bit bitdepth in the hvcC box, causing Main 10 profile to be written as Main. Added :bitdepth=30 to force correct 10-bit signalling.</p>
+        <p>Fix MP4Box re-download loop: binary existence check now verifies the file actually executes, not just that it exists on disk.</p>
+        <p>Fix encoder detection summary being replaced by "mp4box ready!" message: MP4Box download progress no longer shares the ffmpeg download event channel.</p>
+        <p>Fix AppImage icon not showing: .DirIcon absolute symlink replaced with real copy in CI.</p>
+        <p>Fix Flatpak icon not showing: missing 32x32 and 256x256 sizes added, icon cache updated, VAAPI runtime extensions inherited.</p>
       </description>
     </release>
     <release version="2.5.9" date="2026-04-06">

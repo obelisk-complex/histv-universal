@@ -223,6 +223,16 @@ pub fn display_codec_family(family: &str) -> &'static str {
     }
 }
 
+/// Whether the encoder name refers to a VAAPI hardware encoder.
+pub fn is_vaapi_encoder(name: &str) -> bool {
+    name.ends_with("_vaapi")
+}
+
+/// Whether the encoder name refers to a QSV hardware encoder.
+pub fn is_qsv_encoder(name: &str) -> bool {
+    name.ends_with("_qsv")
+}
+
 // ── Encoding strategy decision ─────────────────────────────────
 
 /// The encoding decision for a single file, determined purely from its
@@ -444,23 +454,64 @@ async fn test_encode(encoder_name: &str) -> bool {
     };
     let tmp_str = tmp_file.path().to_string_lossy().to_string();
 
+    let mut args: Vec<String> = Vec::new();
+
+    // Hardware device initialisation - required before -i for VAAPI/QSV.
+    // NVENC auto-detects the GPU but benefits from explicit init on some
+    // multi-GPU systems.
+    #[cfg(target_os = "linux")]
+    if is_vaapi_encoder(encoder_name) {
+        if let Some(render_node) = find_dri_render_node() {
+            args.extend(["-vaapi_device".into(), render_node]);
+        } else {
+            return false;
+        }
+    }
+    #[cfg(target_os = "linux")]
+    if is_qsv_encoder(encoder_name) {
+        if let Some(render_node) = find_dri_render_node() {
+            args.extend([
+                "-init_hw_device".into(),
+                "qsv=qs".into(),
+                "-filter_hw_device".into(),
+                "qs".into(),
+                "-qsv_device".into(),
+                render_node,
+            ]);
+        } else {
+            return false;
+        }
+    }
+
     // 256x256 minimum - some HW encoders reject smaller resolutions
     // nv12 pixel format - required by most hardware encoders
+    args.extend([
+        "-y".into(),
+        "-f".into(),
+        "lavfi".into(),
+        "-i".into(),
+        "color=black:s=256x256:d=0.04:r=25".into(),
+        "-frames:v".into(),
+        "1".into(),
+    ]);
+
+    // VAAPI needs frames uploaded to the hardware device
+    #[cfg(target_os = "linux")]
+    if is_vaapi_encoder(encoder_name) {
+        args.extend(["-vf".into(), "format=nv12,hwupload".into()]);
+    }
+    #[cfg(target_os = "linux")]
+    if is_qsv_encoder(encoder_name) {
+        args.extend(["-vf".into(), "format=nv12,hwupload=extra_hw_frames=64".into()]);
+    }
+    if !is_vaapi_encoder(encoder_name) && !is_qsv_encoder(encoder_name) {
+        args.extend(["-pix_fmt".into(), "nv12".into()]);
+    }
+
+    args.extend(["-c:v".into(), encoder_name.into(), tmp_str]);
+
     let result = ffbin::ffmpeg_command()
-        .args([
-            "-y",
-            "-f",
-            "lavfi",
-            "-i",
-            "color=black:s=256x256:d=0.04:r=25",
-            "-frames:v",
-            "1",
-            "-pix_fmt",
-            "nv12",
-            "-c:v",
-            encoder_name,
-            &tmp_str,
-        ])
+        .args(&args)
         .stdout(std::process::Stdio::null())
         .stderr(std::process::Stdio::piped())
         .spawn();
@@ -473,6 +524,33 @@ async fn test_encode(encoder_name: &str) -> bool {
             .unwrap_or(false),
         Err(_) => false,
     }
+}
+
+#[cfg(target_os = "linux")]
+/// Find the first available DRI render node in `dir` (e.g.
+/// `renderD128`). Returns the full path as a string, or `None` if no
+/// render node is found or the directory cannot be read.
+///
+/// Split from the public wrapper so tests can pass a temporary
+/// directory instead of requiring `/dev/dri` to exist.
+fn find_dri_render_node_in(dir: &std::path::Path) -> Option<String> {
+    std::fs::read_dir(dir).ok()?.find_map(|entry| {
+        let entry = entry.ok()?;
+        let name = entry.file_name();
+        let name = name.to_string_lossy();
+        if name.starts_with("renderD") {
+            Some(format!("{}/{name}", dir.display()))
+        } else {
+            None
+        }
+    })
+}
+
+/// Find the first available DRI render node (e.g. /dev/dri/renderD128).
+/// Returns None if no render node is found.
+#[cfg(target_os = "linux")]
+fn find_dri_render_node() -> Option<String> {
+    find_dri_render_node_in(std::path::Path::new("/dev/dri"))
 }
 
 fn ensure_fallback(encoders: &mut Vec<EncoderInfo>, name: &str, family: &str) {
@@ -1292,8 +1370,43 @@ async fn encode_single_file(
         .extension()
         .map(|e| e.to_string_lossy().to_lowercase())
         .unwrap_or_default();
-    let resolved =
+    let mut resolved =
         resolve_file_settings(&item_video_codec, &source_ext, settings, detected_encoders);
+    // DV Tier 1 requires HEVC output — the RPU inject pipeline only works with
+    // HEVC bitstreams. If the source has an H.264 base layer (DV Profile 8
+    // with HDR10 compat), force the codec family to HEVC and re-resolve the
+    // encoder name.
+    if is_dovi_tier1 && resolved.codec_family != "hevc" {
+        resolved.codec_family = "hevc".to_string();
+        resolved.encoder_name = detected_encoders
+            .iter()
+            .filter(|e| e.codec_family == "hevc")
+            .max_by_key(|e| e.is_hardware as u8)
+            .map(|e| e.name.clone())
+            .unwrap_or_else(|| software_fallback("hevc").to_string());
+        sink.log("  Dolby Vision requires HEVC output - forcing HEVC encoder");
+    }
+    // AMD VAAPI 10-bit HEVC encoding previously produced visible artifacts
+    // (green bar, halos). The green bar is fixable via hevc_metadata BSF
+    // crop_bottom; the VUI/profile issues are resolved in ffmpeg >= 6.1.
+    // Fall back to libx265 unless HISTV_ALLOW_VAAPI_DV=1 is set, which
+    // permits VAAPI for DV tier 1 (for testing the full DV pipeline).
+    #[cfg(target_os = "linux")]
+    if is_dovi_tier1 && is_vaapi_encoder(&resolved.encoder_name) {
+        let allow_vaapi_dv = std::env::var("HISTV_ALLOW_VAAPI_DV")
+            .map(|v| v == "1")
+            .unwrap_or(false);
+        if allow_vaapi_dv {
+            sink.log("  Dolby Vision: HISTV_ALLOW_VAAPI_DV=1 - keeping VAAPI encoder for DV (test mode)");
+        } else {
+            let sw = software_fallback("hevc").to_string();
+            sink.log(&format!(
+                "  Dolby Vision: VAAPI 10-bit encoding unreliable - falling back to {} (set HISTV_ALLOW_VAAPI_DV=1 to test VAAPI DV)",
+                sw,
+            ));
+            resolved.encoder_name = sw;
+        }
+    }
     let file_encoder = &resolved.encoder_name;
     let file_codec_family = &resolved.codec_family;
     // Override container for DV Tier 1. DV requires MP4 container for
@@ -1315,9 +1428,17 @@ async fn encode_single_file(
     // Per-file pixel format and optional tonemap filter (#1, #2).
     // Compatibility mode forces SDR output — H.264 "compat" targets devices
     // that don't support 10-bit/HDR, so tonemap regardless of preserve_hdr.
+    // DV Tier 1 always requires 10-bit output — the RPU pipeline only works
+    // with Main 10 HEVC, so override regardless of probe's colour-transfer
+    // detection (some DV containers omit smpte2084 from container-level metadata).
     let force_sdr = settings.compatibility_mode;
     let (file_pix_fmt, tonemap_filter): (&str, Option<&'static str>) =
-        if item_is_hdr && (!preserve_hdr || force_sdr) {
+        if is_dovi_tier1 {
+            if !item_is_hdr {
+                sink.log("  Dolby Vision requires 10-bit output - forcing p010le (source container omitted HDR colour metadata)");
+            }
+            ("p010le", None)
+        } else if item_is_hdr && (!preserve_hdr || force_sdr) {
             // HDR source → SDR: tonemap via zscale + Hable curve
             ("yuv420p", Some(TONEMAP_HABLE))
         } else if item_is_hdr {
@@ -1798,6 +1919,69 @@ async fn encode_single_file(
     } else {
         // Assemble ffmpeg command
         let video_arg_refs: Vec<&str> = video_args.iter().map(|s| s.as_str()).collect();
+
+        // VAAPI hwaccel decode (-hwaccel vaapi) does not propagate colour
+        // metadata from the input to the output. For HDR/DV content encoded
+        // through that path, explicitly set BT.2020/PQ/limited-range so the
+        // output file is tagged correctly. Without this, players interpret
+        // 10-bit VAAPI output as BT.709 SDR and display red or green frames.
+        //
+        // For all other encode paths (software, hwupload, NVENC, AMF),
+        // ffmpeg propagates colour metadata from the input automatically.
+        // Adding explicit flags there is redundant and can cause haloing
+        // around high-contrast text: the flags force a VUI into the SPS that
+        // triggers player tone mapping, creating edge overshoot on PQ content
+        // that was previously displayed without mapping.
+        let uses_vaapi_hwaccel_decode = is_vaapi_encoder(file_encoder)
+            && file_pix_fmt == "p010le"
+            && tonemap_filter.is_none();
+        let colour_metadata = if uses_vaapi_hwaccel_decode
+            && (is_dovi_tier1 || (item_is_hdr && preserve_hdr && !force_sdr))
+        {
+            let colour_primaries = if is_dovi_tier1 {
+                "bt2020"  // DV always uses BT.2020
+            } else {
+                match queue[idx].probe.color_transfer.as_str() {
+                    "smpte2084" => "bt2020",
+                    "arib-std-b67" => "bt2020",  // HLG also uses BT.2020
+                    _ => "bt709",  // fallback
+                }
+            };
+            let colour_trc = if is_dovi_tier1 {
+                "smpte2084"  // DV Profile 5→8.1 always uses PQ
+            } else {
+                match queue[idx].probe.color_transfer.as_str() {
+                    "smpte2084" => "smpte2084",
+                    "arib-std-b67" => "arib-std-b67",
+                    _ => "bt709",
+                }
+            };
+            Some(ColourMetadata {
+                primaries: colour_primaries,
+                trc: colour_trc,
+                matrix: "bt2020nc",
+                range: "tv",
+            })
+        } else {
+            None
+        };
+
+        // VAAPI 10-bit HEVC: AMD VCN pads 1080-line content to 1088 lines
+        // without setting a conformance window crop in the SPS, producing a
+        // green bar at the bottom. The hevc_metadata BSF patches the SPS to
+        // declare crop_bottom=8 (8 pixels for 4:2:0 chroma = 4 luma rows,
+        // but ffmpeg's BSF parameter is in luma samples, so 8 is correct).
+        // Also required for DV: without the crop, the 1088-line HEVC
+        // bitstream has mismatched dimensions that corrupt RPU injection.
+        #[cfg(target_os = "linux")]
+        let vaapi_hevc_bsf = if uses_vaapi_hwaccel_decode && target_codec == "hevc" {
+            Some("hevc_metadata=crop_bottom=8")
+        } else {
+            None
+        };
+        #[cfg(not(target_os = "linux"))]
+        let vaapi_hevc_bsf: Option<&str> = None;
+
         let ffmpeg_args = assemble_ffmpeg_args(&FfmpegAssemblyParts {
             input_path: &item_full_path,
             output_path: &output_str,
@@ -1809,6 +1993,8 @@ async fn encode_single_file(
             threads: settings.threads,
             tonemap_filter,
             codec_family: target_codec,
+            colour_metadata,
+            vaapi_hevc_bsf,
         });
 
         let cmd_line = format!("ffmpeg {}", ffmpeg_args.join(" "));
@@ -2050,6 +2236,8 @@ async fn encode_single_file(
                         threads: settings.threads,
                         tonemap_filter,
                         codec_family: target_codec,
+                        colour_metadata: None,      // SW encode propagates from input
+                        vaapi_hevc_bsf: None,        // SW encode doesn't need VAAPI crop fix
                     });
 
                     let sw_cmd = format!("ffmpeg {}", sw_args.join(" "));
@@ -3065,6 +3253,29 @@ struct FfmpegAssemblyParts<'a> {
     threads: u32,
     tonemap_filter: Option<&'a str>,
     codec_family: &'a str,
+    /// Explicit colour metadata for VAAPI hwaccel decode which does not
+    /// propagate colour primaries/transfer/matrix from input. Only set
+    /// for the VAAPI hwaccel decode path; other paths propagate
+    /// automatically and explicit flags cause haloing on PQ content.
+    colour_metadata: Option<ColourMetadata>,
+    /// HEVC bitstream filter for VAAPI 10-bit encode. AMD VCN pads 1080-line
+    /// content to 1088 lines without setting a conformance window crop in the
+    /// SPS, producing a visible green bar at the bottom. The hevc_metadata BSF
+    /// with crop_bottom=8 patches the SPS to declare the correct crop.
+    /// Only set for hevc_vaapi on Linux; other encoders don't have this issue.
+    vaapi_hevc_bsf: Option<&'a str>,
+}
+
+/// Colour metadata to embed in the ffmpeg output. Only needed for
+/// VAAPI hwaccel decode, which does not propagate colour information
+/// from the input. For all other paths, ffmpeg propagates automatically
+/// and explicit flags cause haloing on PQ content.
+#[derive(Clone, Copy)]
+struct ColourMetadata {
+    primaries: &'static str,
+    trc: &'static str,
+    matrix: &'static str,
+    range: &'static str,
 }
 
 /// Assemble the full ffmpeg argument list from its component parts.
@@ -3085,6 +3296,106 @@ fn assemble_ffmpeg_args(parts: &FfmpegAssemblyParts<'_>) -> Vec<String> {
         "assemble_ffmpeg_args: tonemap_filter is incompatible with -c:v copy"
     );
 
+    // Detect encoder type from video_args for hardware device init.
+    // video_args layout: ["-c:v", "<encoder_name>", ...]
+    let encoder_name = parts
+        .video_args
+        .windows(2)
+        .find(|w| w[0] == "-c:v")
+        .map(|w| w[1]);
+
+    let mut hw_device_init: Vec<String> = Vec::new();
+    let mut hw_upload_filter: Option<String> = None;
+    // When true, decode the input on the VAAPI device and keep frames on
+    // the GPU, avoiding the broken software→hwupload path for 10-bit.
+    let mut vaapi_hwaccel_decode = false;
+
+    if let Some(enc) = encoder_name {
+        #[cfg(target_os = "linux")]
+        if is_vaapi_encoder(enc) {
+            if let Some(render_node) = find_dri_render_node() {
+                // 10-bit (HDR/DV preservation): the software-decode +
+                // format=p010le,hwupload path silently produces green or
+                // corrupt frames on AMD VAAPI because hwupload cannot
+                // correctly create a P010 VAAPI surface from a software
+                // p010le frame. Instead, decode on the VAAPI device with
+                // -hwaccel vaapi and keep frames on the GPU throughout.
+                // This requires the input codec to be VAAPI-decodable
+                // (HEVC Main 10 is supported on AMD).
+                //
+                // 8-bit (SDR): the format=nv12,hwupload path works
+                // correctly because NV12 is the standard VAAPI surface
+                // format. Use -vaapi_device + hwupload as before.
+                //
+                // When a tonemap filter is present, frames must come back
+                // to CPU for the tonemap. In that case hwaccel decode
+                // can't keep frames on GPU, so use hwupload after the
+                // tonemap filter (but only for 8-bit; 10-bit VAAPI encode
+                // with a tonemap is unreliable - fall back to software).
+                if parts.pix_fmt == "p010le" && parts.tonemap_filter.is_none() {
+                    hw_device_init = vec![
+                        "-hwaccel".into(), "vaapi".into(),
+                        "-hwaccel_device".into(), render_node,
+                        "-hwaccel_output_format".into(), "vaapi".into(),
+                    ];
+                    vaapi_hwaccel_decode = true;
+                    // AMD VAAPI requires an explicit scale_vaapi filter to
+                    // force the P010 surface format between decoder and
+                    // encoder. Without it, the encoder may receive surfaces
+                    // in an unexpected format and produce green/corrupt
+                    // frames despite the container reporting Main 10.
+                    hw_upload_filter = Some("scale_vaapi=format=p010".into());
+                } else {
+                    hw_device_init = vec![
+                        "-vaapi_device".into(),
+                        render_node,
+                    ];
+                    hw_upload_filter = Some("format=nv12,hwupload".into());
+                }
+            } else {
+                // No render node found - VAAPI cannot work without one.
+                // test_encode() already gates encoder detection on this, so
+                // reaching here means the queue was built when a GPU was
+                // present but it has since disappeared (hot-unplug, driver
+                // reload). Emit an explicit marker so the failure is
+                // diagnosable from ffmpeg stderr; ffmpeg will fail quickly
+                // because `-c:v hevc_vaapi` without `-vaapi_device` errors
+                // out immediately.
+                hw_device_init = vec!["-vaapi_device".into(), "/dev/dri/renderD_missing".into()];
+            }
+        }
+        #[cfg(target_os = "linux")]
+        if is_qsv_encoder(enc) {
+            // QSV needs an Intel GPU. Use find_dri_render_node() to locate
+            // a DRI render node; on multi-GPU systems this is typically the
+            // Intel iGPU (renderD128). Specifying -qsv_device avoids MFX
+            // session creation failures when multiple GPUs are present.
+            if let Some(render_node) = find_dri_render_node() {
+                hw_device_init = vec![
+                    "-init_hw_device".into(),
+                    "qsv=qs".into(),
+                    "-filter_hw_device".into(),
+                    "qs".into(),
+                    "-qsv_device".into(),
+                    render_node,
+                ];
+            } else {
+                // No render node - QSV cannot work without an Intel GPU.
+                // Emit a sentinel so ffmpeg fails with a clear message.
+                hw_device_init = vec![
+                    "-init_hw_device".into(),
+                    "qsv=qs_child_device_missing".into(),
+                ];
+            }
+            let upload_fmt = if parts.pix_fmt == "p010le" {
+                "format=p010le,hwupload=extra_hw_frames=64"
+            } else {
+                "format=nv12,hwupload=extra_hw_frames=64"
+            };
+            hw_upload_filter = Some(upload_fmt.into());
+        }
+    }
+
     let mut args: Vec<String> = vec![
         "-err_detect".into(),
         "ignore_err".into(),
@@ -3093,11 +3404,17 @@ fn assemble_ffmpeg_args(parts: &FfmpegAssemblyParts<'_>) -> Vec<String> {
         "-analyzeduration".into(),
         "100M".into(),
         "-y".into(),
+    ];
+
+    // Hardware device init must come before -i
+    args.extend(hw_device_init);
+
+    args.extend(vec![
         "-i".into(),
         parts.input_path.to_string(),
         "-map".into(),
         "0:v:0".into(),
-    ];
+    ]);
 
     // Thread limit (0 = ffmpeg default / auto)
     if parts.threads > 0 {
@@ -3119,11 +3436,31 @@ fn assemble_ffmpeg_args(parts: &FfmpegAssemblyParts<'_>) -> Vec<String> {
         // Normal video: per-stream audio maps + subtitle passthrough
         args.extend_from_slice(parts.audio_map_args);
         args.extend(parts.video_args.iter().map(|s| s.to_string()));
-        // Tonemap filter for HDR→SDR conversion
+        // Build the video filter chain. For VAAPI/QSV encoders the frames
+        // must be uploaded to the hardware device; chain hwupload after any
+        // tonemap filter so the tonemap runs on CPU and hwupload moves the
+        // result to the GPU.
+        //
+        // When VAAPI hwaccel decode is used (10-bit HDR/DV without tonemap),
+        // frames are already on the GPU as VAAPI surfaces. An explicit
+        // scale_vaapi filter forces P010 surface format between decoder and
+        // encoder (AMD VAAPI produces green frames without it). -pix_fmt must
+        // not be set (the encoder auto-negotiates from the VAAPI surface).
         if let Some(filter) = parts.tonemap_filter {
-            args.extend(vec!["-vf".into(), filter.to_string()]);
+            if let Some(hw_filter) = &hw_upload_filter {
+                args.extend(vec!["-vf".into(), format!("{filter},{hw_filter}")]);
+            } else {
+                args.extend(vec!["-vf".into(), filter.to_string()]);
+            }
+        } else if let Some(hw_filter) = &hw_upload_filter {
+            args.extend(vec!["-vf".into(), hw_filter.clone()]);
         }
-        args.extend(vec!["-pix_fmt".into(), parts.pix_fmt.to_string()]);
+        if !vaapi_hwaccel_decode {
+            // When using hwaccel decode, the encoder receives frames in
+            // VAAPI surface format and auto-negotiates; setting -pix_fmt
+            // would force an incorrect software→hw format conversion.
+            args.extend(vec!["-pix_fmt".into(), parts.pix_fmt.to_string()]);
+        }
         args.extend_from_slice(parts.audio_codec_args);
         // Subtitle handling: MP4 only supports mov_text (timed text).
         // Using `-c:s mov_text` converts text-based subs (SRT, ASS) and
@@ -3157,6 +3494,29 @@ fn assemble_ffmpeg_args(parts: &FfmpegAssemblyParts<'_>) -> Vec<String> {
         if parts.codec_family == "hevc" {
             args.extend(vec!["-tag:v".into(), "hvc1".into()]);
         }
+    }
+
+    // Colour metadata must come before the output path. Only set for
+    // VAAPI hwaccel decode, which does not propagate colour
+    // primaries/transfer/matrix from the input; without explicit flags
+    // the output has "unknown" colour and players misinterpret 10-bit
+    // data as BT.709 SDR. For all other paths, ffmpeg propagates colour
+    // metadata from the source automatically, and explicit flags cause
+    // haloing around high-contrast text on PQ content.
+    if let Some(cm) = &parts.colour_metadata {
+        args.extend(vec![
+            "-color_primaries".into(), cm.primaries.into(),
+            "-color_trc".into(), cm.trc.into(),
+            "-colorspace".into(), cm.matrix.into(),
+            "-color_range".into(), cm.range.into(),
+        ]);
+    }
+
+    // VAAPI 10-bit HEVC: patch the conformance window in the SPS to crop
+    // the 8-pixel green bar that AMD VCN produces at the bottom of 1080-line
+    // content (it encodes to 1088 lines without declaring a crop window).
+    if let Some(bsf) = parts.vaapi_hevc_bsf {
+        args.extend(vec!["-bsf:v".into(), bsf.into()]);
     }
 
     args.push(parts.output_path.to_string());
@@ -4603,6 +4963,8 @@ mod tests {
             threads: 0,
             tonemap_filter: None,
             codec_family: "hevc",
+            colour_metadata: None,
+            vaapi_hevc_bsf: None,
         });
         assert!(args.contains(&"-tag:v".to_string()));
         assert!(args.contains(&"hvc1".to_string()));
@@ -4623,6 +4985,8 @@ mod tests {
             threads: 0,
             tonemap_filter: None,
             codec_family: "h264",
+            colour_metadata: None,
+            vaapi_hevc_bsf: None,
         });
         assert!(!args.contains(&"-tag:v".to_string()));
         assert!(!args.contains(&"hvc1".to_string()));
@@ -4644,6 +5008,8 @@ mod tests {
             threads: 0,
             tonemap_filter: None,
             codec_family: "hevc",
+            colour_metadata: None,
+            vaapi_hevc_bsf: None,
         });
         assert!(!args.contains(&"-tag:v".to_string()));
         assert!(!args.contains(&"hvc1".to_string()));
@@ -4664,6 +5030,8 @@ mod tests {
             threads: 0,
             tonemap_filter: None,
             codec_family: "hevc",
+            colour_metadata: None,
+            vaapi_hevc_bsf: None,
         });
         assert!(args.contains(&"-c:s".to_string()));
         assert!(args.contains(&"mov_text".to_string()));
@@ -4692,6 +5060,8 @@ mod tests {
             threads: 0,
             tonemap_filter: None,
             codec_family: "hevc",
+            colour_metadata: None,
+            vaapi_hevc_bsf: None,
         });
         assert!(args.contains(&"-c:s".to_string()));
         assert!(args.contains(&"copy".to_string()));
@@ -4716,6 +5086,8 @@ mod tests {
             threads: 0,
             tonemap_filter: Some(TONEMAP_HABLE),
             codec_family: "hevc",
+            colour_metadata: None,
+            vaapi_hevc_bsf: None,
         });
         assert!(args.contains(&"-vf".to_string()));
         assert!(args.iter().any(|a| a.contains("tonemap=hable")));
@@ -4745,6 +5117,8 @@ mod tests {
             threads: 0,
             tonemap_filter: Some(TONEMAP_HABLE),
             codec_family: "h264",
+            colour_metadata: None,
+            vaapi_hevc_bsf: None,
         });
     }
 
@@ -5018,4 +5392,683 @@ mod tests {
     // semantics. The existing Ok-path tests cover the happy path; the
     // writability probe is a simple write-then-remove which any std
     // lib regression would surface broadly.
+
+    // ══════════════════════════════════════════════════════════════
+    //  find_dri_render_node_in (hardware device detection)
+    // ══════════════════════════════════════════════════════════════
+
+    #[cfg(target_os = "linux")]
+    #[test]
+    fn test_find_dri_render_node_found() {
+        let tmp = tempfile::tempdir().unwrap();
+        // Create a fake render node entry
+        std::fs::File::create(tmp.path().join("renderD128")).unwrap();
+        let result = find_dri_render_node_in(tmp.path());
+        assert_eq!(
+            result,
+            Some(format!("{}/renderD128", tmp.path().display()))
+        );
+    }
+
+    #[cfg(target_os = "linux")]
+    #[test]
+    fn test_find_dri_render_node_picks_first_numeric() {
+        let tmp = tempfile::tempdir().unwrap();
+        std::fs::File::create(tmp.path().join("renderD129")).unwrap();
+        std::fs::File::create(tmp.path().join("renderD128")).unwrap();
+        let result = find_dri_render_node_in(tmp.path());
+        // read_dir order is not guaranteed, but the result must be
+        // one of the two render nodes
+        assert!(result.is_some());
+        let path = result.unwrap();
+        assert!(path.ends_with("renderD128") || path.ends_with("renderD129"));
+    }
+
+    #[cfg(target_os = "linux")]
+    #[test]
+    fn test_find_dri_render_node_skips_card_nodes() {
+        let tmp = tempfile::tempdir().unwrap();
+        std::fs::File::create(tmp.path().join("card0")).unwrap();
+        std::fs::File::create(tmp.path().join("controlD64")).unwrap();
+        let result = find_dri_render_node_in(tmp.path());
+        assert_eq!(result, None, "card/control entries must not be treated as render nodes");
+    }
+
+    #[cfg(target_os = "linux")]
+    #[test]
+    fn test_find_dri_render_node_empty_dir() {
+        let tmp = tempfile::tempdir().unwrap();
+        let result = find_dri_render_node_in(tmp.path());
+        assert_eq!(result, None);
+    }
+
+    #[cfg(target_os = "linux")]
+    #[test]
+    fn test_find_dri_render_node_nonexistent_dir() {
+        let result = find_dri_render_node_in(std::path::Path::new("/nonexistent/path/that/does/not/exist"));
+        assert_eq!(result, None);
+    }
+
+    #[cfg(target_os = "linux")]
+    #[test]
+    fn test_find_dri_render_node_mixed_entries() {
+        let tmp = tempfile::tempdir().unwrap();
+        std::fs::File::create(tmp.path().join("card0")).unwrap();
+        std::fs::File::create(tmp.path().join("renderD128")).unwrap();
+        std::fs::File::create(tmp.path().join("controlD64")).unwrap();
+        let result = find_dri_render_node_in(tmp.path());
+        assert!(result.is_some());
+        assert!(result.unwrap().ends_with("renderD128"));
+    }
+
+    // ══════════════════════════════════════════════════════════════
+    //  hw_device_init / hw_upload_filter in assemble_ffmpeg_args
+    // ══════════════════════════════════════════════════════════════
+
+    /// QSV encoder must emit `-init_hw_device qsv=qs` and
+    /// `-filter_hw_device qs` before `-i`, and the hwupload filter
+    /// must appear in `-vf`.
+    #[test]
+    fn test_assemble_qsv_emits_hw_device_init_and_upload() {
+        let empty: &[String] = &[];
+        let args = assemble_ffmpeg_args(&FfmpegAssemblyParts {
+            input_path: "input.mkv",
+            output_path: "output.mkv",
+            video_args: &["-c:v", "hevc_qsv"],
+            pix_fmt: "nv12",
+            audio_map_args: empty,
+            audio_codec_args: empty,
+            is_image_source: false,
+            threads: 0,
+            tonemap_filter: None,
+            codec_family: "hevc",
+            colour_metadata: None,
+            vaapi_hevc_bsf: None,
+        });
+
+        // hw_device_init args must precede -i
+        let hw_init_pos = args.iter().position(|a| a == "-init_hw_device").unwrap();
+        let input_pos = args.iter().position(|a| a == "-i").unwrap();
+        assert!(hw_init_pos < input_pos, "-init_hw_device must come before -i");
+
+        // Verify full QSV init chain
+        assert_eq!(args[hw_init_pos + 1], "qsv=qs");
+        let filter_hw_pos = args.iter().position(|a| a == "-filter_hw_device").unwrap();
+        assert_eq!(args[filter_hw_pos + 1], "qs");
+
+        // hwupload filter must be present in -vf
+        let vf_pos = args.iter().position(|a| a == "-vf").unwrap();
+        assert!(args[vf_pos + 1].contains("hwupload=extra_hw_frames=64"));
+    }
+
+    /// VAAPI encoder must emit `-vaapi_device` before `-i` and
+    /// `format=nv12,hwupload` as `-vf`. This test only runs on
+    /// systems where `/dev/dri` exists (i.e. Linux with a GPU);
+    /// the no-render-node path is covered separately below.
+    #[cfg(target_os = "linux")]
+    #[test]
+    fn test_assemble_vaapi_emits_hw_device_init_and_upload() {
+        // Skip if no DRI render node available (e.g. CI without GPU)
+        if find_dri_render_node().is_none() {
+            eprintln!("skipping: no /dev/dri/renderD* available");
+            return;
+        }
+
+        let empty: &[String] = &[];
+        let args = assemble_ffmpeg_args(&FfmpegAssemblyParts {
+            input_path: "input.mkv",
+            output_path: "output.mkv",
+            video_args: &["-c:v", "hevc_vaapi"],
+            pix_fmt: "nv12",
+            audio_map_args: empty,
+            audio_codec_args: empty,
+            is_image_source: false,
+            threads: 0,
+            tonemap_filter: None,
+            codec_family: "hevc",
+            colour_metadata: None,
+            vaapi_hevc_bsf: None,
+        });
+
+        // -vaapi_device must precede -i
+        let vaapi_dev_pos = args.iter().position(|a| a == "-vaapi_device").unwrap();
+        let input_pos = args.iter().position(|a| a == "-i").unwrap();
+        assert!(vaapi_dev_pos < input_pos, "-vaapi_device must come before -i");
+
+        // hwupload filter in -vf
+        let vf_pos = args.iter().position(|a| a == "-vf").unwrap();
+        assert!(args[vf_pos + 1].contains("hwupload"));
+    }
+
+    /// When no render node exists for VAAPI, the args must still
+    /// contain `-vaapi_device` (with a clearly-missing path) so
+    /// ffmpeg fails fast rather than silently producing broken output.
+    #[cfg(target_os = "linux")]
+    #[test]
+    fn test_assemble_vaapi_missing_render_node_still_emits_vaapi_device() {
+        // This test verifies the fallback path where find_dri_render_node()
+        // returns None. We cannot control the real /dev/dri from a test, so
+        // we verify the *invariant*: if the encoder is _vaapi, the args must
+        // contain -vaapi_device regardless of whether a real node exists.
+        let empty: &[String] = &[];
+        let args = assemble_ffmpeg_args(&FfmpegAssemblyParts {
+            input_path: "input.mkv",
+            output_path: "output.mkv",
+            video_args: &["-c:v", "hevc_vaapi"],
+            pix_fmt: "nv12",
+            audio_map_args: empty,
+            audio_codec_args: empty,
+            is_image_source: false,
+            threads: 0,
+            tonemap_filter: None,
+            codec_family: "hevc",
+            colour_metadata: None,
+            vaapi_hevc_bsf: None,
+        });
+
+        // VAAPI must always have -vaapi_device in args. If the render
+        // node is missing, we emit a sentinel path so ffmpeg fails
+        // loudly instead of silently producing broken output.
+        assert!(
+            args.iter().any(|a| a == "-vaapi_device"),
+            "VAAPI encode must always include -vaapi_device (even with missing render node)"
+        );
+    }
+
+    /// VAAPI with 10-bit + tonemap: tonemap forces frames back to CPU,
+    /// so hwaccel decode can't be used. Falls back to -vaapi_device +
+    /// format=nv12,hwupload (tonemap output is 8-bit yuv420p anyway).
+    #[cfg(target_os = "linux")]
+    #[test]
+    fn test_assemble_vaapi_10bit_tonemap_uses_vaapi_device() {
+        if find_dri_render_node().is_none() {
+            eprintln!("skipping: no /dev/dri/renderD* available");
+            return;
+        }
+
+        let empty: &[String] = &[];
+        let args = assemble_ffmpeg_args(&FfmpegAssemblyParts {
+            input_path: "input.mkv",
+            output_path: "output.mkv",
+            video_args: &["-c:v", "hevc_vaapi"],
+            pix_fmt: "p010le",
+            audio_map_args: empty,
+            audio_codec_args: empty,
+            is_image_source: false,
+            threads: 0,
+            tonemap_filter: Some(TONEMAP_HABLE),
+            codec_family: "hevc",
+            colour_metadata: None,
+            vaapi_hevc_bsf: None,
+        });
+
+        // When tonemap is present, can't use hwaccel decode (tonemap is CPU)
+        assert!(
+            !args.iter().any(|a| a == "-hwaccel"),
+            "VAAPI with tonemap must not use hwaccel decode"
+        );
+        // Must use -vaapi_device instead
+        assert!(
+            args.iter().any(|a| a == "-vaapi_device"),
+            "VAAPI with tonemap must use -vaapi_device"
+        );
+        // Must have hwupload after tonemap
+        let vf_pos = args.iter().position(|a| a == "-vf").unwrap();
+        let vf_value = &args[vf_pos + 1];
+        assert!(vf_value.contains("hwupload"));
+        assert!(vf_value.contains("tonemap"));
+    }
+
+    /// Software encoder must NOT emit any hw_device_init or hwupload.
+    #[test]
+    fn test_assemble_software_encoder_no_hw_init() {
+        let empty: &[String] = &[];
+        let args = assemble_ffmpeg_args(&FfmpegAssemblyParts {
+            input_path: "input.mkv",
+            output_path: "output.mkv",
+            video_args: &["-c:v", "libx265"],
+            pix_fmt: "yuv420p",
+            audio_map_args: empty,
+            audio_codec_args: empty,
+            is_image_source: false,
+            threads: 0,
+            tonemap_filter: None,
+            codec_family: "hevc",
+            colour_metadata: None,
+            vaapi_hevc_bsf: None,
+        });
+
+        assert!(!args.iter().any(|a| a == "-vaapi_device"));
+        assert!(!args.iter().any(|a| a == "-init_hw_device"));
+        assert!(!args.iter().any(|a| a == "-filter_hw_device"));
+        assert!(!args.iter().any(|a| a == "hwupload"));
+    }
+
+    /// NVENC must NOT emit hw_device_init (it auto-detects) and
+    /// must NOT emit hwupload filter.
+    #[test]
+    fn test_assemble_nvenc_no_hw_init() {
+        let empty: &[String] = &[];
+        let args = assemble_ffmpeg_args(&FfmpegAssemblyParts {
+            input_path: "input.mkv",
+            output_path: "output.mkv",
+            video_args: &["-c:v", "hevc_nvenc"],
+            pix_fmt: "yuv420p",
+            audio_map_args: empty,
+            audio_codec_args: empty,
+            is_image_source: false,
+            threads: 0,
+            tonemap_filter: None,
+            codec_family: "hevc",
+            colour_metadata: None,
+            vaapi_hevc_bsf: None,
+        });
+
+        assert!(!args.iter().any(|a| a == "-vaapi_device"));
+        assert!(!args.iter().any(|a| a == "-init_hw_device"));
+        assert!(!args.iter().any(|a| a == "hwupload"));
+    }
+
+    /// QSV encoder with tonemap: the hwupload filter must be chained
+    /// after the tonemap filter, not replace it.
+    #[test]
+    fn test_assemble_qsv_tonemap_chains_hwupload() {
+        let empty: &[String] = &[];
+        let args = assemble_ffmpeg_args(&FfmpegAssemblyParts {
+            input_path: "input.mkv",
+            output_path: "output.mkv",
+            video_args: &["-c:v", "hevc_qsv"],
+            pix_fmt: "nv12",
+            audio_map_args: empty,
+            audio_codec_args: empty,
+            is_image_source: false,
+            threads: 0,
+            tonemap_filter: Some(TONEMAP_HABLE),
+            codec_family: "hevc",
+            colour_metadata: None,
+            vaapi_hevc_bsf: None,
+        });
+
+        let vf_pos = args.iter().position(|a| a == "-vf").unwrap();
+        let vf_value = &args[vf_pos + 1];
+
+        // The tonemap filter must appear before hwupload in the chain
+        assert!(vf_value.contains("tonemap=hable"), "tonemap must be present");
+        assert!(vf_value.contains("hwupload"), "hwupload must be present");
+        let tonemap_idx = vf_value.find("tonemap").unwrap();
+        let hwupload_idx = vf_value.find("hwupload").unwrap();
+        assert!(
+            tonemap_idx < hwupload_idx,
+            "tonemap must come before hwupload so it runs on CPU first"
+        );
+    }
+
+    /// VAAPI encoder with tonemap: the hwupload filter must be
+    /// chained after the tonemap filter. Skipped if no /dev/dri.
+    #[cfg(target_os = "linux")]
+    #[test]
+    fn test_assemble_vaapi_tonemap_chains_hwupload() {
+        if find_dri_render_node().is_none() {
+            eprintln!("skipping: no /dev/dri/renderD* available");
+            return;
+        }
+
+        let empty: &[String] = &[];
+        let args = assemble_ffmpeg_args(&FfmpegAssemblyParts {
+            input_path: "input.mkv",
+            output_path: "output.mkv",
+            video_args: &["-c:v", "hevc_vaapi"],
+            pix_fmt: "nv12",
+            audio_map_args: empty,
+            audio_codec_args: empty,
+            is_image_source: false,
+            threads: 0,
+            tonemap_filter: Some(TONEMAP_HABLE),
+            codec_family: "hevc",
+            colour_metadata: None,
+            vaapi_hevc_bsf: None,
+        });
+
+        let vf_pos = args.iter().position(|a| a == "-vf").unwrap();
+        let vf_value = &args[vf_pos + 1];
+
+        assert!(vf_value.contains("tonemap=hable"));
+        assert!(vf_value.contains("hwupload"));
+        let tonemap_idx = vf_value.find("tonemap").unwrap();
+        let hwupload_idx = vf_value.find("hwupload").unwrap();
+        assert!(tonemap_idx < hwupload_idx);
+    }
+
+    // ══════════════════════════════════════════════════════════════
+    //  10-bit (HDR/DV) hwupload format: p010le instead of nv12
+    // ══════════════════════════════════════════════════════════════
+
+    /// VAAPI with 10-bit HDR/DV source (no tonemap) must use hwaccel
+    /// decode instead of format=p010le,hwupload, because the hwupload
+    /// path silently produces green frames on AMD VAAPI. The args must
+    /// contain -hwaccel vaapi, -hwaccel_device, and -hwaccel_output_format,
+    /// must use scale_vaapi=format=p010 to force P010 surface format, and must
+    /// NOT contain hwupload or -pix_fmt.
+    #[cfg(target_os = "linux")]
+    #[test]
+    fn test_assemble_vaapi_10bit_uses_hwaccel_decode() {
+        if find_dri_render_node().is_none() {
+            eprintln!("skipping: no /dev/dri/renderD* available");
+            return;
+        }
+
+        let empty: &[String] = &[];
+        let args = assemble_ffmpeg_args(&FfmpegAssemblyParts {
+            input_path: "input.mkv",
+            output_path: "output.mkv",
+            video_args: &["-c:v", "hevc_vaapi"],
+            pix_fmt: "p010le",
+            audio_map_args: empty,
+            audio_codec_args: empty,
+            is_image_source: false,
+            threads: 0,
+            tonemap_filter: None,
+            codec_family: "hevc",
+            colour_metadata: None,
+            vaapi_hevc_bsf: None,
+        });
+
+        // Must use hwaccel decode for 10-bit VAAPI
+        let hwaccel_pos = args.iter().position(|a| a == "-hwaccel").unwrap();
+        assert_eq!(args[hwaccel_pos + 1], "vaapi");
+        let hwaccel_dev_pos = args.iter().position(|a| a == "-hwaccel_device").unwrap();
+        assert!(args[hwaccel_dev_pos + 1].contains("renderD"));
+        let hwaccel_fmt_pos = args.iter().position(|a| a == "-hwaccel_output_format").unwrap();
+        assert_eq!(args[hwaccel_fmt_pos + 1], "vaapi");
+
+        // Must use scale_vaapi to force P010 surface format
+        let vf_pos = args.iter().position(|a| a == "-vf").unwrap();
+        assert!(
+            args[vf_pos + 1].contains("scale_vaapi=format=p010"),
+            "10-bit VAAPI hwaccel must use scale_vaapi=format=p010, got: {}",
+            args[vf_pos + 1]
+        );
+
+        // Must NOT use hwupload or -pix_fmt (encoder auto-negotiates)
+        assert!(
+            !args.iter().any(|a| a == "hwupload"),
+            "10-bit VAAPI hwaccel must not use hwupload"
+        );
+        assert!(
+            !args.iter().any(|a| a == "-pix_fmt"),
+            "10-bit VAAPI hwaccel must not set -pix_fmt (encoder auto-negotiates)"
+        );
+
+        // Must NOT use old -vaapi_device approach
+        assert!(
+            !args.iter().any(|a| a == "-vaapi_device"),
+            "10-bit VAAPI must use -hwaccel vaapi, not -vaapi_device"
+        );
+    }
+
+    /// VAAPI with 8-bit SDR source must use format=nv12,hwupload.
+    #[cfg(target_os = "linux")]
+    #[test]
+    fn test_assemble_vaapi_8bit_uses_nv12() {
+        if find_dri_render_node().is_none() {
+            eprintln!("skipping: no /dev/dri/renderD* available");
+            return;
+        }
+
+        let empty: &[String] = &[];
+        let args = assemble_ffmpeg_args(&FfmpegAssemblyParts {
+            input_path: "input.mkv",
+            output_path: "output.mkv",
+            video_args: &["-c:v", "hevc_vaapi"],
+            pix_fmt: "nv12",
+            audio_map_args: empty,
+            audio_codec_args: empty,
+            is_image_source: false,
+            threads: 0,
+            tonemap_filter: None,
+            codec_family: "hevc",
+            colour_metadata: None,
+            vaapi_hevc_bsf: None,
+        });
+
+        let vf_pos = args.iter().position(|a| a == "-vf").unwrap();
+        let vf_value = &args[vf_pos + 1];
+        assert!(
+            vf_value.contains("nv12"),
+            "8-bit VAAPI must use format=nv12,hwupload, got: {vf_value}"
+        );
+    }
+
+    /// QSV with 10-bit HDR/DV source must use format=p010le,hwupload.
+    #[test]
+    fn test_assemble_qsv_10bit_uses_p010le() {
+        let empty: &[String] = &[];
+        let args = assemble_ffmpeg_args(&FfmpegAssemblyParts {
+            input_path: "input.mkv",
+            output_path: "output.mkv",
+            video_args: &["-c:v", "hevc_qsv"],
+            pix_fmt: "p010le",
+            audio_map_args: empty,
+            audio_codec_args: empty,
+            is_image_source: false,
+            threads: 0,
+            tonemap_filter: None,
+            codec_family: "hevc",
+            colour_metadata: None,
+            vaapi_hevc_bsf: None,
+        });
+
+        let vf_pos = args.iter().position(|a| a == "-vf").unwrap();
+        let vf_value = &args[vf_pos + 1];
+        assert!(
+            vf_value.contains("p010le"),
+            "10-bit QSV must use format=p010le,hwupload, got: {vf_value}"
+        );
+        assert!(
+            !vf_value.contains("nv12"),
+            "10-bit QSV must not use format=nv12, got: {vf_value}"
+        );
+    }
+
+    /// QSV with 8-bit SDR source must use format=nv12,hwupload.
+    #[test]
+    fn test_assemble_qsv_8bit_uses_nv12() {
+        let empty: &[String] = &[];
+        let args = assemble_ffmpeg_args(&FfmpegAssemblyParts {
+            input_path: "input.mkv",
+            output_path: "output.mkv",
+            video_args: &["-c:v", "hevc_qsv"],
+            pix_fmt: "nv12",
+            audio_map_args: empty,
+            audio_codec_args: empty,
+            is_image_source: false,
+            threads: 0,
+            tonemap_filter: None,
+            codec_family: "hevc",
+            colour_metadata: None,
+            vaapi_hevc_bsf: None,
+        });
+
+        let vf_pos = args.iter().position(|a| a == "-vf").unwrap();
+        let vf_value = &args[vf_pos + 1];
+        assert!(
+            vf_value.contains("nv12"),
+            "8-bit QSV must use format=nv12,hwupload, got: {vf_value}"
+        );
+    }
+
+    // ── Colour metadata tests ─────────────────────────────────────
+
+    /// Colour metadata flags must appear when VAAPI hwaccel decode is
+    /// used (10-bit, no tonemap) because hwaccel decode does not
+    /// propagate colour primaries/transfer/matrix from the input.
+    #[cfg(target_os = "linux")]
+    #[test]
+    fn test_colour_metadata_present_for_vaapi_hwaccel_decode() {
+        if find_dri_render_node().is_none() {
+            eprintln!("skipping: no /dev/dri/renderD* available");
+            return;
+        }
+
+        let empty: &[String] = &[];
+        let args = assemble_ffmpeg_args(&FfmpegAssemblyParts {
+            input_path: "input.mkv",
+            output_path: "output.mp4",
+            video_args: &["-c:v", "hevc_vaapi"],
+            pix_fmt: "p010le",
+            audio_map_args: empty,
+            audio_codec_args: empty,
+            is_image_source: false,
+            threads: 0,
+            tonemap_filter: None,
+            codec_family: "hevc",
+            colour_metadata: Some(ColourMetadata {
+                primaries: "bt2020",
+                trc: "smpte2084",
+                matrix: "bt2020nc",
+                range: "tv",
+            }),
+            vaapi_hevc_bsf: None,
+        });
+
+        assert!(
+            args.iter().any(|a| a == "-color_primaries"),
+            "colour metadata must include -color_primaries for VAAPI hwaccel decode"
+        );
+        assert!(
+            args.iter().any(|a| a == "-color_trc"),
+            "colour metadata must include -color_trc for VAAPI hwaccel decode"
+        );
+        // Colour flags must come before the output path
+        let colour_pos = args.iter().position(|a| a == "-color_primaries").unwrap();
+        let output_pos = args.iter().rposition(|a| a == "output.mp4").unwrap();
+        assert!(
+            colour_pos < output_pos,
+            "colour metadata must come before output path"
+        );
+    }
+
+    /// Software encode (libx265) should NOT have explicit colour
+    /// metadata flags. ffmpeg propagates colour info from the input
+    /// automatically; explicit flags cause haloing around text on PQ
+    /// content.
+    #[test]
+    fn test_colour_metadata_absent_for_software_encode() {
+        let empty: &[String] = &[];
+        let args = assemble_ffmpeg_args(&FfmpegAssemblyParts {
+            input_path: "input.mkv",
+            output_path: "output.mp4",
+            video_args: &["-c:v", "libx265"],
+            pix_fmt: "p010le",
+            audio_map_args: empty,
+            audio_codec_args: empty,
+            is_image_source: false,
+            threads: 0,
+            tonemap_filter: None,
+            codec_family: "hevc",
+            colour_metadata: None,
+            vaapi_hevc_bsf: None,
+        });
+
+        assert!(
+            !args.iter().any(|a| a == "-color_primaries"),
+            "software encode must not have explicit colour metadata flags"
+        );
+        assert!(
+            !args.iter().any(|a| a == "-color_trc"),
+            "software encode must not have explicit colour metadata flags"
+        );
+        assert!(
+            !args.iter().any(|a| a == "-color_range"),
+            "software encode must not have explicit colour metadata flags"
+        );
+    }
+
+    /// 8-bit VAAPI uses hwupload (not hwaccel decode), so colour
+    /// metadata should not be needed even for VAAPI.
+    #[cfg(target_os = "linux")]
+    #[test]
+    fn test_colour_metadata_absent_for_vaapi_8bit() {
+        if find_dri_render_node().is_none() {
+            eprintln!("skipping: no /dev/dri/renderD* available");
+            return;
+        }
+
+        let empty: &[String] = &[];
+        let args = assemble_ffmpeg_args(&FfmpegAssemblyParts {
+            input_path: "input.mkv",
+            output_path: "output.mp4",
+            video_args: &["-c:v", "hevc_vaapi"],
+            pix_fmt: "nv12",
+            audio_map_args: empty,
+            audio_codec_args: empty,
+            is_image_source: false,
+            threads: 0,
+            tonemap_filter: None,
+            codec_family: "hevc",
+            colour_metadata: None,
+            vaapi_hevc_bsf: None,
+        });
+
+        assert!(
+            !args.iter().any(|a| a == "-color_primaries"),
+            "8-bit VAAPI uses hwupload, not hwaccel decode - no colour metadata needed"
+        );
+    }
+
+    /// VAAPI 10-bit HEVC encode must include the conformance window crop BSF
+    /// to fix the 1088-line green bar on AMD VCN.
+    #[cfg(target_os = "linux")]
+    #[test]
+    fn test_vaapi_hevc_bsf_crop_for_10bit() {
+        let empty: &[String] = &[];
+        let args = assemble_ffmpeg_args(&FfmpegAssemblyParts {
+            input_path: "input.mkv",
+            output_path: "output.mp4",
+            video_args: &["-c:v", "hevc_vaapi"],
+            pix_fmt: "p010le",
+            audio_map_args: empty,
+            audio_codec_args: empty,
+            is_image_source: false,
+            threads: 0,
+            tonemap_filter: None,
+            codec_family: "hevc",
+            colour_metadata: None,
+            vaapi_hevc_bsf: Some("hevc_metadata=crop_bottom=8"),
+        });
+
+        assert!(
+            args.iter().any(|a| a == "-bsf:v"),
+            "VAAPI 10-bit HEVC must include -bsf:v for conformance window crop"
+        );
+        assert!(
+            args.windows(2).any(|w| w[0] == "-bsf:v" && w[1].contains("crop_bottom=8")),
+            "VAAPI 10-bit HEVC BSF must include crop_bottom=8"
+        );
+    }
+
+    /// Non-VAAPI encoders must NOT include the VAAPI crop BSF.
+    #[test]
+    fn test_no_vaapi_bsf_for_software_encode() {
+        let empty: &[String] = &[];
+        let args = assemble_ffmpeg_args(&FfmpegAssemblyParts {
+            input_path: "input.mkv",
+            output_path: "output.mp4",
+            video_args: &["-c:v", "libx265"],
+            pix_fmt: "p010le",
+            audio_map_args: empty,
+            audio_codec_args: empty,
+            is_image_source: false,
+            threads: 0,
+            tonemap_filter: None,
+            codec_family: "hevc",
+            colour_metadata: None,
+            vaapi_hevc_bsf: None,
+        });
+
+        assert!(
+            !args.iter().any(|a| a == "-bsf:v"),
+            "software encode must not include VAAPI crop BSF"
+        );
+    }
 }
