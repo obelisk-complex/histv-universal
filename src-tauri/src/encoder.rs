@@ -502,7 +502,10 @@ async fn test_encode(encoder_name: &str) -> bool {
     }
     #[cfg(target_os = "linux")]
     if is_qsv_encoder(encoder_name) {
-        args.extend(["-vf".into(), "format=nv12,hwupload=extra_hw_frames=64".into()]);
+        args.extend([
+            "-vf".into(),
+            "format=nv12,hwupload=extra_hw_frames=64".into(),
+        ]);
     }
     if !is_vaapi_encoder(encoder_name) && !is_qsv_encoder(encoder_name) {
         args.extend(["-pix_fmt".into(), "nv12".into()]);
@@ -1397,7 +1400,9 @@ async fn encode_single_file(
             .map(|v| v == "1")
             .unwrap_or(false);
         if allow_vaapi_dv {
-            sink.log("  Dolby Vision: HISTV_ALLOW_VAAPI_DV=1 - keeping VAAPI encoder for DV (test mode)");
+            sink.log(
+                "  Dolby Vision: HISTV_ALLOW_VAAPI_DV=1 - keeping VAAPI encoder for DV (test mode)",
+            );
         } else {
             let sw = software_fallback("hevc").to_string();
             sink.log(&format!(
@@ -1432,22 +1437,21 @@ async fn encode_single_file(
     // with Main 10 HEVC, so override regardless of probe's colour-transfer
     // detection (some DV containers omit smpte2084 from container-level metadata).
     let force_sdr = settings.compatibility_mode;
-    let (file_pix_fmt, tonemap_filter): (&str, Option<&'static str>) =
-        if is_dovi_tier1 {
-            if !item_is_hdr {
-                sink.log("  Dolby Vision requires 10-bit output - forcing p010le (source container omitted HDR colour metadata)");
-            }
-            ("p010le", None)
-        } else if item_is_hdr && (!preserve_hdr || force_sdr) {
-            // HDR source → SDR: tonemap via zscale + Hable curve
-            ("yuv420p", Some(TONEMAP_HABLE))
-        } else if item_is_hdr {
-            // HDR source, preserve HDR
-            ("p010le", None)
-        } else {
-            // SDR source
-            ("yuv420p", None)
-        };
+    let (file_pix_fmt, tonemap_filter): (&str, Option<&'static str>) = if is_dovi_tier1 {
+        if !item_is_hdr {
+            sink.log("  Dolby Vision requires 10-bit output - forcing p010le (source container omitted HDR colour metadata)");
+        }
+        ("p010le", None)
+    } else if item_is_hdr && (!preserve_hdr || force_sdr) {
+        // HDR source → SDR: tonemap via zscale + Hable curve
+        ("yuv420p", Some(TONEMAP_HABLE))
+    } else if item_is_hdr {
+        // HDR source, preserve HDR
+        ("p010le", None)
+    } else {
+        // SDR source
+        ("yuv420p", None)
+    };
 
     sink.batch_status(&format!("[{}/{}] {}", file_counter, total, item_file_name));
 
@@ -1932,23 +1936,22 @@ async fn encode_single_file(
         // around high-contrast text: the flags force a VUI into the SPS that
         // triggers player tone mapping, creating edge overshoot on PQ content
         // that was previously displayed without mapping.
-        let uses_vaapi_hwaccel_decode = is_vaapi_encoder(file_encoder)
-            && file_pix_fmt == "p010le"
-            && tonemap_filter.is_none();
+        let uses_vaapi_hwaccel_decode =
+            is_vaapi_encoder(file_encoder) && file_pix_fmt == "p010le" && tonemap_filter.is_none();
         let colour_metadata = if uses_vaapi_hwaccel_decode
             && (is_dovi_tier1 || (item_is_hdr && preserve_hdr && !force_sdr))
         {
             let colour_primaries = if is_dovi_tier1 {
-                "bt2020"  // DV always uses BT.2020
+                "bt2020" // DV always uses BT.2020
             } else {
                 match queue[idx].probe.color_transfer.as_str() {
                     "smpte2084" => "bt2020",
-                    "arib-std-b67" => "bt2020",  // HLG also uses BT.2020
-                    _ => "bt709",  // fallback
+                    "arib-std-b67" => "bt2020", // HLG also uses BT.2020
+                    _ => "bt709",               // fallback
                 }
             };
             let colour_trc = if is_dovi_tier1 {
-                "smpte2084"  // DV Profile 5→8.1 always uses PQ
+                "smpte2084" // DV Profile 5→8.1 always uses PQ
             } else {
                 match queue[idx].probe.color_transfer.as_str() {
                     "smpte2084" => "smpte2084",
@@ -2236,8 +2239,8 @@ async fn encode_single_file(
                         threads: settings.threads,
                         tonemap_filter,
                         codec_family: target_codec,
-                        colour_metadata: None,      // SW encode propagates from input
-                        vaapi_hevc_bsf: None,        // SW encode doesn't need VAAPI crop fix
+                        colour_metadata: None, // SW encode propagates from input
+                        vaapi_hevc_bsf: None,  // SW encode doesn't need VAAPI crop fix
                     });
 
                     let sw_cmd = format!("ffmpeg {}", sw_args.join(" "));
@@ -3334,9 +3337,12 @@ fn assemble_ffmpeg_args(parts: &FfmpegAssemblyParts<'_>) -> Vec<String> {
                 // with a tonemap is unreliable - fall back to software).
                 if parts.pix_fmt == "p010le" && parts.tonemap_filter.is_none() {
                     hw_device_init = vec![
-                        "-hwaccel".into(), "vaapi".into(),
-                        "-hwaccel_device".into(), render_node,
-                        "-hwaccel_output_format".into(), "vaapi".into(),
+                        "-hwaccel".into(),
+                        "vaapi".into(),
+                        "-hwaccel_device".into(),
+                        render_node,
+                        "-hwaccel_output_format".into(),
+                        "vaapi".into(),
                     ];
                     vaapi_hwaccel_decode = true;
                     // AMD VAAPI requires an explicit scale_vaapi filter to
@@ -3346,10 +3352,7 @@ fn assemble_ffmpeg_args(parts: &FfmpegAssemblyParts<'_>) -> Vec<String> {
                     // frames despite the container reporting Main 10.
                     hw_upload_filter = Some("scale_vaapi=format=p010".into());
                 } else {
-                    hw_device_init = vec![
-                        "-vaapi_device".into(),
-                        render_node,
-                    ];
+                    hw_device_init = vec!["-vaapi_device".into(), render_node];
                     hw_upload_filter = Some("format=nv12,hwupload".into());
                 }
             } else {
@@ -3505,10 +3508,14 @@ fn assemble_ffmpeg_args(parts: &FfmpegAssemblyParts<'_>) -> Vec<String> {
     // haloing around high-contrast text on PQ content.
     if let Some(cm) = &parts.colour_metadata {
         args.extend(vec![
-            "-color_primaries".into(), cm.primaries.into(),
-            "-color_trc".into(), cm.trc.into(),
-            "-colorspace".into(), cm.matrix.into(),
-            "-color_range".into(), cm.range.into(),
+            "-color_primaries".into(),
+            cm.primaries.into(),
+            "-color_trc".into(),
+            cm.trc.into(),
+            "-colorspace".into(),
+            cm.matrix.into(),
+            "-color_range".into(),
+            cm.range.into(),
         ]);
     }
 
@@ -5404,10 +5411,7 @@ mod tests {
         // Create a fake render node entry
         std::fs::File::create(tmp.path().join("renderD128")).unwrap();
         let result = find_dri_render_node_in(tmp.path());
-        assert_eq!(
-            result,
-            Some(format!("{}/renderD128", tmp.path().display()))
-        );
+        assert_eq!(result, Some(format!("{}/renderD128", tmp.path().display())));
     }
 
     #[cfg(target_os = "linux")]
@@ -5431,7 +5435,10 @@ mod tests {
         std::fs::File::create(tmp.path().join("card0")).unwrap();
         std::fs::File::create(tmp.path().join("controlD64")).unwrap();
         let result = find_dri_render_node_in(tmp.path());
-        assert_eq!(result, None, "card/control entries must not be treated as render nodes");
+        assert_eq!(
+            result, None,
+            "card/control entries must not be treated as render nodes"
+        );
     }
 
     #[cfg(target_os = "linux")]
@@ -5445,7 +5452,9 @@ mod tests {
     #[cfg(target_os = "linux")]
     #[test]
     fn test_find_dri_render_node_nonexistent_dir() {
-        let result = find_dri_render_node_in(std::path::Path::new("/nonexistent/path/that/does/not/exist"));
+        let result = find_dri_render_node_in(std::path::Path::new(
+            "/nonexistent/path/that/does/not/exist",
+        ));
         assert_eq!(result, None);
     }
 
@@ -5489,7 +5498,10 @@ mod tests {
         // hw_device_init args must precede -i
         let hw_init_pos = args.iter().position(|a| a == "-init_hw_device").unwrap();
         let input_pos = args.iter().position(|a| a == "-i").unwrap();
-        assert!(hw_init_pos < input_pos, "-init_hw_device must come before -i");
+        assert!(
+            hw_init_pos < input_pos,
+            "-init_hw_device must come before -i"
+        );
 
         // Verify full QSV init chain
         assert_eq!(args[hw_init_pos + 1], "qsv=qs");
@@ -5533,7 +5545,10 @@ mod tests {
         // -vaapi_device must precede -i
         let vaapi_dev_pos = args.iter().position(|a| a == "-vaapi_device").unwrap();
         let input_pos = args.iter().position(|a| a == "-i").unwrap();
-        assert!(vaapi_dev_pos < input_pos, "-vaapi_device must come before -i");
+        assert!(
+            vaapi_dev_pos < input_pos,
+            "-vaapi_device must come before -i"
+        );
 
         // hwupload filter in -vf
         let vf_pos = args.iter().position(|a| a == "-vf").unwrap();
@@ -5693,7 +5708,10 @@ mod tests {
         let vf_value = &args[vf_pos + 1];
 
         // The tonemap filter must appear before hwupload in the chain
-        assert!(vf_value.contains("tonemap=hable"), "tonemap must be present");
+        assert!(
+            vf_value.contains("tonemap=hable"),
+            "tonemap must be present"
+        );
         assert!(vf_value.contains("hwupload"), "hwupload must be present");
         let tonemap_idx = vf_value.find("tonemap").unwrap();
         let hwupload_idx = vf_value.find("hwupload").unwrap();
@@ -5778,7 +5796,10 @@ mod tests {
         assert_eq!(args[hwaccel_pos + 1], "vaapi");
         let hwaccel_dev_pos = args.iter().position(|a| a == "-hwaccel_device").unwrap();
         assert!(args[hwaccel_dev_pos + 1].contains("renderD"));
-        let hwaccel_fmt_pos = args.iter().position(|a| a == "-hwaccel_output_format").unwrap();
+        let hwaccel_fmt_pos = args
+            .iter()
+            .position(|a| a == "-hwaccel_output_format")
+            .unwrap();
         assert_eq!(args[hwaccel_fmt_pos + 1], "vaapi");
 
         // Must use scale_vaapi to force P010 surface format
@@ -6042,7 +6063,8 @@ mod tests {
             "VAAPI 10-bit HEVC must include -bsf:v for conformance window crop"
         );
         assert!(
-            args.windows(2).any(|w| w[0] == "-bsf:v" && w[1].contains("crop_bottom=8")),
+            args.windows(2)
+                .any(|w| w[0] == "-bsf:v" && w[1].contains("crop_bottom=8")),
             "VAAPI 10-bit HEVC BSF must include crop_bottom=8"
         );
     }

@@ -25,8 +25,8 @@ modules:
     buildsystem: simple
     sources:
       - type: archive
-        url: https://github.com/BtbN/FFmpeg-Builds/releases/download/autobuild-2026-04-01-13-13/ffmpeg-n8.1-7-ga3475e2554-linux64-gpl-8.1.tar.xz
-        sha256: 57417a11d21fc9ec76b4a250f95754d99d0f272765ba62b2d0aaf87d02c32cd8
+        url: https://github.com/BtbN/FFmpeg-Builds/releases/download/latest/ffmpeg-n8.1-latest-linux64-gpl-8.1.tar.xz
+        sha256: 8e1943fbc5b2e4950b1f49047b20cd4fe86002305f2b127abad6c6e5f2d0c909
         strip-components: 1
     build-commands:
       - install -Dm755 bin/ffmpeg /app/bin/ffmpeg

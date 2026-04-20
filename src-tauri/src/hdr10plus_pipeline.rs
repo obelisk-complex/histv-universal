@@ -179,7 +179,9 @@ pub async fn inject_hdr10plus(
 
     sink.log(&format!(
         "  HDR10+: Injected {} SEIs ({} NALUs: {} first-slice)",
-        sei_index, nal_diag.total(), nal_diag.first_slice_count(),
+        sei_index,
+        nal_diag.total(),
+        nal_diag.first_slice_count(),
     ));
     sink.log(&format!("  HDR10+: NAL types: {}", nal_diag.type_summary()));
 

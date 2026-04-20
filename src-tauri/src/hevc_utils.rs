@@ -237,14 +237,14 @@ impl<W: Write> NalWriter<W> {
 /// Human-readable name for an HEVC NAL unit type (for diagnostics).
 pub fn nal_type_name(t: u8) -> &'static str {
     match t {
-        0 | 1 => "TRAIL",       // Trailing pictures (non-IRAP)
-        2 | 3 => "TSA",         // Temporal sub-layer access
-        4 | 5 => "STSA",        // Step-wise temporal sub-layer access
-        6 | 7 => "RADL",        // Random access decodable leading
-        8 | 9 => "RASL",        // Random access skippable leading
-        16 | 17 | 18 => "BLA",  // Broken link access (IRAP)
-        19 | 20 => "IDR",       // Instantaneous decoding refresh (IRAP)
-        21 => "CRA",            // Clean random access (IRAP)
+        0 | 1 => "TRAIL",      // Trailing pictures (non-IRAP)
+        2 | 3 => "TSA",        // Temporal sub-layer access
+        4 | 5 => "STSA",       // Step-wise temporal sub-layer access
+        6 | 7 => "RADL",       // Random access decodable leading
+        8 | 9 => "RASL",       // Random access skippable leading
+        16 | 17 | 18 => "BLA", // Broken link access (IRAP)
+        19 | 20 => "IDR",      // Instantaneous decoding refresh (IRAP)
+        21 => "CRA",           // Clean random access (IRAP)
         22..=31 => "VCL_OTHER",
         32 => "VPS",
         33 => "SPS",
