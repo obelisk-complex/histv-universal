@@ -34,9 +34,9 @@ permissions:
 env:
   RUST_VERSION: "1.93.1"
   TAURI_CLI_VERSION: "=2.10.1"
-  FFMPEG_BTBN_TAG: "autobuild-2026-04-01-13-13"
-  FFMPEG_BTBN_LINUX: "ffmpeg-n8.1-7-ga3475e2554-linux64-gpl-8.1.tar.xz"
-  FFMPEG_BTBN_LINUX_SHA256: "57417a11d21fc9ec76b4a250f95754d99d0f272765ba62b2d0aaf87d02c32cd8"
+  FFMPEG_BTBN_TAG: "latest"
+  FFMPEG_BTBN_LINUX: "ffmpeg-n8.1-latest-linux64-gpl-8.1.tar.xz"
+  FFMPEG_BTBN_LINUX_SHA256: "8e1943fbc5b2e4950b1f49047b20cd4fe86002305f2b127abad6c6e5f2d0c909"
   FFMPEG_GYAN_VERSION: "8.0.1"
   FFMPEG_GYAN_SHA256: "42edab4b9241ff1184b26d5f4545322227589713a7e56cf4459c4c4e30ccaaac"
   FFMPEG_EVERMEET_VER: "8.1"
@@ -203,6 +203,21 @@ jobs:
 
           echo "--- ffmpeg-bin contents ---"
           ls -lh ffmpeg-bin/
+
+      - name: Smoke-test FFmpeg (Linux)
+        if: inputs.label == 'linux'
+        shell: bash
+        run: |
+          set -e
+          ffmpeg-bin/ffmpeg -version
+          ffmpeg-bin/ffmpeg -encoders 2>/dev/null | grep -q libx265 || { echo "ERROR: libx265 not available"; exit 1; }
+          ffmpeg-bin/ffmpeg -encoders 2>/dev/null | grep -q libx264 || { echo "ERROR: libx264 not available"; exit 1; }
+          ffmpeg-bin/ffmpeg -f lavfi -i testsrc2=size=192x108:rate=1 \
+            -vframes 5 -c:v libx265 -preset ultrafast /tmp/smoke_hevc.mkv
+          test -s /tmp/smoke_hevc.mkv
+          ffmpeg-bin/ffmpeg -f lavfi -i testsrc2=size=192x108:rate=1 \
+            -vframes 5 -c:v libx264 -preset ultrafast /tmp/smoke_h264.mp4
+          test -s /tmp/smoke_h264.mp4
 
       # ── Build -full variant bundles ────────────────────────────
 
