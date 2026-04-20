@@ -23,12 +23,15 @@ finish-args:
 
 modules:
   # ── FFmpeg (pre-built GPL static build from BtbN) ──
+  # Pinned to a dated autobuild release (not the moving `latest` tag) so the
+  # sha256 stays stable. Keep this URL in sync with
+  # FFMPEG_BTBN_* in .github/workflows/build-platform.yml.
   - name: ffmpeg
     buildsystem: simple
     sources:
       - type: archive
-        url: https://github.com/BtbN/FFmpeg-Builds/releases/download/latest/ffmpeg-n8.1-latest-linux64-gpl-8.1.tar.xz
-        sha256: 8e1943fbc5b2e4950b1f49047b20cd4fe86002305f2b127abad6c6e5f2d0c909
+        url: https://github.com/BtbN/FFmpeg-Builds/releases/download/autobuild-2026-04-20-13-21/ffmpeg-n8.1-10-g7f5c90f77e-linux64-gpl-8.1.tar.xz
+        sha256: 12388208af9971666cf5529a81c5cf55cef3510d543791da130f2430a46e663f
         strip-components: 1
     build-commands:
       - install -Dm755 bin/ffmpeg /app/bin/ffmpeg
