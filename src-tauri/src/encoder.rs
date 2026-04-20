@@ -5724,9 +5724,16 @@ mod tests {
     }
 
     /// QSV encoder with tonemap: the hwupload filter must be chained
-    /// after the tonemap filter, not replace it.
+    /// after the tonemap filter, not replace it. QSV hwupload is emitted
+    /// only by the Linux `assemble_ffmpeg_args` branch and requires a DRI
+    /// render node, so the test is gated accordingly.
+    #[cfg(target_os = "linux")]
     #[test]
     fn test_assemble_qsv_tonemap_chains_hwupload() {
+        if find_dri_render_node().is_none() {
+            eprintln!("skipping: no /dev/dri/renderD* available");
+            return;
+        }
         let empty: &[String] = &[];
         let args = assemble_ffmpeg_args(&FfmpegAssemblyParts {
             input_path: "input.mkv",
@@ -5746,7 +5753,6 @@ mod tests {
         let vf_pos = args.iter().position(|a| a == "-vf").unwrap();
         let vf_value = &args[vf_pos + 1];
 
-        // The tonemap filter must appear before hwupload in the chain
         assert!(
             vf_value.contains("tonemap=hable"),
             "tonemap must be present"
@@ -5900,8 +5906,15 @@ mod tests {
     }
 
     /// QSV with 10-bit HDR/DV source must use format=p010le,hwupload.
+    /// QSV args are emitted only by the Linux branch of
+    /// `assemble_ffmpeg_args` and require a DRI render node.
+    #[cfg(target_os = "linux")]
     #[test]
     fn test_assemble_qsv_10bit_uses_p010le() {
+        if find_dri_render_node().is_none() {
+            eprintln!("skipping: no /dev/dri/renderD* available");
+            return;
+        }
         let empty: &[String] = &[];
         let args = assemble_ffmpeg_args(&FfmpegAssemblyParts {
             input_path: "input.mkv",
@@ -5931,8 +5944,15 @@ mod tests {
     }
 
     /// QSV with 8-bit SDR source must use format=nv12,hwupload.
+    /// QSV args are emitted only by the Linux branch of
+    /// `assemble_ffmpeg_args` and require a DRI render node.
+    #[cfg(target_os = "linux")]
     #[test]
     fn test_assemble_qsv_8bit_uses_nv12() {
+        if find_dri_render_node().is_none() {
+            eprintln!("skipping: no /dev/dri/renderD* available");
+            return;
+        }
         let empty: &[String] = &[];
         let args = assemble_ffmpeg_args(&FfmpegAssemblyParts {
             input_path: "input.mkv",
