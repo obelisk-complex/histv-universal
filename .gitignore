@@ -66,3 +66,4 @@ com.histv.encoder.ci.yml
 # ── Flatpak repo export (local only) ──
 flatpak-repo/
 repo/
+.worktrees/
