@@ -214,9 +214,142 @@ jobs:
           path: histv-ffmpeg-linux-x64.tar.gz
           retention-days: 30
 
+  macos:
+    runs-on: macos-14 # Apple Silicon (arm64) - native build, fixes the Rosetta defect
+    steps:
+      - name: Install build tooling
+        run: |
+          set -euo pipefail
+          brew install nasm cmake ninja meson pkg-config autoconf automake libtool
+          echo "PREFIX=$HOME/ffbuild/prefix" >> "$GITHUB_ENV"
+          echo "SRC=$HOME/ffbuild/src" >> "$GITHUB_ENV"
+
+      - name: Prepare prefix
+        run: |
+          set -euo pipefail
+          mkdir -p "$PREFIX/lib/pkgconfig" "$PREFIX/include" "$SRC"
+          echo "PKG_CONFIG_PATH=$PREFIX/lib/pkgconfig" >> "$GITHUB_ENV"
+
+      - name: Build x264 (static, pic, 8+10-bit)
+        run: |
+          set -euo pipefail
+          cd "$SRC"
+          git clone https://code.videolan.org/videolan/x264.git
+          cd x264 && git checkout "$X264_COMMIT"
+          ./configure --prefix="$PREFIX" --enable-static --enable-pic \
+            --bit-depth=all --disable-cli --disable-opencl
+          make -j"$(sysctl -n hw.ncpu)"
+          make install
+
+      - name: Build x265 (multilib 8/10/12-bit, static)
+        run: |
+          set -euo pipefail
+          cd "$SRC"
+          curl -fsSL --retry 3 -o x265.tar.gz "https://download.videolan.org/pub/videolan/x265/x265_${X265_VER}.tar.gz"
+          echo "${X265_SHA256}  x265.tar.gz" | shasum -a 256 -c -
+          tar xzf x265.tar.gz
+          cd "x265_${X265_VER}/source"
+          mkdir -p 8bit 10bit 12bit
+          cmake -S . -B 12bit -G Ninja -DCMAKE_INSTALL_PREFIX="$PREFIX" \
+            -DHIGH_BIT_DEPTH=ON -DMAIN12=ON -DEXPORT_C_API=OFF \
+            -DENABLE_SHARED=OFF -DENABLE_CLI=OFF -DENABLE_HDR10_PLUS=ON
+          ninja -C 12bit
+          cmake -S . -B 10bit -G Ninja -DCMAKE_INSTALL_PREFIX="$PREFIX" \
+            -DHIGH_BIT_DEPTH=ON -DEXPORT_C_API=OFF \
+            -DENABLE_SHARED=OFF -DENABLE_CLI=OFF -DENABLE_HDR10_PLUS=ON
+          ninja -C 10bit
+          ln -sf ../10bit/libx265.a 8bit/libx265_main10.a
+          ln -sf ../12bit/libx265.a 8bit/libx265_main12.a
+          cmake -S . -B 8bit -G Ninja -DCMAKE_INSTALL_PREFIX="$PREFIX" \
+            -DENABLE_SHARED=OFF -DENABLE_CLI=OFF -DENABLE_HDR10_PLUS=ON \
+            -DEXTRA_LIB="x265_main10.a;x265_main12.a" \
+            -DEXTRA_LINK_FLAGS=-L. -DLINKED_10BIT=ON -DLINKED_12BIT=ON
+          ninja -C 8bit
+          ninja -C 8bit install
+          # macOS ar lacks the -M (MRI script) mode; merge with Apple libtool.
+          cd 8bit
+          mv libx265.a libx265_main.a
+          libtool -static -o libx265.a libx265_main.a libx265_main10.a libx265_main12.a
+          cp -f libx265.a "$PREFIX/lib/libx265.a"
+
+      - name: Build SVT-AV1 (static, no LTO)
+        run: |
+          set -euo pipefail
+          cd "$SRC"
+          git clone --depth 1 -b "$SVTAV1_TAG" https://gitlab.com/AOMediaCodec/SVT-AV1.git
+          cmake -S SVT-AV1 -B SVT-AV1/Build -G Ninja \
+            -DCMAKE_INSTALL_PREFIX="$PREFIX" -DCMAKE_BUILD_TYPE=Release \
+            -DBUILD_SHARED_LIBS=OFF -DSVT_AV1_LTO=OFF
+          ninja -C SVT-AV1/Build install
+
+      - name: Build zimg (static)
+        run: |
+          set -euo pipefail
+          cd "$SRC"
+          git clone --depth 1 -b "$ZIMG_TAG" --recurse-submodules https://github.com/sekrit-twc/zimg.git
+          cd zimg
+          ./autogen.sh
+          ./configure --prefix="$PREFIX" --enable-static --disable-shared --with-pic
+          make -j"$(sysctl -n hw.ncpu)"
+          make install
+
+      - name: Configure + build ffmpeg
+        run: |
+          set -euo pipefail
+          cd "$SRC"
+          git clone --depth 1 -b "$FFMPEG_TAG" https://github.com/FFmpeg/FFmpeg.git ffmpeg
+          cd ffmpeg
+          ./configure \
+            --prefix="$PREFIX" \
+            --pkg-config-flags=--static \
+            --extra-cflags="-I$PREFIX/include" \
+            --extra-ldflags="-L$PREFIX/lib" \
+            --extra-libs="-lc++" \
+            --enable-gpl --enable-version3 \
+            --enable-static --disable-shared \
+            --disable-debug --disable-doc --disable-ffplay --enable-ffprobe \
+            --disable-network --disable-indevs --disable-outdevs \
+            --enable-libx264 --enable-libx265 --enable-libsvtav1 --enable-libzimg \
+            --enable-videotoolbox --enable-audiotoolbox \
+            --arch=arm64 --enable-runtime-cpudetect
+          make -j"$(sysctl -n hw.ncpu)"
+
+      - name: Verify feature set
+        run: |
+          set -euo pipefail
+          cd "$SRC/ffmpeg"
+          ./ffmpeg -hide_banner -version
+          ./ffmpeg -hide_banner -encoders | grep -E 'libx264|libx265|libsvtav1|videotoolbox' || { echo "MISSING expected encoder"; exit 1; }
+          ./ffmpeg -hide_banner -filters | grep -E 'zscale|tonemap' || { echo "MISSING zscale/tonemap"; exit 1; }
+          ./ffmpeg -hide_banner -bsfs | grep -E 'hevc_mp4toannexb|hevc_metadata' || { echo "MISSING hevc bsf"; exit 1; }
+          ./ffmpeg -hide_banner -y -f rawvideo -pix_fmt yuv420p -video_size 192x108 -framerate 5 -i /dev/zero -frames:v 5 -c:v libx264 -preset ultrafast /tmp/h264.mp4
+          ./ffmpeg -hide_banner -y -f rawvideo -pix_fmt yuv420p -video_size 192x108 -framerate 5 -i /dev/zero -frames:v 5 -c:v libx265 -preset ultrafast /tmp/hevc.mkv
+          ./ffmpeg -hide_banner -y -f rawvideo -pix_fmt yuv420p10le -video_size 192x108 -framerate 5 -i /dev/zero -frames:v 5 -c:v libx265 -preset ultrafast /tmp/hevc10.mkv
+          test -s /tmp/h264.mp4 && test -s /tmp/hevc.mkv && test -s /tmp/hevc10.mkv
+
+      - name: Collect + checksum
+        run: |
+          set -euo pipefail
+          mkdir -p out
+          cp "$SRC/ffmpeg/ffmpeg" out/ffmpeg
+          cp "$SRC/ffmpeg/ffprobe" out/ffprobe
+          strip out/ffmpeg out/ffprobe || true
+          ( cd out && shasum -a 256 ffmpeg ffprobe | tee SHA256SUMS )
+          tar -C out -czf histv-ffmpeg-macos-arm64.tar.gz ffmpeg ffprobe SHA256SUMS
+          ls -lh out histv-ffmpeg-macos-arm64.tar.gz
+
+      - name: Upload artefact
+        uses: actions/upload-artifact@bbbca2ddaa5d8feaa63e36b76fdaad77386f024f # v7.0.0
+        with:
+          name: histv-ffmpeg-macos-arm64
+          path: histv-ffmpeg-macos-arm64.tar.gz
+          retention-days: 30
+
   publish:
-    needs: [linux]
-    if: ${{ github.event_name == 'push' || inputs.publish }}
+    needs: [linux, macos]
+    # Publish whatever built: ship Linux to experimental even while macOS/Windows
+    # are still being ironed out (don't let one platform block the others).
+    if: ${{ !cancelled() && (github.event_name == 'push' || inputs.publish) && (needs.linux.result == 'success' || needs.macos.result == 'success') }}
     runs-on: ubuntu-22.04
     permissions:
       contents: write
@@ -239,5 +372,5 @@ jobs:
               --repo "$GITHUB_REPOSITORY" \
               --prerelease \
               --title "Custom ffmpeg (experimental)" \
-              --notes "Histv-tailored static ffmpeg built from pinned source (ffmpeg ${FFMPEG_TAG}, x265 ${X265_TAG} multilib, x264 stable, SVT-AV1 ${SVTAV1_TAG}, zimg ${ZIMG_TAG}). Experimental test builds - download the per-platform archive and swap it into histv to test."
+              --notes "Histv-tailored static ffmpeg built from pinned source (ffmpeg ${FFMPEG_TAG}, x265 ${X265_VER} multilib, x264 stable, SVT-AV1 ${SVTAV1_TAG}, zimg ${ZIMG_TAG}). Experimental test builds - download the per-platform archive and swap it into histv to test."
           gh release upload ffmpeg-experimental --repo "$GITHUB_REPOSITORY" --clobber $(find dist -type f)
