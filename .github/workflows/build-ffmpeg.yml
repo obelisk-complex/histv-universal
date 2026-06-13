@@ -464,7 +464,7 @@ jobs:
             --prefix="$PREFIX" \
             --pkg-config-flags=--static \
             --extra-cflags="-I$PREFIX/include" \
-            --extra-ldflags="-L$PREFIX/lib -static -static-libgcc -static-libstdc++" \
+            --extra-ldflags="-L$PREFIX/lib -static -static-libgcc -static-libstdc++ -Wl,--allow-multiple-definition" \
             --extra-libs="-lstdc++ -lpthread" \
             --enable-gpl --enable-version3 \
             --enable-static --disable-shared \
