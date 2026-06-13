@@ -5,11 +5,20 @@ on:
   release:
     types: [published]
 
+# Don't cancel an in-flight release (it may be mid-upload); this just stops two
+# runs for the same tag from racing.
+concurrency:
+  group: release-${{ github.ref }}
+  cancel-in-progress: false
+
+# Least privilege: granted per-job below. Only the upload job needs write.
 permissions:
-  contents: write
+  contents: read
 
 jobs:
   build:
+    permissions:
+      contents: read
     strategy:
       fail-fast: false
       matrix:
@@ -38,10 +47,15 @@ jobs:
       label: ${{ matrix.label }}
       bundles: ${{ matrix.bundles }}
       ref: ${{ github.ref }}
+      # ci.yml already ran the full test suite on main before this tag, so the
+      # per-platform build doesn't need to re-run it.
+      run_tests: false
 
   release:
     needs: build
     runs-on: ubuntu-22.04
+    permissions:
+      contents: write
 
     steps:
       - name: Download all artefacts
@@ -54,7 +68,7 @@ jobs:
         run: find release-assets -type f
 
       - name: Upload to GitHub Release
-        uses: softprops/action-gh-release@153bb8e04406b158c6c84fc1615b65b24149a1fe # v2.2.2
+        uses: softprops/action-gh-release@153bb8e04406b158c6c84fc1615b65b24149a1fe # v2.6.1
         with:
           files: release-assets/**/*
           generate_release_notes: true

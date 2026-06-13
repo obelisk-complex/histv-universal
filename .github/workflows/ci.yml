@@ -7,6 +7,12 @@ on:
   pull_request:
     branches: [main]
 
+# Cancel an in-flight run when a newer commit lands on the same branch/PR, so
+# force-pushes and rapid pushes don't queue up redundant macOS/Windows runners.
+concurrency:
+  group: ci-${{ github.ref }}
+  cancel-in-progress: true
+
 permissions:
   contents: read
 
@@ -20,9 +26,11 @@ jobs:
     steps:
       - name: Checkout
         uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
+        with:
+          fetch-depth: 1 # build/test needs only the tip commit, not full history
 
       - name: Install Rust ${{ env.RUST_VERSION }}
-        uses: dtolnay/rust-toolchain@3c5f7ea28cd621ae0bf5283f0e981fb97b8a7af9 # 2026-03-27
+        uses: dtolnay/rust-toolchain@3c5f7ea28cd621ae0bf5283f0e981fb97b8a7af9 # action commit 2026-03-27; Rust version pinned via RUST_VERSION
         with:
           toolchain: ${{ env.RUST_VERSION }}
           components: clippy, rustfmt
@@ -31,6 +39,9 @@ jobs:
         uses: Swatinem/rust-cache@c19371144df3bb44fab255c43d04cbc2ab54d1c4 # v2.9.1
         with:
           workspaces: src-tauri
+          # Only persist the cache from main; PR runs restore but don't write,
+          # so a failing or experimental branch can't poison the shared cache.
+          save-if: ${{ github.ref == 'refs/heads/main' }}
 
       - name: Install Linux dependencies
         run: |
@@ -49,13 +60,12 @@ jobs:
         working-directory: src-tauri
         run: cargo fmt --check
 
-      - name: Run library and integration tests
+      - name: Run tests (library, integration, CLI binary)
         working-directory: src-tauri
+        # `--features dovi,cli` already compiles and tests every crate in the
+        # workspace, histv-cli included; a separate `--bin histv-cli` run added
+        # no unique coverage, so it was removed.
         run: cargo test --features dovi,cli
-
-      - name: Run binary crate tests
-        working-directory: src-tauri
-        run: cargo test --bin histv-cli --features cli
 
       - name: Feature combination check (CLI-only, no dovi)
         working-directory: src-tauri
@@ -86,9 +96,11 @@ jobs:
     steps:
       - name: Checkout
         uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
+        with:
+          fetch-depth: 1 # build/test needs only the tip commit, not full history
 
       - name: Install Rust ${{ env.RUST_VERSION }}
-        uses: dtolnay/rust-toolchain@3c5f7ea28cd621ae0bf5283f0e981fb97b8a7af9 # 2026-03-27
+        uses: dtolnay/rust-toolchain@3c5f7ea28cd621ae0bf5283f0e981fb97b8a7af9 # action commit 2026-03-27; Rust version pinned via RUST_VERSION
         with:
           toolchain: ${{ env.RUST_VERSION }}
 
@@ -96,7 +108,32 @@ jobs:
         uses: Swatinem/rust-cache@c19371144df3bb44fab255c43d04cbc2ab54d1c4 # v2.9.1
         with:
           workspaces: src-tauri
+          # Only persist the cache from main; PR runs restore but don't write,
+          # so a failing or experimental branch can't poison the shared cache.
+          save-if: ${{ github.ref == 'refs/heads/main' }}
 
       - name: Cargo check (all targets)
         working-directory: src-tauri
         run: cargo check --features ${{ matrix.features }} --all-targets
+
+  # Scan the locked dependency tree for known RustSec advisories. Runs in
+  # parallel with the test/check jobs so it doesn't add to the critical path.
+  audit:
+    runs-on: ubuntu-22.04
+    steps:
+      - name: Checkout
+        uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
+        with:
+          fetch-depth: 1
+
+      - name: Install Rust ${{ env.RUST_VERSION }}
+        uses: dtolnay/rust-toolchain@3c5f7ea28cd621ae0bf5283f0e981fb97b8a7af9 # action commit 2026-03-27; Rust version pinned via RUST_VERSION
+        with:
+          toolchain: ${{ env.RUST_VERSION }}
+
+      - name: Install cargo-audit
+        run: cargo install cargo-audit --locked
+
+      - name: Audit dependencies (fails on known vulnerabilities)
+        working-directory: src-tauri
+        run: cargo audit

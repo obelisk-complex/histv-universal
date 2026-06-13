@@ -26,6 +26,11 @@ on:
         required: false
         type: string
         default: "main"
+      run_tests:
+        description: "Run `cargo test` before building (set false when CI already validated this commit)"
+        required: false
+        type: boolean
+        default: true
 
 permissions:
   contents: read
@@ -57,9 +62,10 @@ jobs:
         uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
         with:
           ref: ${{ inputs.ref }}
+          fetch-depth: 1 # build needs only the tip commit, not full history
 
       - name: Install Rust ${{ env.RUST_VERSION }}
-        uses: dtolnay/rust-toolchain@3c5f7ea28cd621ae0bf5283f0e981fb97b8a7af9 # 2026-03-27
+        uses: dtolnay/rust-toolchain@3c5f7ea28cd621ae0bf5283f0e981fb97b8a7af9 # action commit 2026-03-27; Rust version pinned via RUST_VERSION
         with:
           toolchain: ${{ env.RUST_VERSION }}
           targets: ${{ inputs.target }}
@@ -94,6 +100,7 @@ jobs:
         run: cargo install tauri-cli --version "${{ env.TAURI_CLI_VERSION }}" --locked
 
       - name: Run tests
+        if: inputs.run_tests
         working-directory: src-tauri
         run: cargo test --features dovi,cli --target ${{ inputs.target }}
 

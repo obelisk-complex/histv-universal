@@ -11,8 +11,15 @@ on:
         required: false
         default: "main"
 
+# Don't cancel an in-flight build (a release build may be mid-upload); this just
+# stops duplicate runs for the same ref from racing.
+concurrency:
+  group: flatpak-${{ github.event.inputs.ref || github.ref }}
+  cancel-in-progress: false
+
+# Least privilege: granted per-job below. Only the upload step needs write.
 permissions:
-  contents: write
+  contents: read
 
 env:
   GNOME_RUNTIME_VERSION: "50"
@@ -21,11 +28,14 @@ env:
 jobs:
   validate-ffmpeg:
     runs-on: ubuntu-22.04
+    permissions:
+      contents: read
     steps:
       - name: Checkout
         uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
         with:
           ref: ${{ github.event.inputs.ref || github.ref }}
+          fetch-depth: 1
 
       - name: Extract FFmpeg URL and sha256
         id: ffmpeg-meta
@@ -69,18 +79,15 @@ jobs:
   build:
     runs-on: ubuntu-22.04
     needs: validate-ffmpeg
+    permissions:
+      contents: write
 
     steps:
       - name: Checkout
         uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
         with:
           ref: ${{ github.event.inputs.ref || github.ref }}
-
-      - name: Cache Flatpak SDK
-        uses: actions/cache@668228422ae6a00e4ad889ee87cd7109ec5666a7 # v5.0.4
-        with:
-          path: /var/lib/flatpak
-          key: flatpak-sdk-gnome-${{ env.GNOME_RUNTIME_VERSION }}-rust-${{ env.RUST_EXT_VERSION }}
+          fetch-depth: 1
 
       - name: Install Flatpak and flatpak-builder
         run: |
@@ -88,27 +95,34 @@ jobs:
           sudo apt-get update
           sudo apt-get install -y flatpak flatpak-builder
 
-      - name: Add Flathub remote
-        run: |
-          set -e
-          sudo flatpak remote-add --if-not-exists flathub https://dl.flathub.org/repo/flathub.flatpakrepo
+      # Cache the *user* Flatpak installation (~/.local/share/flatpak). The system
+      # path (/var/lib/flatpak) is root-owned, so actions/cache cannot restore into
+      # it - the previous system-wide cache silently never restored. The user
+      # installation is owned by the runner user, so caching works, and the heavy
+      # SDK install is skipped on a cache hit.
+      - name: Cache Flatpak SDK (user installation)
+        id: cache-flatpak-sdk
+        uses: actions/cache@668228422ae6a00e4ad889ee87cd7109ec5666a7 # v5.0.4
+        with:
+          path: ~/.local/share/flatpak
+          key: flatpak-sdk-user-gnome-${{ env.GNOME_RUNTIME_VERSION }}-rust-${{ env.RUST_EXT_VERSION }}
 
-      - name: Install GNOME SDK, Platform, and Rust extension
+      - name: Add Flathub remote (user)
+        run: flatpak --user remote-add --if-not-exists flathub https://dl.flathub.org/repo/flathub.flatpakrepo
+
+      - name: Install GNOME SDK, Platform, and Rust extension (user)
+        if: steps.cache-flatpak-sdk.outputs.cache-hit != 'true'
         run: |
           set -e
-          sudo flatpak install -y flathub \
+          flatpak --user install -y flathub \
             org.gnome.Platform//${{ env.GNOME_RUNTIME_VERSION }} \
             org.gnome.Sdk//${{ env.GNOME_RUNTIME_VERSION }} \
             org.freedesktop.Sdk.Extension.rust-stable//${{ env.RUST_EXT_VERSION }}
 
-      # Fix root-owned .lock files so actions/cache can tar the directory
-      - name: Fix Flatpak SDK permissions for caching
-        run: sudo chmod -R a+r /var/lib/flatpak
-
       - name: Build Flatpak from source manifest
         run: |
           set -e
-          flatpak-builder --force-clean --repo=flatpak-repo flatpak-build com.histv.encoder.yml
+          flatpak-builder --user --force-clean --repo=flatpak-repo flatpak-build com.histv.encoder.yml
 
       - name: Export Flatpak bundle
         run: |
@@ -124,6 +138,6 @@ jobs:
 
       - name: Upload to GitHub Release
         if: github.event_name == 'release'
-        uses: softprops/action-gh-release@153bb8e04406b158c6c84fc1615b65b24149a1fe # v2.2.2
+        uses: softprops/action-gh-release@153bb8e04406b158c6c84fc1615b65b24149a1fe # v2.6.1
         with:
           files: histv-linux.flatpak

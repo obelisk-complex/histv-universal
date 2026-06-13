@@ -1,0 +1,16 @@
+# Keep dependencies and GitHub Actions current. The github-actions ecosystem
+# entry also opens PRs when a pinned action SHA falls behind its latest release,
+# which stops the action SHA/comment drift the audit flagged from recurring.
+version: 2
+updates:
+  - package-ecosystem: cargo
+    directory: /src-tauri
+    schedule:
+      interval: weekly
+    open-pull-requests-limit: 5
+
+  - package-ecosystem: github-actions
+    directory: /
+    schedule:
+      interval: weekly
+    open-pull-requests-limit: 5

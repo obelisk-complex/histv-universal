@@ -45,5 +45,9 @@ jobs:
       target: x86_64-pc-windows-msvc
       label: windows
       bundles: ""
-      # On a push, github.event.inputs is empty -> build the pushed commit.
+      # On push, github.event.inputs is empty, so github.sha (the pushed commit)
+      # is used. On dispatch, the ref input defaults to "revamp-rail"; github.sha
+      # is only the fallback if the user clears it. Note: the reusable workflow
+      # *definition* always comes from this workflow's commit (github.sha); only
+      # the *code* that gets built is checked out at inputs.ref.
       ref: ${{ github.event.inputs.ref || github.sha }}
