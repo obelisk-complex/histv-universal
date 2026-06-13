@@ -345,7 +345,7 @@
       derived['log-file']       = c['log-file']       || '#7dd3fc';
       derived['log-text']       = c['log-text']       || '#8BC88B';
       derived['log-cmd']        = c['log-cmd']        || (light ? '#999' : '#555');
-      derived['text-on-primary'] = c['text-on-primary'] || '#fff';
+      derived['text-on-primary'] = c['text-on-primary'] || bestTextOn(primary);
 
       // ── Apply all to :root (with colour validation) ──
       const isValidCssColor = (v) => {
@@ -460,6 +460,25 @@
     function overlayOnBg(colour, bg, isLight) {
       const alpha = isLight ? 0.12 : 0.15;
       return blendHex(colour, bg, alpha);
+    }
+
+    // WCAG relative luminance of a hex colour (sRGB).
+    function relLuminance(hex) {
+      const lin = v => {
+        v /= 255;
+        return v <= 0.03928 ? v / 12.92 : Math.pow((v + 0.055) / 1.055, 2.4);
+      };
+      const [r, g, b] = hexToRgb(hex);
+      return 0.2126 * lin(r) + 0.7152 * lin(g) + 0.0722 * lin(b);
+    }
+
+    // Pick black or white for the strongest contrast on a background colour,
+    // so text on the primary/accent passes WCAG AA regardless of theme hue.
+    function bestTextOn(hex) {
+      const L = relLuminance(hex);
+      const onWhite = 1.05 / (L + 0.05);
+      const onBlack = (L + 0.05) / 0.05;
+      return onWhite >= onBlack ? '#ffffff' : '#000000';
     }
 
     selTheme.addEventListener('change', () => {

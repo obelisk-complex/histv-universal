@@ -2772,7 +2772,17 @@ pub async fn run_encode_loop(
                         settings,
                         detected_encoders,
                     );
-                    let ext = resolved.container_ext.as_str();
+                    // DV Tier-1 forces MP4 output; mirror that here so we look
+                    // for the file the encode actually wrote, not the codec's
+                    // default container ext.
+                    let is_dv = queue[idx].probe.dovi_profile.is_some()
+                        && crate::dovi_tools::capabilities().can_package_dovi_mp4
+                        && preserve_hdr;
+                    let ext = if is_dv {
+                        "mp4"
+                    } else {
+                        resolved.container_ext.as_str()
+                    };
                     let base_name = remote.file_stem().unwrap_or_default().to_string_lossy();
                     let local_output = local_dir.join(format!("{}.{}", base_name, ext));
                     let remote_dir = std::path::Path::new(&settings.output_folder);
@@ -2802,6 +2812,11 @@ pub async fn run_encode_loop(
                                 ));
                             }
                         }
+                    } else {
+                        sink.log(&format!(
+                            "  WARNING: expected output {} not found - remote folder not updated",
+                            local_output.display()
+                        ));
                     }
                 }
             }
@@ -2822,6 +2837,15 @@ pub async fn run_encode_loop(
     for (idx, mut ctx, original_path) in wave_staging_contexts.drain(..) {
         queue[idx].full_path = original_path;
         ctx.cleanup(sink);
+    }
+
+    // Best-effort: remove the folder-mode output staging dir. Empty on the
+    // success path (outputs are copied back and removed individually); may
+    // hold a partial output after a mid-wave cancel. Covers both.
+    if stage_folder_output {
+        let _ = std::fs::remove_dir_all(
+            crate::staging::resolve_staging_dir(None).join("folder-output"),
+        );
     }
 
     // Batch completion
