@@ -1,0 +1,236 @@
+# Build a histv-tailored, fully source-pinned static ffmpeg/ffprobe.
+#
+# Why this exists: histv used to download prebuilt ffmpeg from third parties
+# (BtbN dated autobuilds, gyan.dev, evermeet.cx). The BtbN pin expired upstream
+# and 404'd the whole build. Building from pinned source removes that failure
+# mode permanently, gives a native macOS arm64 binary (evermeet is Intel-only),
+# and lets us strip ffmpeg to exactly what histv uses.
+#
+# Feature set + recipe come from bakeoff/qa/ffmpeg-custom-build-plan.md:
+# "curated GPL static" - x264 + x265 (multilib 8/10/12-bit for HDR) + SVT-AV1 +
+# zimg (zscale tonemap) + HW accel, with network/devices/ffplay stripped. No
+# Dolby Vision in ffmpeg (histv does DV/HDR10+ in Rust). No source patches.
+#
+# Output is published to the `ffmpeg-experimental` prerelease for test builds.
+name: Build ffmpeg (custom)
+
+on:
+  workflow_dispatch:
+    inputs:
+      publish:
+        description: "Publish built binaries to the ffmpeg-experimental prerelease"
+        type: boolean
+        default: true
+  # Rebuild whenever this workflow itself changes (so we can iterate on the build
+  # from a feature branch without it being on the default branch for dispatch, and
+  # without running on unrelated pushes).
+  push:
+    branches: [revamp-rail, "preview/**"]
+    paths: [".github/workflows/build-ffmpeg.yml"]
+
+permissions:
+  contents: read
+
+concurrency:
+  group: build-ffmpeg
+  cancel-in-progress: true
+
+env:
+  # Source pins (verified to exist at authoring time; recorded with SHA256 in
+  # the build log). Bump deliberately, never to a floating branch/latest.
+  FFMPEG_TAG: "n8.1.1"
+  X264_COMMIT: "b35605ace3ddf7c1a5d67a2eb553f034aef41d55" # videolan/x264 stable
+  X265_TAG: "4.1"
+  SVTAV1_TAG: "v3.1.2"
+  ZIMG_TAG: "release-3.0.5"
+  NVHEADERS_TAG: "n12.2.72.0"
+
+jobs:
+  linux:
+    runs-on: ubuntu-22.04
+    steps:
+      - name: Install build tooling
+        run: |
+          set -euo pipefail
+          sudo apt-get update
+          sudo apt-get install -y \
+            nasm cmake ninja-build meson pkg-config build-essential git \
+            autoconf automake libtool \
+            libva-dev libdrm-dev
+          echo "PREFIX=$HOME/ffbuild/prefix" >> "$GITHUB_ENV"
+          echo "SRC=$HOME/ffbuild/src" >> "$GITHUB_ENV"
+
+      - name: Prepare prefix
+        run: |
+          set -euo pipefail
+          mkdir -p "$PREFIX/lib/pkgconfig" "$PREFIX/include" "$SRC"
+          echo "PKG_CONFIG_PATH=$PREFIX/lib/pkgconfig" >> "$GITHUB_ENV"
+
+      - name: Build x264 (static, pic, 8+10-bit)
+        run: |
+          set -euo pipefail
+          cd "$SRC"
+          git clone https://code.videolan.org/videolan/x264.git
+          cd x264 && git checkout "$X264_COMMIT"
+          ./configure --prefix="$PREFIX" --enable-static --enable-pic \
+            --bit-depth=all --disable-cli --disable-opencl
+          make -j"$(nproc)"
+          make install
+
+      - name: Build x265 (multilib 8/10/12-bit, static)
+        run: |
+          set -euo pipefail
+          cd "$SRC"
+          git clone --depth 1 -b "$X265_TAG" https://github.com/videolan/x265.git x265
+          cd x265/source
+          mkdir -p 8bit 10bit 12bit
+
+          # 12-bit (Main12)
+          cmake -S . -B 12bit -G Ninja \
+            -DCMAKE_INSTALL_PREFIX="$PREFIX" \
+            -DHIGH_BIT_DEPTH=ON -DMAIN12=ON -DEXPORT_C_API=OFF \
+            -DENABLE_SHARED=OFF -DENABLE_CLI=OFF -DENABLE_HDR10_PLUS=ON
+          ninja -C 12bit
+
+          # 10-bit (Main10)
+          cmake -S . -B 10bit -G Ninja \
+            -DCMAKE_INSTALL_PREFIX="$PREFIX" \
+            -DHIGH_BIT_DEPTH=ON -DEXPORT_C_API=OFF \
+            -DENABLE_SHARED=OFF -DENABLE_CLI=OFF -DENABLE_HDR10_PLUS=ON
+          ninja -C 10bit
+
+          # 8-bit linked against the 10/12-bit libs
+          ln -sf ../10bit/libx265.a 8bit/libx265_main10.a
+          ln -sf ../12bit/libx265.a 8bit/libx265_main12.a
+          cmake -S . -B 8bit -G Ninja \
+            -DCMAKE_INSTALL_PREFIX="$PREFIX" \
+            -DENABLE_SHARED=OFF -DENABLE_CLI=OFF -DENABLE_HDR10_PLUS=ON \
+            -DEXTRA_LIB="x265_main10.a;x265_main12.a" \
+            -DEXTRA_LINK_FLAGS=-L. -DLINKED_10BIT=ON -DLINKED_12BIT=ON
+          ninja -C 8bit
+          ninja -C 8bit install
+
+          # Merge the three static archives into one fat libx265.a
+          cd 8bit
+          mv libx265.a libx265_main.a
+          ar -M <<'EOF'
+          CREATE libx265.a
+          ADDLIB libx265_main.a
+          ADDLIB libx265_main10.a
+          ADDLIB libx265_main12.a
+          SAVE
+          END
+          EOF
+          cp -f libx265.a "$PREFIX/lib/libx265.a"
+
+      - name: Build SVT-AV1 (static, no LTO)
+        run: |
+          set -euo pipefail
+          cd "$SRC"
+          git clone --depth 1 -b "$SVTAV1_TAG" https://gitlab.com/AOMediaCodec/SVT-AV1.git
+          cmake -S SVT-AV1 -B SVT-AV1/Build -G Ninja \
+            -DCMAKE_INSTALL_PREFIX="$PREFIX" -DCMAKE_BUILD_TYPE=Release \
+            -DBUILD_SHARED_LIBS=OFF -DENABLE_AVX512=ON -DSVT_AV1_LTO=OFF
+          ninja -C SVT-AV1/Build install
+
+      - name: Build zimg (static)
+        run: |
+          set -euo pipefail
+          cd "$SRC"
+          git clone --depth 1 -b "$ZIMG_TAG" --recurse-submodules https://github.com/sekrit-twc/zimg.git
+          cd zimg
+          ./autogen.sh
+          ./configure --prefix="$PREFIX" --enable-static --disable-shared --with-pic
+          make -j"$(nproc)"
+          make install
+
+      - name: Install nv-codec-headers (nvenc)
+        run: |
+          set -euo pipefail
+          cd "$SRC"
+          git clone --depth 1 -b "$NVHEADERS_TAG" https://github.com/FFmpeg/nv-codec-headers.git
+          make -C nv-codec-headers install PREFIX="$PREFIX"
+
+      - name: Configure + build ffmpeg
+        run: |
+          set -euo pipefail
+          cd "$SRC"
+          git clone --depth 1 -b "$FFMPEG_TAG" https://github.com/FFmpeg/FFmpeg.git ffmpeg
+          cd ffmpeg
+          ./configure \
+            --prefix="$PREFIX" \
+            --pkg-config-flags=--static \
+            --extra-cflags="-I$PREFIX/include" \
+            --extra-ldflags="-L$PREFIX/lib" \
+            --extra-libs="-lstdc++ -lpthread -lm -ldl" \
+            --enable-gpl --enable-version3 \
+            --enable-static --disable-shared \
+            --disable-debug --disable-doc --disable-ffplay --enable-ffprobe \
+            --disable-network --disable-indevs --disable-outdevs \
+            --enable-libx264 --enable-libx265 --enable-libsvtav1 --enable-libzimg \
+            --enable-vaapi --enable-libdrm --enable-ffnvcodec \
+            --enable-runtime-cpudetect
+          make -j"$(nproc)"
+
+      - name: Verify feature set
+        run: |
+          set -euo pipefail
+          cd "$SRC/ffmpeg"
+          ./ffmpeg -hide_banner -version
+          echo "--- encoders ---"
+          ./ffmpeg -hide_banner -encoders | grep -E 'libx264|libx265|libsvtav1|nvenc|vaapi' || { echo "MISSING expected encoder"; exit 1; }
+          echo "--- filters ---"
+          ./ffmpeg -hide_banner -filters | grep -E 'zscale|tonemap' || { echo "MISSING zscale/tonemap"; exit 1; }
+          echo "--- bsfs ---"
+          ./ffmpeg -hide_banner -bsfs | grep -E 'hevc_mp4toannexb|hevc_metadata' || { echo "MISSING hevc bsf"; exit 1; }
+          echo "--- smoke encode (x264 + x265) ---"
+          ./ffmpeg -hide_banner -f lavfi -i testsrc2=size=192x108:rate=1 -vframes 5 -c:v libx264 -preset ultrafast /tmp/h264.mp4
+          ./ffmpeg -hide_banner -f lavfi -i testsrc2=size=192x108:rate=1 -vframes 5 -c:v libx265 -preset ultrafast /tmp/hevc.mkv
+          ./ffmpeg -hide_banner -f lavfi -i testsrc2=size=192x108:rate=1 -pix_fmt yuv420p10le -vframes 5 -c:v libx265 -preset ultrafast /tmp/hevc10.mkv
+          test -s /tmp/h264.mp4 && test -s /tmp/hevc.mkv && test -s /tmp/hevc10.mkv
+
+      - name: Collect + checksum
+        run: |
+          set -euo pipefail
+          mkdir -p out
+          cp "$SRC/ffmpeg/ffmpeg" out/ffmpeg
+          cp "$SRC/ffmpeg/ffprobe" out/ffprobe
+          strip out/ffmpeg out/ffprobe || true
+          ( cd out && sha256sum ffmpeg ffprobe | tee SHA256SUMS )
+          tar -C out -czf histv-ffmpeg-linux-x64.tar.gz ffmpeg ffprobe SHA256SUMS
+          ls -lh out histv-ffmpeg-linux-x64.tar.gz
+
+      - name: Upload artefact
+        uses: actions/upload-artifact@bbbca2ddaa5d8feaa63e36b76fdaad77386f024f # v7.0.0
+        with:
+          name: histv-ffmpeg-linux-x64
+          path: histv-ffmpeg-linux-x64.tar.gz
+          retention-days: 30
+
+  publish:
+    needs: [linux]
+    if: ${{ github.event_name == 'push' || inputs.publish }}
+    runs-on: ubuntu-22.04
+    permissions:
+      contents: write
+    steps:
+      - name: Download built ffmpeg artefacts
+        uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
+        with:
+          path: dist
+          merge-multiple: true
+
+      - name: Publish to ffmpeg-experimental prerelease
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          find dist -type f
+          # Create the prerelease once; ignore if it already exists, then clobber assets.
+          gh release view ffmpeg-experimental --repo "$GITHUB_REPOSITORY" >/dev/null 2>&1 || \
+            gh release create ffmpeg-experimental \
+              --repo "$GITHUB_REPOSITORY" \
+              --prerelease \
+              --title "Custom ffmpeg (experimental)" \
+              --notes "Histv-tailored static ffmpeg built from pinned source (ffmpeg ${FFMPEG_TAG}, x265 ${X265_TAG} multilib, x264 stable, SVT-AV1 ${SVTAV1_TAG}, zimg ${ZIMG_TAG}). Experimental test builds - download the per-platform archive and swap it into histv to test."
+          gh release upload ffmpeg-experimental --repo "$GITHUB_REPOSITORY" --clobber $(find dist -type f)
