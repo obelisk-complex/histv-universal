@@ -8,24 +8,28 @@
 </head>
 <body>
   <div id="app">
-    <!-- ═══ Main area: split panel (§4.1) ═══ -->
     <main id="main-area">
-      <!-- ─── Left panel: file queue (§5) ─── -->
+      <!-- ═══ Workspace: files + queue + transport (#left-panel; shown on the
+           right of the rail via row-reverse) ═══ -->
       <section id="left-panel">
-        <div class="panel-header">File Queue <span id="queue-summary" class="queue-summary"></span></div>
+        <div class="panel-header">
+          <span class="ws-title">Your files</span>
+          <span id="queue-summary" class="queue-summary"></span>
+        </div>
+
         <div id="queue-container">
           <div id="drop-overlay">Drop files or folders here</div>
           <div id="queue-empty-state" class="visible">
-            <div>No files in queue</div>
-            <div class="empty-hint">Drag files here, paste paths, or use Add</div>
+            <div class="empty-big">Drop your videos here</div>
+            <div class="empty-hint">or use Add — pick a quality on the left, then Start. Folders are scanned automatically.</div>
           </div>
           <table id="queue-table">
             <thead>
               <tr>
                 <th class="col-check"><input type="checkbox" id="select-all" title="Select / deselect all"></th>
                 <th>Filename</th>
-                <th>From Size</th>
-                <th class="has-tooltip">To Size (est.)<span class="tooltip-icon">?</span><span class="tooltip-text">Estimated output size based on current bitrate target. Tilde (~) means exact size can't be predicted for quality-based encoding.</span></th>
+                <th>From</th>
+                <th class="has-tooltip">To (est.)<span class="tooltip-icon">?</span><span class="tooltip-text">Estimated output size for the chosen quality. Tilde (~) means the exact size can't be predicted for quality-based encoding.</span></th>
                 <th>Resolution</th>
                 <th>HDR</th>
                 <th>From B/R</th>
@@ -36,8 +40,16 @@
             <tbody id="queue-body"></tbody>
           </table>
         </div>
+
+        <!-- Destination: always visible, plain-language -->
+        <div id="destination-bar">
+          <label for="txt-output-folder">Save to</label>
+          <input type="text" id="txt-output-folder" value="output" />
+          <button class="btn" id="btn-browse-output">Browse</button>
+        </div>
+
         <div id="toolbar">
-          <button class="btn" id="btn-add-files">Add</button>
+          <button class="btn" id="btn-add-files">Add files</button>
           <button class="btn" id="btn-clear-all">Clear</button>
           <div class="toolbar-gap"></div>
           <span id="btn-start-wrapper">
@@ -50,221 +62,244 @@
         </div>
       </section>
 
-      <!-- ─── Splitter ─── -->
+      <!-- ─── Splitter (resize rail vs workspace; toggle collapses the rail) ─── -->
       <div id="splitter">
-        <button id="splitter-toggle" title="Hide settings panel" aria-label="Hide settings panel">&#x25B6;</button>
+        <button id="splitter-toggle" title="Hide quality panel" aria-label="Hide quality panel">&#x25B6;</button>
       </div>
 
-      <!-- ─── Right panel: settings (single scrollable column) ─── -->
+      <!-- ═══ Quality rail (#right-panel; shown on the left via row-reverse) ═══ -->
       <aside id="right-panel">
-        <div id="settings-panel">
+        <div class="rail-scroll">
+          <div class="rail-title">Quality</div>
 
-          <div class="section-header">Video</div>
-
-          <div class="status-text" id="encoder-summary">Detecting encoders...</div>
-
-          <div class="form-row">
-            <label for="num-bitrate" class="has-tooltip">Bitrate (Mbps)
-              <span class="tooltip-icon">?</span>
-              <span class="tooltip-text">Videos bigger than this get shrunk. Videos already this size or smaller are left alone. Lower values = smaller files, but more visible quality loss. This number has the biggest impact on both file size and video quality.</span>
-            </label>
-            <input type="number" id="num-bitrate" min="1" max="50" value="4" />
+          <!-- Profile cards: one click = a consistent quality + format. -->
+          <div id="profile-list" role="radiogroup" aria-label="Quality profile">
+            <button type="button" class="profile-card" role="radio" aria-checked="false" data-profile="archive-high">
+              <span class="profile-name">Archive · High</span>
+              <span class="profile-desc">Near-original quality. Largest files.</span>
+            </button>
+            <button type="button" class="profile-card active" role="radio" aria-checked="true" data-profile="archive-balanced">
+              <span class="profile-name">Archive · Balanced</span>
+              <span class="profile-desc">Great quality, about half the size. A good default.</span>
+            </button>
+            <button type="button" class="profile-card" role="radio" aria-checked="false" data-profile="space-saver">
+              <span class="profile-name">Space-saver</span>
+              <span class="profile-desc">Smallest sensible size for big libraries.</span>
+            </button>
+            <button type="button" class="profile-card" role="radio" aria-checked="false" data-profile="max-compat">
+              <span class="profile-name">Max compatibility</span>
+              <span class="profile-desc">H.264/MP4 — plays on almost anything.</span>
+            </button>
+            <button type="button" class="profile-card" role="radio" aria-checked="false" data-profile="custom">
+              <span class="profile-name">Custom…</span>
+              <span class="profile-desc">Set every option yourself.</span>
+            </button>
           </div>
 
-          <div class="form-row">
-            <label class="has-tooltip">VBR peak
-              <span class="tooltip-icon">?</span>
-              <span class="tooltip-text">Lets the encoder use extra data for fast-moving or detailed scenes so they don't look blocky. Higher = better action scenes, but very old devices pre-2013 might stutter. 1.5x is safest; 3x looks best.</span>
-            </label>
-            <div class="rc-toggle" id="peak-toggle" role="group" aria-label="VBR peak multiplier">
-              <button type="button" class="active" aria-pressed="true" data-peak="1.5">1.5x</button>
-              <button type="button" aria-pressed="false" data-peak="2">2x</button>
-              <button type="button" aria-pressed="false" data-peak="2.5">2.5x</button>
-              <button type="button" aria-pressed="false" data-peak="3">3x</button>
+          <button type="button" id="advanced-toggle" aria-expanded="false" aria-controls="settings-panel">
+            <span id="advanced-arrow">&#x25B6;</span> Advanced settings
+          </button>
+
+          <!-- Advanced drawer: every raw control lives here, hidden by default. -->
+          <div id="settings-panel" class="collapsed-adv" hidden>
+
+            <div class="status-text" id="encoder-summary">Detecting encoders...</div>
+
+            <div class="section-header">Video</div>
+
+            <div class="form-row">
+              <label for="num-bitrate" class="has-tooltip">Bitrate (Mbps)
+                <span class="tooltip-icon">?</span>
+                <span class="tooltip-text">Videos bigger than this get shrunk; videos already this size or smaller are left alone. Lower = smaller files, more visible quality loss. The biggest single lever on size and quality.</span>
+              </label>
+              <input type="number" id="num-bitrate" min="1" max="50" value="6" />
             </div>
-          </div>
 
-          <div class="form-row" id="row-rc-mode">
-            <label class="has-tooltip">Quality
-              <span class="tooltip-icon">?</span>
-              <span class="tooltip-text" id="rc-tooltip">QP gives you predictable file sizes but some scenes may look blocky. CRF gives you much less blocking but file sizes vary more.</span>
-            </label>
-            <div class="rc-toggle" id="rc-toggle" role="group" aria-label="Quality mode">
-              <button type="button" class="active" aria-pressed="true" data-mode="QP">QP</button>
-              <button type="button" aria-pressed="false" data-mode="CRF">CRF</button>
+            <div class="form-row">
+              <label class="has-tooltip">VBR peak
+                <span class="tooltip-icon">?</span>
+                <span class="tooltip-text">Lets the encoder spend extra data on fast or detailed scenes so they don't look blocky. Higher = better action scenes; 1.5x is safest, 3x looks best.</span>
+              </label>
+              <div class="rc-toggle" id="peak-toggle" role="group" aria-label="VBR peak multiplier">
+                <button type="button" class="active" aria-pressed="true" data-peak="1.5">1.5x</button>
+                <button type="button" aria-pressed="false" data-peak="2">2x</button>
+                <button type="button" aria-pressed="false" data-peak="2.5">2.5x</button>
+                <button type="button" aria-pressed="false" data-peak="3">3x</button>
+              </div>
             </div>
-          </div>
 
-          <div class="form-row" id="row-qp">
-            <label class="has-tooltip" id="lbl-qp">QP I / P
-              <span class="tooltip-icon">?</span>
-              <span class="tooltip-text">Lower numbers look better but produce bigger files. Around 20 is a good balance; go down to 18 for best quality, up to 28 if some visible quality loss is acceptable for a smaller file.</span>
-            </label>
-            <input type="number" id="num-qp-i" min="0" max="51" value="22" />
-            <input type="number" id="num-qp-p" min="0" max="51" value="24" />
-          </div>
-
-          <div class="form-row hidden" id="row-crf">
-            <label class="has-tooltip" id="lbl-crf">CRF value
-              <span class="tooltip-icon">?</span>
-              <span class="tooltip-text">Lower numbers look better but produce bigger files. 20 is a good balance between size and quality, 18 for basically perfect and a bigger file. Software encoders only.</span>
-            </label>
-            <input type="number" id="num-crf" min="0" max="51" value="20" />
-          </div>
-
-          <div class="section-header">Output</div>
-
-          <div class="form-row">
-            <label for="txt-output-folder" class="has-tooltip">Folder
-              <span class="tooltip-icon">?</span>
-              <span class="tooltip-text">Where encoded files are saved. You can type a full path or just a folder name like "output" (created in the app's working directory).</span>
-            </label>
-            <input type="text" id="txt-output-folder" value="output" />
-            <button class="btn" id="btn-browse-output">Browse</button>
-          </div>
-
-          <div class="form-row has-tooltip">
-            <label class="has-tooltip">Mode
-              <span class="tooltip-icon">?</span>
-              <span class="tooltip-text">"Use output folder" saves to the folder above. "Place next to source" creates an "output" folder beside each input file. "Replace source" swaps the original with the encoded version.</span>
-            </label>
-            <div class="radio-group" id="radio-output-mode">
-              <label class="radio-label"><input type="radio" name="output-mode" value="folder" checked /> Use output folder</label>
-              <label class="radio-label"><input type="radio" name="output-mode" value="beside" /> Place next to source</label>
-              <label class="radio-label"><input type="radio" name="output-mode" value="replace" /> Replace source</label>
+            <div class="form-row" id="row-rc-mode">
+              <label class="has-tooltip">Quality mode
+                <span class="tooltip-icon">?</span>
+                <span class="tooltip-text" id="rc-tooltip">QP gives predictable file sizes but some scenes may look blocky. CRF gives much less blocking but file sizes vary more (software encoders only).</span>
+              </label>
+              <div class="rc-toggle" id="rc-toggle" role="group" aria-label="Quality mode">
+                <button type="button" class="active" aria-pressed="true" data-mode="QP">QP</button>
+                <button type="button" aria-pressed="false" data-mode="CRF">CRF</button>
+              </div>
             </div>
-          </div>
 
-          <div class="section-header">Behaviour</div>
+            <div class="form-row" id="row-qp">
+              <label class="has-tooltip" id="lbl-qp">QP I / P
+                <span class="tooltip-icon">?</span>
+                <span class="tooltip-text">Lower looks better but makes bigger files. Around 20 is a good balance; 18 for best quality, up to 28 if some loss is acceptable for a smaller file.</span>
+              </label>
+              <input type="number" id="num-qp-i" min="0" max="51" value="20" />
+              <input type="number" id="num-qp-p" min="0" max="51" value="22" />
+            </div>
 
-          <div class="checkbox-row has-tooltip">
-            <input type="checkbox" id="chk-hdr" />
-            <label for="chk-hdr">Preserve HDR</label>
-            <span class="tooltip-icon">?</span>
-            <span class="tooltip-text">When ticked, HDR files stay HDR. Dolby Vision and HDR10+ dynamic metadata are preserved when tools are available. When unticked, all HDR content is converted to SDR with industry-standard tonemapping.</span>
-          </div>
+            <div class="form-row hidden" id="row-crf">
+              <label class="has-tooltip" id="lbl-crf">CRF value
+                <span class="tooltip-icon">?</span>
+                <span class="tooltip-text">Lower looks better but makes bigger files. 20 is a good balance, 18 is near-perfect and larger. Software encoders only.</span>
+              </label>
+              <input type="number" id="num-crf" min="0" max="51" value="20" />
+            </div>
 
-		  <div class="checkbox-row has-tooltip">
-            <input type="checkbox" id="chk-preserve-av1" />
-            <label for="chk-preserve-av1">Preserve AV1</label>
-            <span class="tooltip-icon">?</span>
-            <span class="tooltip-text">Keep AV1 files as AV1 instead of converting to HEVC. AV1 offers better compression than HEVC but requires a recent device or player for playback.</span>
-          </div>
+            <div class="section-header">Output</div>
 
-          <div class="checkbox-row has-tooltip">
-            <input type="checkbox" id="chk-compat" />
-            <label for="chk-compat">Compatibility mode</label>
-            <span class="tooltip-icon">?</span>
-            <span class="tooltip-text">Convert all files to H.264/MP4 for maximum device support back to 2010.</span>
-          </div>
+            <div class="form-row has-tooltip">
+              <label class="has-tooltip">Where
+                <span class="tooltip-icon">?</span>
+                <span class="tooltip-text">"Use the Save to folder" saves to the folder set above. "Next to source" makes an output folder beside each input. "Replace source" swaps the original with the encoded version.</span>
+              </label>
+              <div class="radio-group" id="radio-output-mode">
+                <label class="radio-label"><input type="radio" name="output-mode" value="folder" checked /> Use the Save to folder</label>
+                <label class="radio-label"><input type="radio" name="output-mode" value="beside" /> Next to each source</label>
+                <label class="radio-label"><input type="radio" name="output-mode" value="replace" /> Replace source</label>
+              </div>
+            </div>
 
-          <div class="checkbox-row has-tooltip">
-            <input type="checkbox" id="chk-precision" />
-            <label for="chk-precision">Precision mode</label>
-            <span class="tooltip-icon">?</span>
-            <span class="tooltip-text">Uses software encoding for the best possible compression. Tests sample clips first and automatically adjusts if the result would be larger than the source. Takes a lot longer than hardware encoding.</span>
-          </div>
+            <div class="section-header">Behaviour</div>
 
-          <div class="checkbox-row has-tooltip">
-            <input type="checkbox" id="chk-overwrite" />
-            <label for="chk-overwrite">Overwrite existing files</label>
-            <span class="tooltip-icon">?</span>
-            <span class="tooltip-text">Automatically overwrite output files that already exist instead of asking each time.</span>
-          </div>
-
-          <div class="checkbox-row has-tooltip">
-            <input type="checkbox" id="chk-delete-source" />
-            <label for="chk-delete-source">Delete source after encode</label>
-            <span class="tooltip-icon">?</span>
-            <span class="tooltip-text">Deletes the original file after a successful encode. You'll be asked to confirm before the batch starts.</span>
-          </div>
-
-          <div class="checkbox-row has-tooltip">
-            <input type="checkbox" id="chk-auto-clear" />
-            <label for="chk-auto-clear">Auto-clear completed items</label>
-            <span class="tooltip-icon">?</span>
-            <span class="tooltip-text">Clears finished items from the queue when the batch ends. Failed, skipped, and cancelled items are kept.</span>
-          </div>
-
-          <div class="checkbox-row has-tooltip">
-            <input type="checkbox" id="chk-force-local" />
-            <label for="chk-force-local">Transcode over network</label>
-            <span class="tooltip-icon">?</span>
-            <span class="tooltip-text">Skip local staging and read/write directly over the network. Fast on a wired LAN, slow or unreliable over Wi-Fi or WAN.</span>
-          </div>
-
-          <div class="section-header">Performance</div>
-
-          <div class="form-row">
-            <label for="num-threads" class="has-tooltip">Threads
+            <div class="checkbox-row has-tooltip">
+              <input type="checkbox" id="chk-hdr" />
+              <label for="chk-hdr">Preserve HDR</label>
               <span class="tooltip-icon">?</span>
-              <span class="tooltip-text">0 means full speed. Set lower if you want to use your PC for other things while encoding. Low priority lets other apps stay responsive.</span>
-            </label>
-            <input type="number" id="num-threads" min="0" max="64" value="0" />
-            <label class="inline-check" for="chk-low-priority">
-              <input type="checkbox" id="chk-low-priority" />
-              Low priority
-            </label>
-          </div>
+              <span class="tooltip-text">When ticked, HDR files stay HDR (Dolby Vision / HDR10+ preserved when tools are available). When unticked, HDR is converted to SDR with proper tonemapping.</span>
+            </div>
 
-          <div class="section-header">After Batch</div>
-
-          <div class="form-row">
-            <label for="sel-post-action" class="has-tooltip">Action
+            <div class="checkbox-row has-tooltip">
+              <input type="checkbox" id="chk-preserve-av1" />
+              <label for="chk-preserve-av1">Preserve AV1</label>
               <span class="tooltip-icon">?</span>
-              <span class="tooltip-text">Something to do after the batch finishes - handy for overnight encodes. Shutdown, sleep, etc.</span>
-            </label>
-            <select id="sel-post-action">
-              <option value="None">None</option>
-              <option value="Shutdown">Shutdown</option>
-              <option value="Sleep">Sleep</option>
-              <option value="Log Out">Log Out</option>
-              <option value="Custom Command">Custom Command</option>
-            </select>
-          </div>
+              <span class="tooltip-text">Keep AV1 files as AV1 instead of converting to HEVC. Better compression, but needs a recent device or player.</span>
+            </div>
 
-          <div class="form-row hidden" id="row-custom-command">
-            <label for="txt-custom-command">Command</label>
-            <input type="text" id="txt-custom-command" placeholder="e.g. my-script.sh" />
-          </div>
-
-          <div class="form-row hidden" id="row-countdown">
-            <label for="num-countdown" class="has-tooltip">Countdown (seconds)
+            <div class="checkbox-row has-tooltip">
+              <input type="checkbox" id="chk-compat" />
+              <label for="chk-compat">Compatibility mode</label>
               <span class="tooltip-icon">?</span>
-              <span class="tooltip-text">Seconds to wait before running the post-batch action, giving you a chance to cancel. 0 means run immediately.</span>
-            </label>
-            <input type="number" id="num-countdown" min="0" max="3600" value="0" />
-          </div>
+              <span class="tooltip-text">Convert everything to H.264/MP4 for maximum device support back to ~2010.</span>
+            </div>
 
-          <div class="checkbox-row has-tooltip">
-            <input type="checkbox" id="chk-save-log" />
-            <label for="chk-save-log">Save log to file</label>
-            <span class="tooltip-icon">?</span>
-            <span class="tooltip-text">Saves a text log of the batch to the output folder when it finishes.</span>
-          </div>
+            <div class="checkbox-row has-tooltip">
+              <input type="checkbox" id="chk-precision" />
+              <label for="chk-precision">Precision mode</label>
+              <span class="tooltip-icon">?</span>
+              <span class="tooltip-text">Software encoding for the best possible compression. Tests sample clips first and adjusts if the result would be larger than the source. Much slower than hardware.</span>
+            </div>
 
-          <div class="checkbox-row has-tooltip">
-            <input type="checkbox" id="chk-toast" />
-            <label for="chk-toast">Notify when done</label>
-            <span class="tooltip-icon">?</span>
-            <span class="tooltip-text">Shows a system notification when the batch finishes, so you know it's done even if the app is in the background.</span>
-          </div>
+            <div class="checkbox-row has-tooltip">
+              <input type="checkbox" id="chk-overwrite" />
+              <label for="chk-overwrite">Overwrite existing files</label>
+              <span class="tooltip-icon">?</span>
+              <span class="tooltip-text">Overwrite output files that already exist instead of asking each time.</span>
+            </div>
 
-          <div class="settings-footer">
-            <label for="sel-theme">Theme</label>
-            <select id="sel-theme"></select>
-          </div>
+            <div class="checkbox-row has-tooltip">
+              <input type="checkbox" id="chk-delete-source" />
+              <label for="chk-delete-source">Delete source after encode</label>
+              <span class="tooltip-icon">?</span>
+              <span class="tooltip-text">Delete the original after a successful encode. You'll be asked to confirm before the batch starts.</span>
+            </div>
 
-        </div><!-- /settings-panel -->
-      </aside><!-- /right-panel -->
+            <div class="checkbox-row has-tooltip">
+              <input type="checkbox" id="chk-auto-clear" />
+              <label for="chk-auto-clear">Auto-clear completed items</label>
+              <span class="tooltip-icon">?</span>
+              <span class="tooltip-text">Clear finished items from the list when the batch ends. Failed, skipped and cancelled items are kept.</span>
+            </div>
+
+            <div class="checkbox-row has-tooltip">
+              <input type="checkbox" id="chk-force-local" />
+              <label for="chk-force-local">Transcode over network</label>
+              <span class="tooltip-icon">?</span>
+              <span class="tooltip-text">Skip local staging and read/write directly over the network. Fast on a wired LAN, slow or unreliable over Wi-Fi or WAN.</span>
+            </div>
+
+            <div class="section-header">Performance</div>
+
+            <div class="form-row">
+              <label for="num-threads" class="has-tooltip">Threads
+                <span class="tooltip-icon">?</span>
+                <span class="tooltip-text">0 means full speed. Set lower to keep the PC usable while encoding. Low priority lets other apps stay responsive.</span>
+              </label>
+              <input type="number" id="num-threads" min="0" max="64" value="0" />
+              <label class="inline-check" for="chk-low-priority">
+                <input type="checkbox" id="chk-low-priority" />
+                Low priority
+              </label>
+            </div>
+
+            <div class="section-header">After batch</div>
+
+            <div class="form-row">
+              <label for="sel-post-action" class="has-tooltip">Action
+                <span class="tooltip-icon">?</span>
+                <span class="tooltip-text">Something to do when the batch finishes — handy for overnight encodes.</span>
+              </label>
+              <select id="sel-post-action">
+                <option value="None">None</option>
+                <option value="Shutdown">Shutdown</option>
+                <option value="Sleep">Sleep</option>
+                <option value="Log Out">Log Out</option>
+                <option value="Custom Command">Custom Command</option>
+              </select>
+            </div>
+
+            <div class="form-row hidden" id="row-custom-command">
+              <label for="txt-custom-command">Command</label>
+              <input type="text" id="txt-custom-command" placeholder="e.g. my-script.sh" />
+            </div>
+
+            <div class="form-row hidden" id="row-countdown">
+              <label for="num-countdown" class="has-tooltip">Countdown (seconds)
+                <span class="tooltip-icon">?</span>
+                <span class="tooltip-text">Seconds to wait before the post-batch action, so you can cancel. 0 means run immediately.</span>
+              </label>
+              <input type="number" id="num-countdown" min="0" max="3600" value="0" />
+            </div>
+
+            <div class="checkbox-row has-tooltip">
+              <input type="checkbox" id="chk-save-log" />
+              <label for="chk-save-log">Save log to file</label>
+              <span class="tooltip-icon">?</span>
+              <span class="tooltip-text">Save a text log of the batch to the output folder when it finishes.</span>
+            </div>
+
+            <div class="checkbox-row has-tooltip">
+              <input type="checkbox" id="chk-toast" />
+              <label for="chk-toast">Notify when done</label>
+              <span class="tooltip-icon">?</span>
+              <span class="tooltip-text">Show a system notification when the batch finishes, even if the app is in the background.</span>
+            </div>
+
+          </div><!-- /settings-panel (advanced) -->
+        </div><!-- /rail-scroll -->
+
+        <div class="rail-footer settings-footer">
+          <label for="sel-theme">Theme</label>
+          <select id="sel-theme"></select>
+        </div>
+      </aside><!-- /right-panel (rail) -->
     </main><!-- /main-area -->
 
-    <!-- ═══ Bottom area: status strip + collapsible log ═══ -->
+    <!-- ═══ Bottom: status strip + collapsible log ═══ -->
     <footer id="bottom-panel">
-      <!-- Compact status strip - always visible -->
       <div id="status-strip">
         <div id="status-strip-info">
-          <span class="status-strip-label" id="job-status">No job running</span>
+          <span class="status-strip-label" id="job-status">Ready</span>
           <span class="status-strip-file" id="job-file"></span>
           <span class="status-strip-progress" id="job-progress-text"></span>
         </div>
@@ -286,9 +321,7 @@
           <span id="bottom-panel-arrow">&#x25B2;</span> Log
         </button>
       </div>
-      <!-- Hidden element for JS compatibility -->
       <span id="job-cmd" class="hidden"></span>
-      <!-- Expandable log -->
       <div id="bottom-panel-body">
         <div id="log-panel">
           <div id="log-panel-header">
@@ -306,7 +339,7 @@
       </div>
     </footer>
 
-    <!-- ═══ Context menu (§5.5) ═══ -->
+    <!-- ═══ Context menu ═══ -->
     <div id="context-menu" role="menu">
       <button class="ctx-item" id="ctx-requeue-selected" role="menuitem">Re-queue selected</button>
       <button class="ctx-item" id="ctx-requeue-all" role="menuitem">Re-queue all</button>
@@ -319,10 +352,10 @@
       <button class="ctx-item" id="ctx-reveal-source" role="menuitem">Reveal in file manager</button>
       <div class="ctx-separator" role="separator"></div>
       <button class="ctx-item" id="ctx-repair-tags" role="menuitem">Repair MKV tags</button>
-      <button class="ctx-item" id="ctx-deep-repair" role="menuitem" title="Scans audio and subtitle streams to compute exact byte counts, then derives the video bitrate by subtraction. Also counts video frames. Speed depends on disk read speed. Use for files with severely corrupted metadata.">Deep repair MKV tags</button>
-	 </div>
+      <button class="ctx-item" id="ctx-deep-repair" role="menuitem" title="Scans audio and subtitle streams to compute exact byte counts, then derives the video bitrate by subtraction. Also counts video frames. Use for files with severely corrupted metadata.">Deep repair MKV tags</button>
+    </div>
 
-    <!-- ═══ Modal: Overwrite prompt (§7.3) ═══ -->
+    <!-- ═══ Modal: Overwrite prompt ═══ -->
     <div class="modal-overlay" id="modal-overwrite" role="dialog" aria-modal="true" aria-labelledby="modal-overwrite-title">
       <div class="modal-box">
         <div class="modal-title" id="modal-overwrite-title">File Already Exists</div>
@@ -335,7 +368,7 @@
       </div>
     </div>
 
-    <!-- ═══ Modal: Fallback prompt (§10.6) ═══ -->
+    <!-- ═══ Modal: Fallback prompt ═══ -->
     <div class="modal-overlay" id="modal-fallback" role="dialog" aria-modal="true" aria-labelledby="modal-fallback-title">
       <div class="modal-box">
         <div class="modal-title" id="modal-fallback-title">Hardware Encoder Failed</div>
@@ -347,7 +380,7 @@
       </div>
     </div>
 
-    <!-- ═══ Modal: Delete-source confirmation (§7.4) ═══ -->
+    <!-- ═══ Modal: Delete-source confirmation ═══ -->
     <div class="modal-overlay" id="modal-delete-confirm" role="dialog" aria-modal="true" aria-labelledby="modal-delete-title">
       <div class="modal-box">
         <div class="modal-title" id="modal-delete-title">Delete Source Files</div>
@@ -384,7 +417,7 @@
       </div>
     </div>
 
-    <!-- ═══ Modal: Post-batch countdown (§7.6) ═══ -->
+    <!-- ═══ Modal: Post-batch countdown ═══ -->
     <div class="modal-overlay" id="modal-countdown" role="dialog" aria-modal="true" aria-labelledby="modal-countdown-title">
       <div class="modal-box">
         <div class="modal-title" id="modal-countdown-title">Post-Batch Action</div>
@@ -395,7 +428,7 @@
       </div>
     </div>
 
-	<!-- ═══ Modal: ffmpeg missing ═══ -->
+    <!-- ═══ Modal: ffmpeg missing ═══ -->
     <div class="modal-overlay" id="modal-ffmpeg-missing" role="dialog" aria-modal="true" aria-labelledby="modal-ffmpeg-title">
       <div class="modal-box">
         <div class="modal-title" id="modal-ffmpeg-title">ffmpeg Not Found</div>
@@ -410,7 +443,7 @@
       </div>
     </div>
 
-	<!-- ═══ Modal: Unknown codec warning (§2.4.0) ═══ -->
+    <!-- ═══ Modal: Unknown codec warning ═══ -->
     <div class="modal-overlay" id="modal-unknown-codec" role="dialog" aria-modal="true" aria-labelledby="modal-unknown-codec-title">
       <div class="modal-box">
         <div class="modal-title" id="modal-unknown-codec-title">Some files have unreadable video codecs</div>
@@ -422,12 +455,12 @@
       </div>
     </div>
 
-    <!-- ═══ Screen reader live region (a11y) ═══ -->
+    <!-- ═══ Screen reader live region ═══ -->
     <div id="live-status" class="sr-only" aria-live="polite" aria-atomic="true" role="status"></div>
 
   </div><!-- /app -->
 
-  <!-- Tooltip popup (positioned by JS, not clipped by overflow containers) -->
+  <!-- Tooltip popup (positioned by JS) -->
   <div id="tooltip-popup"></div>
 
   <script src="js/app.js"></script>

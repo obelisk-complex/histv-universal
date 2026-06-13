@@ -114,6 +114,7 @@
       setupSplitter();
       setupQueueButtons();
       setupSettingsListeners();
+      setupProfiles();
       setupBottomPanel();
       setupLogFilters();
       setupContextMenu();
@@ -1605,6 +1606,108 @@
         const isActive = btn.dataset.peak === str;
         btn.classList.toggle('active', isActive);
         btn.setAttribute('aria-pressed', isActive);
+      }
+    }
+
+    // ── Quality profiles ──────────────────────────────────────
+    // The average user picks a named profile instead of touching raw
+    // bitrate/QP/CRF. Each profile just sets the existing controls, so the
+    // start_batch payload and config persistence are unchanged. Editing any
+    // advanced control switches the active profile to "Custom".
+    function setupProfiles() {
+      const profileList = $('#profile-list');
+      const advancedToggle = $('#advanced-toggle');
+      const advancedArrow = $('#advanced-arrow');
+      const settingsPanel = $('#settings-panel');
+      if (!profileList || !settingsPanel || !advancedToggle) return;
+      const cards = Array.from(profileList.querySelectorAll('.profile-card'));
+
+      // Profiles map to engine settings. QP is used (works on hardware and
+      // software); CRF stays an Advanced/Custom choice. targetBitrate is the
+      // shrink threshold: files above it are shrunk to it, files below are
+      // re-encoded for quality at the QP values.
+      const PROFILES = {
+        'archive-high':     { bitrate: 12, rc: 'QP', qpI: 18, qpP: 20, peak: '2.5', compat: false, av1: true,  hdr: true },
+        'archive-balanced': { bitrate: 6,  rc: 'QP', qpI: 20, qpP: 22, peak: '2',   compat: false, av1: true,  hdr: true },
+        'space-saver':      { bitrate: 3,  rc: 'QP', qpI: 24, qpP: 26, peak: '1.5', compat: false, av1: true,  hdr: true },
+        'max-compat':       { bitrate: 6,  rc: 'QP', qpI: 22, qpP: 24, peak: '1.5', compat: true,  av1: false, hdr: false },
+      };
+
+      let applying = false;
+      let advancedOpen = false;
+
+      function setActiveCard(name) {
+        for (const c of cards) {
+          const on = c.dataset.profile === name;
+          c.classList.toggle('active', on);
+          c.setAttribute('aria-checked', on ? 'true' : 'false');
+        }
+      }
+
+      function showAdvanced(open) {
+        advancedOpen = open;
+        settingsPanel.hidden = !open;
+        advancedToggle.setAttribute('aria-expanded', open ? 'true' : 'false');
+        if (advancedArrow) advancedArrow.innerHTML = open ? '&#x25BC;' : '&#x25B6;';
+      }
+
+      function applyProfile(name) {
+        if (name === 'custom') {
+          setActiveCard('custom');
+          showAdvanced(true);
+          try { localStorage.setItem('histv-profile', 'custom'); } catch (e) {}
+          return;
+        }
+        const p = PROFILES[name];
+        if (!p) return;
+        applying = true;
+        numBitrate.value = p.bitrate;
+        setRateControlMode(p.rc);
+        numQpI.value = p.qpI;
+        numQpP.value = p.qpP;
+        setPeakMultiplier(p.peak);
+        chkCompat.checked = p.compat;
+        chkPreserveAv1.checked = p.av1;
+        chkHdr.checked = p.hdr;
+        chkPrecision.checked = false;
+        applying = false;
+        updateRcModeVisibility();
+        updateEncoderSummary();
+        scheduleConfigSave();
+        setActiveCard(name);
+        try { localStorage.setItem('histv-profile', name); } catch (e) {}
+      }
+
+      function markCustom() {
+        if (applying) return;
+        setActiveCard('custom');
+        try { localStorage.setItem('histv-profile', 'custom'); } catch (e) {}
+      }
+
+      for (const c of cards) {
+        c.addEventListener('click', () => applyProfile(c.dataset.profile));
+      }
+      advancedToggle.addEventListener('click', () => showAdvanced(!advancedOpen));
+
+      // Editing any advanced control -> Custom (guarded against profile apply).
+      for (const el of [numBitrate, numQpI, numQpP, numCrf, numThreads]) {
+        if (el) el.addEventListener('input', markCustom);
+      }
+      for (const el of [chkHdr, chkPreserveAv1, chkCompat, chkPrecision]) {
+        if (el) el.addEventListener('change', markCustom);
+      }
+      for (const btn of rcToggle.querySelectorAll('button')) btn.addEventListener('click', markCustom);
+      for (const btn of peakToggle.querySelectorAll('button')) btn.addEventListener('click', markCustom);
+
+      // Init: respect last choice; smart-default to Balanced on first launch.
+      let saved = null;
+      try { saved = localStorage.getItem('histv-profile'); } catch (e) {}
+      if (saved === 'custom') {
+        setActiveCard('custom');           // keep loadConfig-restored values
+      } else if (saved && PROFILES[saved]) {
+        applyProfile(saved);
+      } else {
+        applyProfile('archive-balanced');  // smart default for new users
       }
     }
 
