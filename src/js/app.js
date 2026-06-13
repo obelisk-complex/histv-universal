@@ -345,7 +345,7 @@
       derived['log-detect']     = c['log-detect']     || c['status-detect'] || '#a78bfa';
       derived['log-file']       = c['log-file']       || '#7dd3fc';
       derived['log-text']       = c['log-text']       || '#8BC88B';
-      derived['log-cmd']        = c['log-cmd']        || (light ? '#999' : '#555');
+      derived['log-cmd']        = c['log-cmd']        || (light ? '#6b7280' : '#7a8090');
       derived['text-on-primary'] = c['text-on-primary'] || bestTextOn(primary);
 
       // ── Apply all to :root (with colour validation) ──
@@ -1640,7 +1640,7 @@
         for (const c of cards) {
           const on = c.dataset.profile === name;
           c.classList.toggle('active', on);
-          c.setAttribute('aria-checked', on ? 'true' : 'false');
+          c.setAttribute('aria-pressed', on ? 'true' : 'false');
         }
       }
 
@@ -1673,6 +1673,7 @@
         applying = false;
         updateRcModeVisibility();
         updateEncoderSummary();
+        scheduleRefreshTargetBitrates(); // refresh queue est./target columns for the new profile
         scheduleConfigSave();
         setActiveCard(name);
         try { localStorage.setItem('histv-profile', name); } catch (e) {}
@@ -1789,6 +1790,7 @@
       bottomPanelToggle.addEventListener('click', () => {
         const isOpen = bottomPanelBody.classList.toggle('open');
         bottomPanelArrow.textContent = isOpen ? '\u25BC' : '\u25B2';
+        bottomPanelToggle.setAttribute('aria-expanded', isOpen ? 'true' : 'false');
         scheduleConfigSave();
       });
     }
@@ -1919,10 +1921,7 @@
       const popup = $('#tooltip-popup');
       let hideTimeout = null;
 
-      // Delegate hover events on all tooltip icons
-      document.addEventListener('mouseover', (e) => {
-        const icon = e.target.closest('.tooltip-icon');
-        if (!icon) return;
+      function showFor(icon) {
         const container = icon.closest('.has-tooltip');
         if (!container) return;
         const textEl = container.querySelector('.tooltip-text');
@@ -1933,41 +1932,55 @@
         popup.textContent = textEl.textContent;
         popup.classList.add('visible');
 
-        // Position: above the icon, clamped to viewport
         const iconRect = icon.getBoundingClientRect();
         const popupRect = popup.getBoundingClientRect();
 
-        // Try to position above the icon
         let top = iconRect.top - popupRect.height - 6;
-        // If it would go off the top of the viewport, position below instead
-        if (top < 4) {
-          top = iconRect.bottom + 6;
-        }
+        if (top < 4) top = iconRect.bottom + 6;
 
-        // Horizontal: align left edge with the icon, but clamp to viewport
         let left = iconRect.left;
         const maxLeft = window.innerWidth - popupRect.width - 8;
         if (left > maxLeft) left = maxLeft;
         if (left < 4) left = 4;
 
-        // Constrain width to the right panel width if narrower
         const rightPanel = $('#right-panel');
         if (rightPanel) {
           const rpRect = rightPanel.getBoundingClientRect();
-          const maxW = rpRect.width - 16;
-          popup.style.maxWidth = Math.max(150, maxW) + 'px';
+          popup.style.maxWidth = Math.max(150, rpRect.width - 16) + 'px';
         }
 
         popup.style.top = top + 'px';
         popup.style.left = left + 'px';
-      });
+      }
+      function scheduleHide() {
+        hideTimeout = setTimeout(() => popup.classList.remove('visible'), 100);
+      }
 
-      document.addEventListener('mouseout', (e) => {
+      // Make help icons keyboard-focusable so the tooltip text is reachable
+      // without a mouse (a11y). Idempotent over the static .tooltip-icon set.
+      for (const icon of document.querySelectorAll('.tooltip-icon')) {
+        icon.setAttribute('tabindex', '0');
+        icon.setAttribute('role', 'button');
+        if (!icon.getAttribute('aria-label')) icon.setAttribute('aria-label', 'Help');
+      }
+
+      // Pointer + keyboard, via event delegation.
+      document.addEventListener('mouseover', (e) => {
         const icon = e.target.closest('.tooltip-icon');
-        if (!icon) return;
-        hideTimeout = setTimeout(() => {
-          popup.classList.remove('visible');
-        }, 100);
+        if (icon) showFor(icon);
+      });
+      document.addEventListener('mouseout', (e) => {
+        if (e.target.closest('.tooltip-icon')) scheduleHide();
+      });
+      document.addEventListener('focusin', (e) => {
+        const icon = e.target.closest('.tooltip-icon');
+        if (icon) showFor(icon);
+      });
+      document.addEventListener('focusout', (e) => {
+        if (e.target.closest('.tooltip-icon')) scheduleHide();
+      });
+      document.addEventListener('keydown', (e) => {
+        if (e.key === 'Escape') popup.classList.remove('visible');
       });
     }
 
@@ -2369,6 +2382,9 @@
     let previouslyFocusedElement = null;
 
     function trapFocusInModal(modalEl) {
+      // Avoid stacking a second keydown handler if this modal is re-opened
+      // while already trapped (e.g. the ffmpeg-missing retry path).
+      if (modalEl._trapHandler) modalEl.removeEventListener('keydown', modalEl._trapHandler);
       previouslyFocusedElement = document.activeElement;
       const focusables = modalEl.querySelectorAll(
         'button:not([disabled]), input:not([disabled]), select:not([disabled]), [tabindex]:not([tabindex="-1"])'
@@ -2824,6 +2840,7 @@
         btnPause.textContent = 'Pause';
         jobStatus.textContent = 'Encoding...';
         announceStatus('Encoding started');
+        document.querySelector('#bottom-panel')?.classList.add('is-encoding');
         updateBatchButtons();
       });
 
@@ -2875,6 +2892,7 @@
       // Batch finished
       listen('batch-finished', async (event) => {
         batchRunning = false;
+        document.querySelector('#bottom-panel')?.classList.remove('is-encoding');
         currentEncodingIndex = -1;
         fileEncodeStart = 0;
         document.title = defaultTitle;

@@ -74,24 +74,24 @@
           <div class="rail-title">Quality</div>
 
           <!-- Profile cards: one click = a consistent quality + format. -->
-          <div id="profile-list" role="radiogroup" aria-label="Quality profile">
-            <button type="button" class="profile-card" role="radio" aria-checked="false" data-profile="archive-high">
+          <div id="profile-list" role="group" aria-label="Quality profile">
+            <button type="button" class="profile-card" aria-pressed="false" data-profile="archive-high">
               <span class="profile-name">Archive · High</span>
               <span class="profile-desc">Near-original quality. Largest files.</span>
             </button>
-            <button type="button" class="profile-card active" role="radio" aria-checked="true" data-profile="archive-balanced">
+            <button type="button" class="profile-card active" aria-pressed="true" data-profile="archive-balanced">
               <span class="profile-name">Archive · Balanced</span>
               <span class="profile-desc">Great quality, about half the size. A good default.</span>
             </button>
-            <button type="button" class="profile-card" role="radio" aria-checked="false" data-profile="space-saver">
+            <button type="button" class="profile-card" aria-pressed="false" data-profile="space-saver">
               <span class="profile-name">Space-saver</span>
               <span class="profile-desc">Smallest sensible size for big libraries.</span>
             </button>
-            <button type="button" class="profile-card" role="radio" aria-checked="false" data-profile="max-compat">
+            <button type="button" class="profile-card" aria-pressed="false" data-profile="max-compat">
               <span class="profile-name">Max compatibility</span>
               <span class="profile-desc">H.264/MP4 — plays on almost anything.</span>
             </button>
-            <button type="button" class="profile-card" role="radio" aria-checked="false" data-profile="custom">
+            <button type="button" class="profile-card" aria-pressed="false" data-profile="custom">
               <span class="profile-name">Custom…</span>
               <span class="profile-desc">Set every option yourself.</span>
             </button>
@@ -318,7 +318,7 @@
             </div>
           </div>
         </div>
-        <button id="bottom-panel-toggle" title="Toggle log">
+        <button id="bottom-panel-toggle" title="Toggle log" aria-controls="bottom-panel-body" aria-expanded="false">
           <span id="bottom-panel-arrow">&#x25B2;</span> Log
         </button>
       </div>
