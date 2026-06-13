@@ -30,6 +30,12 @@ on:
 permissions:
   contents: read
 
+# Only keep the newest preview build per ref; cancel superseded ones so a
+# rapid series of pushes doesn't pile up redundant 20-minute builds.
+concurrency:
+  group: preview-${{ github.ref }}
+  cancel-in-progress: true
+
 jobs:
   windows:
     # Reuse the production build pipeline; same toolchain, same bundling.
