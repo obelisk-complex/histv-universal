@@ -1,0 +1,28 @@
+# Normalise line endings to LF in the repo, regardless of the OS that commits.
+# Without this, editing on Windows (e.g. a WSL mount of a Windows drive) rewrites
+# files with CRLF and the whole tree shows as "modified". text=auto lets git
+# detect text vs binary; eol=lf forces LF in the working tree on checkout too.
+* text=auto eol=lf
+
+# Explicit binary types (never normalise / never diff as text).
+*.png   binary
+*.jpg   binary
+*.jpeg  binary
+*.gif   binary
+*.ico   binary
+*.icns  binary
+*.webp  binary
+*.mp4   binary
+*.mkv   binary
+*.woff  binary
+*.woff2 binary
+*.ttf   binary
+*.otf   binary
+*.dmg   binary
+*.zip   binary
+*.gz    binary
+*.flatpak binary
+
+# Windows batch files genuinely need CRLF.
+*.bat   text eol=crlf
+*.cmd   text eol=crlf

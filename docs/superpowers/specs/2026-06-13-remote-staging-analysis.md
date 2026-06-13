@@ -146,3 +146,27 @@ back-copy path across all three output modes.
 `--remote-bandwidth-limit <RATE>` (and a GUI field) to throttle staging copies for genuinely
 polite behaviour on shared/metered links. Implement as a chunked copy with a token-bucket rate
 limiter instead of `tokio::fs::copy`.
+
+## 8. Post-QA notes (code-auditor)
+
+A code-audit of the shipped change surfaced two things worth recording:
+
+- **DV Tier-1 extension mismatch (pre-existing).** The wave-cleanup back-copy resolves the output
+  extension with `resolve_file_settings`, but `encode_single_file` overrides the extension to
+  `mp4` for Dolby Vision Tier-1 sources *after* that call. A DV source in a non-MP4 container
+  could therefore have its encoded `.mp4` looked up under the wrong name and left in staging. The
+  **new folder-mode block applies the DV override** when resolving the filename; the **identical
+  latent bug still exists in the pre-existing `replace`/`beside` back-copy** (lines ~2660-2666)
+  and is left untouched here to keep the change contained. Recommended follow-up: extract a single
+  `resolve_output_ext(item, settings, preserve_hdr, encoders)` helper used by `encode_single_file`
+  and all three back-copy paths so the rule cannot diverge again.
+- **Staging disk budget excludes outputs (pre-existing, all modes).** `WavePlanner` sizes a wave
+  against input sizes only; outputs also land in the staging dir during the wave. For encodes that
+  target a higher bitrate than the source this can overfill the staging partition. This is the same
+  for `replace`/`beside` today; documented as a known limitation, to be addressed alongside the
+  prefetch/output-aware-planning work in 7.1/7.2.
+
+**Build/test status:** this host has no Rust toolchain, so the change is hand-reviewed and
+compile-reasoned (code-auditor: "compiles cleanly") but **not** built or run here. Run
+`cargo build --manifest-path src-tauri/Cargo.toml --no-default-features --features cli` and
+`cargo test ... --features cli` before relying on it.
