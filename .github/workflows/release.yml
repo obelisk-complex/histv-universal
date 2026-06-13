@@ -56,6 +56,8 @@ jobs:
     runs-on: ubuntu-22.04
     permissions:
       contents: write
+      id-token: write # OIDC token for the build-provenance attestation
+      attestations: write # write the attestation to the repo
 
     steps:
       - name: Download all artefacts
@@ -66,6 +68,13 @@ jobs:
 
       - name: List assets
         run: find release-assets -type f
+
+      # Signed, verifiable record of what produced each release asset
+      # (verify with `gh attestation verify <file> -R <owner/repo>`).
+      - name: Generate SLSA build-provenance attestations
+        uses: actions/attest-build-provenance@a2bbfa25375fe432b6a289bc6b6cd05ecd0c4c32 # v4.1.0
+        with:
+          subject-path: release-assets/**/*
 
       - name: Upload to GitHub Release
         uses: softprops/action-gh-release@153bb8e04406b158c6c84fc1615b65b24149a1fe # v2.6.1
