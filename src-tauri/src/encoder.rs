@@ -1319,6 +1319,7 @@ async fn encode_single_file(
     idx: usize,
     queue: &mut [QueueItem],
     settings: &BatchSettings,
+    output_dir_override: Option<&std::path::Path>,
     detected_encoders: &[EncoderInfo],
     preserve_hdr: bool,
     cached_ram_gb: u64,
@@ -1493,9 +1494,13 @@ async fn encode_single_file(
             (final_path, temp_path)
         }
         _ => {
-            // "folder" - default: use the configured output folder
-            let out = std::path::Path::new(&settings.output_folder)
-                .join(format!("{}.{}", item_base_name, ext));
+            // "folder" - default: use the configured output folder. When that
+            // folder is on a remote mount, the wave loop passes a local override
+            // dir so the encode writes locally and is copied back afterwards
+            // (mirrors replace/beside: keeps the network to a single burst).
+            let folder: &std::path::Path = output_dir_override
+                .unwrap_or_else(|| std::path::Path::new(&settings.output_folder));
+            let out = folder.join(format!("{}.{}", item_base_name, ext));
             (out.clone(), out)
         }
     };
@@ -2399,6 +2404,16 @@ pub async fn run_encode_loop(
     let mut file_counter: u32 = 0;
     let mut was_cancelled = false;
 
+    // ── Folder-mode remote-output staging (politeness) ──
+    // When output mode is "folder" and the configured output folder lives on a
+    // remote mount, folder-mode encodes inside a staging wave write to a local
+    // override dir and are bulk-copied back afterwards, exactly like the
+    // replace/beside back-copy. Computed once: a single mount lookup.
+    let stage_folder_output = settings.output_mode == "folder" && {
+        let mut mc = crate::remote::MountCache::new();
+        mc.is_remote(std::path::Path::new(&settings.output_folder))
+    };
+
     // ── Incremental log file (#7) ──
     // Open the log file at batch start and append each line as it's produced,
     // instead of buffering all lines in a Vec<String>.
@@ -2554,6 +2569,20 @@ pub async fn run_encode_loop(
             }
         }
 
+        // Local override dir for folder-mode output when the output folder is
+        // remote: the encode writes here, then wave cleanup copies it back to
+        // the remote output folder. None unless this wave stages and the output
+        // folder is remote, so the common path is unchanged.
+        let folder_output_override: Option<std::path::PathBuf> =
+            match (work.staging_dir.as_ref(), stage_folder_output) {
+                (Some(sd), true) => {
+                    let d = sd.join("folder-output");
+                    let _ = tokio::fs::create_dir_all(&d).await;
+                    Some(d)
+                }
+                _ => None,
+            };
+
         // ── Encode each file in this work unit ────────────────
         for &idx in &work.indices {
             // Pause / cancel check - wait while paused before starting next file
@@ -2584,6 +2613,7 @@ pub async fn run_encode_loop(
                 idx,
                 queue,
                 settings,
+                folder_output_override.as_deref(),
                 detected_encoders,
                 preserve_hdr,
                 cached_ram_gb,
@@ -2710,6 +2740,56 @@ pub async fn run_encode_loop(
                                 sink.log(&format!(
                                     "  Copied output to remote → {}",
                                     final_remote.display()
+                                ));
+                            }
+                            Err(e) => {
+                                sink.log(&format!(
+                                    "  ERROR: Could not copy output to remote mount: {e}"
+                                ));
+                                sink.log(&format!(
+                                    "  Encoded file preserved at: {}",
+                                    local_output.display()
+                                ));
+                            }
+                        }
+                    }
+                }
+            }
+
+            // Folder mode: copy the locally-staged output back to the remote
+            // output folder (the encode wrote to folder_output_override). Uses
+            // the same extension-resolution as the beside back-copy above.
+            if let Some(ref local_dir) = folder_output_override {
+                if queue[idx].status == QueueItemStatus::Done {
+                    let remote = std::path::Path::new(&original_path);
+                    let source_ext = remote
+                        .extension()
+                        .map(|e| e.to_string_lossy().to_lowercase())
+                        .unwrap_or_default();
+                    let resolved = resolve_file_settings(
+                        &queue[idx].probe.video_codec,
+                        &source_ext,
+                        settings,
+                        detected_encoders,
+                    );
+                    let ext = resolved.container_ext.as_str();
+                    let base_name = remote.file_stem().unwrap_or_default().to_string_lossy();
+                    let local_output = local_dir.join(format!("{}.{}", base_name, ext));
+                    let remote_dir = std::path::Path::new(&settings.output_folder);
+                    let remote_dest = remote_dir.join(format!("{}.{}", base_name, ext));
+                    if local_output.exists() {
+                        let _ = std::fs::create_dir_all(remote_dir);
+                        sink.log(&format!(
+                            "  Moving staged output to remote: {} → {}",
+                            local_output.display(),
+                            remote_dest.display()
+                        ));
+                        match tokio::fs::copy(&local_output, &remote_dest).await {
+                            Ok(_) => {
+                                let _ = std::fs::remove_file(&local_output);
+                                sink.log(&format!(
+                                    "  Copied output to remote → {}",
+                                    remote_dest.display()
                                 ));
                             }
                             Err(e) => {
