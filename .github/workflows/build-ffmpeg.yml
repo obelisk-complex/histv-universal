@@ -92,14 +92,14 @@ jobs:
           cmake -S . -B 12bit -G Ninja \
             -DCMAKE_INSTALL_PREFIX="$PREFIX" \
             -DHIGH_BIT_DEPTH=ON -DMAIN12=ON -DEXPORT_C_API=OFF \
-            -DENABLE_SHARED=OFF -DENABLE_CLI=OFF -DENABLE_HDR10_PLUS=ON
+            -DENABLE_SHARED=OFF -DENABLE_CLI=OFF -DENABLE_HDR10_PLUS=OFF
           ninja -C 12bit
 
           # 10-bit (Main10)
           cmake -S . -B 10bit -G Ninja \
             -DCMAKE_INSTALL_PREFIX="$PREFIX" \
             -DHIGH_BIT_DEPTH=ON -DEXPORT_C_API=OFF \
-            -DENABLE_SHARED=OFF -DENABLE_CLI=OFF -DENABLE_HDR10_PLUS=ON
+            -DENABLE_SHARED=OFF -DENABLE_CLI=OFF -DENABLE_HDR10_PLUS=OFF
           ninja -C 10bit
 
           # 8-bit linked against the 10/12-bit libs
@@ -107,7 +107,7 @@ jobs:
           ln -sf ../12bit/libx265.a 8bit/libx265_main12.a
           cmake -S . -B 8bit -G Ninja \
             -DCMAKE_INSTALL_PREFIX="$PREFIX" \
-            -DENABLE_SHARED=OFF -DENABLE_CLI=OFF -DENABLE_HDR10_PLUS=ON \
+            -DENABLE_SHARED=OFF -DENABLE_CLI=OFF -DENABLE_HDR10_PLUS=OFF \
             -DEXTRA_LIB="x265_main10.a;x265_main12.a" \
             -DEXTRA_LINK_FLAGS=-L. -DLINKED_10BIT=ON -DLINKED_12BIT=ON
           ninja -C 8bit
@@ -252,16 +252,16 @@ jobs:
           mkdir -p 8bit 10bit 12bit
           cmake -S . -B 12bit -G Ninja -DCMAKE_POLICY_VERSION_MINIMUM=3.5 -DCMAKE_INSTALL_PREFIX="$PREFIX" \
             -DHIGH_BIT_DEPTH=ON -DMAIN12=ON -DEXPORT_C_API=OFF \
-            -DENABLE_SHARED=OFF -DENABLE_CLI=OFF -DENABLE_HDR10_PLUS=ON
+            -DENABLE_SHARED=OFF -DENABLE_CLI=OFF -DENABLE_HDR10_PLUS=OFF
           ninja -C 12bit
           cmake -S . -B 10bit -G Ninja -DCMAKE_POLICY_VERSION_MINIMUM=3.5 -DCMAKE_INSTALL_PREFIX="$PREFIX" \
             -DHIGH_BIT_DEPTH=ON -DEXPORT_C_API=OFF \
-            -DENABLE_SHARED=OFF -DENABLE_CLI=OFF -DENABLE_HDR10_PLUS=ON
+            -DENABLE_SHARED=OFF -DENABLE_CLI=OFF -DENABLE_HDR10_PLUS=OFF
           ninja -C 10bit
           ln -sf ../10bit/libx265.a 8bit/libx265_main10.a
           ln -sf ../12bit/libx265.a 8bit/libx265_main12.a
           cmake -S . -B 8bit -G Ninja -DCMAKE_POLICY_VERSION_MINIMUM=3.5 -DCMAKE_INSTALL_PREFIX="$PREFIX" \
-            -DENABLE_SHARED=OFF -DENABLE_CLI=OFF -DENABLE_HDR10_PLUS=ON \
+            -DENABLE_SHARED=OFF -DENABLE_CLI=OFF -DENABLE_HDR10_PLUS=OFF \
             -DEXTRA_LIB="x265_main10.a;x265_main12.a" \
             -DEXTRA_LINK_FLAGS=-L. -DLINKED_10BIT=ON -DLINKED_12BIT=ON
           ninja -C 8bit
@@ -395,16 +395,16 @@ jobs:
           mkdir -p 8bit 10bit 12bit
           cmake -S . -B 12bit -G Ninja -DCMAKE_POLICY_VERSION_MINIMUM=3.5 -DCMAKE_INSTALL_PREFIX="$PREFIX" \
             -DHIGH_BIT_DEPTH=ON -DMAIN12=ON -DEXPORT_C_API=OFF \
-            -DENABLE_SHARED=OFF -DENABLE_CLI=OFF -DENABLE_HDR10_PLUS=ON
+            -DENABLE_SHARED=OFF -DENABLE_CLI=OFF -DENABLE_HDR10_PLUS=OFF
           ninja -C 12bit
           cmake -S . -B 10bit -G Ninja -DCMAKE_POLICY_VERSION_MINIMUM=3.5 -DCMAKE_INSTALL_PREFIX="$PREFIX" \
             -DHIGH_BIT_DEPTH=ON -DEXPORT_C_API=OFF \
-            -DENABLE_SHARED=OFF -DENABLE_CLI=OFF -DENABLE_HDR10_PLUS=ON
+            -DENABLE_SHARED=OFF -DENABLE_CLI=OFF -DENABLE_HDR10_PLUS=OFF
           ninja -C 10bit
           ln -sf ../10bit/libx265.a 8bit/libx265_main10.a
           ln -sf ../12bit/libx265.a 8bit/libx265_main12.a
           cmake -S . -B 8bit -G Ninja -DCMAKE_POLICY_VERSION_MINIMUM=3.5 -DCMAKE_INSTALL_PREFIX="$PREFIX" \
-            -DENABLE_SHARED=OFF -DENABLE_CLI=OFF -DENABLE_HDR10_PLUS=ON \
+            -DENABLE_SHARED=OFF -DENABLE_CLI=OFF -DENABLE_HDR10_PLUS=OFF \
             -DEXTRA_LIB="x265_main10.a;x265_main12.a" \
             -DEXTRA_LINK_FLAGS=-L. -DLINKED_10BIT=ON -DLINKED_12BIT=ON
           ninja -C 8bit
