@@ -187,10 +187,13 @@ jobs:
           ./ffmpeg -hide_banner -filters | grep -E 'zscale|tonemap' || { echo "MISSING zscale/tonemap"; exit 1; }
           echo "--- bsfs ---"
           ./ffmpeg -hide_banner -bsfs | grep -E 'hevc_mp4toannexb|hevc_metadata' || { echo "MISSING hevc bsf"; exit 1; }
-          echo "--- smoke encode (x264 + x265) ---"
-          ./ffmpeg -hide_banner -f lavfi -i testsrc2=size=192x108:rate=1 -vframes 5 -c:v libx264 -preset ultrafast /tmp/h264.mp4
-          ./ffmpeg -hide_banner -f lavfi -i testsrc2=size=192x108:rate=1 -vframes 5 -c:v libx265 -preset ultrafast /tmp/hevc.mkv
-          ./ffmpeg -hide_banner -f lavfi -i testsrc2=size=192x108:rate=1 -pix_fmt yuv420p10le -vframes 5 -c:v libx265 -preset ultrafast /tmp/hevc10.mkv
+          echo "--- smoke encode (x264 + x265 8/10-bit) ---"
+          # lavfi is an input *device*, which we --disable-indevs (histv only reads
+          # real files), so synthesise raw frames from /dev/zero via the rawvideo
+          # demuxer instead of testsrc.
+          ./ffmpeg -hide_banner -y -f rawvideo -pix_fmt yuv420p -video_size 192x108 -framerate 5 -i /dev/zero -frames:v 5 -c:v libx264 -preset ultrafast /tmp/h264.mp4
+          ./ffmpeg -hide_banner -y -f rawvideo -pix_fmt yuv420p -video_size 192x108 -framerate 5 -i /dev/zero -frames:v 5 -c:v libx265 -preset ultrafast /tmp/hevc.mkv
+          ./ffmpeg -hide_banner -y -f rawvideo -pix_fmt yuv420p10le -video_size 192x108 -framerate 5 -i /dev/zero -frames:v 5 -c:v libx265 -preset ultrafast /tmp/hevc10.mkv
           test -s /tmp/h264.mp4 && test -s /tmp/hevc.mkv && test -s /tmp/hevc10.mkv
 
       - name: Collect + checksum
