@@ -1,0 +1,43 @@
+# Preview build: produce runnable, downloadable Windows artefacts for a
+# feature branch WITHOUT cutting a release or touching `main`.
+#
+# Triggered automatically when the `revamp-rail` (or any `preview/**`) branch
+# is pushed, and on demand via the Actions tab. It reuses the same
+# `build-platform.yml` the real release uses, so what you download here is
+# built exactly like a shipped Windows build:
+#   - histv-windows.exe        portable GUI
+#   - histv-windows-full.zip   GUI + bundled ffmpeg/ffprobe (run without install)
+#   - histv-cli-windows.exe    headless CLI
+#   - histv-cli-windows-full.zip
+#
+# The Linux Flatpak preview is produced separately by dispatching the existing
+# `build-flatpak.yml` against the same ref (it already supports workflow_dispatch
+# and uploads the .flatpak as an artefact).
+name: Preview Build
+
+on:
+  workflow_dispatch:
+    inputs:
+      ref:
+        description: "Git ref to build (branch, tag, or SHA)"
+        required: false
+        default: "revamp-rail"
+  push:
+    branches:
+      - revamp-rail
+      - "preview/**"
+
+permissions:
+  contents: read
+
+jobs:
+  windows:
+    # Reuse the production build pipeline; same toolchain, same bundling.
+    uses: ./.github/workflows/build-platform.yml
+    with:
+      os: windows-2022
+      target: x86_64-pc-windows-msvc
+      label: windows
+      bundles: ""
+      # On a push, github.event.inputs is empty -> build the pushed commit.
+      ref: ${{ github.event.inputs.ref || github.sha }}
