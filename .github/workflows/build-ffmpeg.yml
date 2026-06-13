@@ -40,8 +40,8 @@ env:
   # the build log). Bump deliberately, never to a floating branch/latest.
   FFMPEG_TAG: "n8.1.1"
   X264_COMMIT: "b35605ace3ddf7c1a5d67a2eb553f034aef41d55" # videolan/x264 stable
-  X265_VER: "4.1" # videolan release tarball (the github mirror is stale)
-  X265_SHA256: "a31699c6a89806b74b0151e5e6a7df65de4b49050482fe5ebf8a4379d7af8f29"
+  X265_VER: "4.2" # videolan release tarball; 4.2 CMakeLists is CMake-4.x clean (4.1 set removed policies to OLD)
+  X265_SHA256: "40b1ea0453e0309f0eba934e0ddf533f8f6295966679e8894e8f1c1c8d5e1210"
   SVTAV1_TAG: "v3.1.2"
   ZIMG_TAG: "release-3.0.5"
   NVHEADERS_TAG: "n12.2.72.0"
