@@ -26,6 +26,13 @@ on:
     branches:
       - revamp-rail
       - "preview/**"
+    # Don't spin a 25-min Tauri build for changes that can't affect the app
+    # (the from-source ffmpeg workflow, docs, scratch, markdown).
+    paths-ignore:
+      - ".github/workflows/build-ffmpeg.yml"
+      - "bakeoff/**"
+      - "docs/**"
+      - "**/*.md"
 
 permissions:
   contents: read
