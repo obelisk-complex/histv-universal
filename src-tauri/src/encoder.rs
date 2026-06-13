@@ -647,6 +647,29 @@ pub fn resolve_container(
     }
 }
 
+/// Resolve the final output container extension for a file, applying the exact
+/// rules `encode_single_file` uses: Dolby Vision Tier 1 and compatibility mode
+/// both force MP4, otherwise the container is derived from the configured
+/// setting / source extension. Centralised so the encode path and every
+/// remote-staging back-copy path resolve the extension identically and cannot
+/// drift apart (the back-copy must look for the file the encode actually wrote).
+pub fn resolve_output_ext(
+    source_path: &str,
+    dovi_profile: Option<u8>,
+    settings: &BatchSettings,
+    preserve_hdr: bool,
+) -> &'static str {
+    let caps = crate::dovi_tools::capabilities();
+    let is_dovi_tier1 = dovi_profile.is_some()
+        && caps.can_process_dovi
+        && caps.can_package_dovi_mp4
+        && preserve_hdr;
+    if is_dovi_tier1 || settings.compatibility_mode {
+        return "mp4";
+    }
+    resolve_container(source_path, &settings.output_container, false)
+}
+
 /// Determine codec, encoder, container, and audio strategy for a single file
 /// based on its source properties and the user's batch settings.
 ///
@@ -1418,15 +1441,11 @@ async fn encode_single_file(
     // Override container for DV Tier 1. DV requires MP4 container for
     // proper signaling. For copies this is typically a no-op (DV sources
     // are already MP4). For re-encodes, MP4Box will set the DV flags.
-    let file_ext = if is_dovi_tier1 {
-        let resolved_ext = resolve_container(&item_full_path, &settings.output_container, true);
-        if resolved_ext != resolved.container_ext {
-            sink.log("  Dolby Vision requires MP4 container - output set to MP4 for this file");
-        }
-        resolved_ext.to_string()
-    } else {
-        resolved.container_ext.clone()
-    };
+    let file_ext =
+        resolve_output_ext(&item_full_path, item_dovi_profile, settings, preserve_hdr).to_string();
+    if is_dovi_tier1 && file_ext != resolved.container_ext {
+        sink.log("  Dolby Vision requires MP4 container - output set to MP4 for this file");
+    }
     let sw_fallback = software_fallback(file_codec_family).to_string();
     let is_sw = file_encoder.starts_with("lib");
     let target_codec = file_codec_family.as_str();
@@ -2651,19 +2670,15 @@ pub async fn run_encode_loop(
                 let remote = std::path::Path::new(&original_path);
                 let remote_dir = remote.parent().unwrap_or(std::path::Path::new("."));
                 let base_name = remote.file_stem().unwrap_or_default().to_string_lossy();
-                // Resolve the extension using the same logic as encode_single_file:
-                // compat mode forces mp4, otherwise derive from source.
-                let source_ext = remote
-                    .extension()
-                    .map(|e| e.to_string_lossy().to_lowercase())
-                    .unwrap_or_default();
-                let resolved = resolve_file_settings(
-                    &queue[idx].probe.video_codec,
-                    &source_ext,
+                // Resolve the extension with the shared helper so the back-copy
+                // looks for exactly the file the encode wrote, including the DV
+                // Tier-1 / compatibility-mode MP4 override.
+                let ext = resolve_output_ext(
+                    &original_path,
+                    queue[idx].probe.dovi_profile,
                     settings,
-                    detected_encoders,
+                    preserve_hdr,
                 );
-                let ext = resolved.container_ext.as_str();
                 let is_replace = settings.output_mode == "replace";
 
                 let (local_output, final_remote) = if is_replace {
@@ -2762,27 +2777,14 @@ pub async fn run_encode_loop(
             if let Some(ref local_dir) = folder_output_override {
                 if queue[idx].status == QueueItemStatus::Done {
                     let remote = std::path::Path::new(&original_path);
-                    let source_ext = remote
-                        .extension()
-                        .map(|e| e.to_string_lossy().to_lowercase())
-                        .unwrap_or_default();
-                    let resolved = resolve_file_settings(
-                        &queue[idx].probe.video_codec,
-                        &source_ext,
+                    // Shared helper: identical extension rule to the encode path
+                    // and the replace/beside back-copy (DV Tier-1 / compat → MP4).
+                    let ext = resolve_output_ext(
+                        &original_path,
+                        queue[idx].probe.dovi_profile,
                         settings,
-                        detected_encoders,
+                        preserve_hdr,
                     );
-                    // DV Tier-1 forces MP4 output; mirror that here so we look
-                    // for the file the encode actually wrote, not the codec's
-                    // default container ext.
-                    let is_dv = queue[idx].probe.dovi_profile.is_some()
-                        && crate::dovi_tools::capabilities().can_package_dovi_mp4
-                        && preserve_hdr;
-                    let ext = if is_dv {
-                        "mp4"
-                    } else {
-                        resolved.container_ext.as_str()
-                    };
                     let base_name = remote.file_stem().unwrap_or_default().to_string_lossy();
                     let local_output = local_dir.join(format!("{}.{}", base_name, ext));
                     let remote_dir = std::path::Path::new(&settings.output_folder);
