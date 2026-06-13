@@ -456,6 +456,10 @@ jobs:
           cd "$SRC"
           git clone --depth 1 -b "$FFMPEG_TAG" https://github.com/FFmpeg/FFmpeg.git ffmpeg
           cd ffmpeg
+          # The native mingw pkgconf can't resolve MSYS2 /home paths from the
+          # (GITHUB_ENV-set, unconverted) PKG_CONFIG_PATH, so libsvtav1/libzimg
+          # aren't found. Feed it a Windows/mixed path via cygpath.
+          export PKG_CONFIG_PATH="$(cygpath -m "$PREFIX/lib/pkgconfig")"
           ./configure \
             --prefix="$PREFIX" \
             --pkg-config-flags=--static \
