@@ -468,7 +468,8 @@ jobs:
             --disable-network --disable-indevs --disable-outdevs \
             --enable-libx264 --enable-libx265 --enable-libsvtav1 --enable-libzimg \
             --enable-ffnvcodec --enable-d3d11va --enable-dxva2 \
-            --enable-runtime-cpudetect
+            --enable-runtime-cpudetect \
+            || { echo "=== ffbuild/config.log (tail) ==="; tail -150 ffbuild/config.log; echo "=== SvtAv1Enc.pc ==="; cat "$PREFIX/lib/pkgconfig/SvtAv1Enc.pc" || true; echo "=== pkg-config probe ==="; PKG_CONFIG_PATH="$PREFIX/lib/pkgconfig" pkg-config --exists --print-errors 'SvtAv1Enc >= 0.9.0' || true; exit 1; }
           make -j"$(nproc)"
 
       - name: Verify feature set
