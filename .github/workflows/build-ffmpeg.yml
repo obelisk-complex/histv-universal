@@ -40,7 +40,8 @@ env:
   # the build log). Bump deliberately, never to a floating branch/latest.
   FFMPEG_TAG: "n8.1.1"
   X264_COMMIT: "b35605ace3ddf7c1a5d67a2eb553f034aef41d55" # videolan/x264 stable
-  X265_TAG: "4.1"
+  X265_VER: "4.1" # videolan release tarball (the github mirror is stale)
+  X265_SHA256: "a31699c6a89806b74b0151e5e6a7df65de4b49050482fe5ebf8a4379d7af8f29"
   SVTAV1_TAG: "v3.1.2"
   ZIMG_TAG: "release-3.0.5"
   NVHEADERS_TAG: "n12.2.72.0"
@@ -81,8 +82,10 @@ jobs:
         run: |
           set -euo pipefail
           cd "$SRC"
-          git clone --depth 1 -b "$X265_TAG" https://github.com/videolan/x265.git x265
-          cd x265/source
+          curl -fsSL --retry 3 -o x265.tar.gz "https://download.videolan.org/pub/videolan/x265/x265_${X265_VER}.tar.gz"
+          echo "${X265_SHA256}  x265.tar.gz" | sha256sum -c -
+          tar xzf x265.tar.gz
+          cd "x265_${X265_VER}/source"
           mkdir -p 8bit 10bit 12bit
 
           # 12-bit (Main12)
@@ -121,6 +124,7 @@ jobs:
           SAVE
           END
           EOF
+          ranlib libx265.a
           cp -f libx265.a "$PREFIX/lib/libx265.a"
 
       - name: Build SVT-AV1 (static, no LTO)
