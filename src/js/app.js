@@ -676,8 +676,24 @@
             tr.dataset.status = statusLower;
           }
         }
+
+        // Keep the compact (narrow-width) summary in sync on the filename cell
+        const compact = compactRowSummary(item);
+        const nameCell = tr.children[1];
+        if (nameCell && nameCell.dataset.compact !== compact) nameCell.dataset.compact = compact;
       }
       updateBatchButtons();
+    }
+
+    // Resolution / HDR / source-bitrate, joined for the compact secondary line
+    // shown under the filename when those columns collapse at narrow widths.
+    function compactRowSummary(item) {
+      const parts = [];
+      if (item.videoWidth && item.videoHeight) parts.push(`${item.videoWidth}x${item.videoHeight}`);
+      const hdr = hdrTypeLabel(item);
+      if (hdr) parts.push(hdr);
+      if (item.videoBitrateMbps > 0) parts.push(`${item.videoBitrateMbps.toFixed(2)} Mbps`);
+      return parts.join(' · ');
     }
 
     // ── Full queue rebuild (used when row count changes) ──
@@ -716,6 +732,7 @@
         const tdName = document.createElement('td');
         tdName.title = item.fullPath || item.fileName;
         tdName.textContent = item.fileName;
+        tdName.dataset.compact = compactRowSummary(item);
         tr.appendChild(tdName);
 		
 		// Size

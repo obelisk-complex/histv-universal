@@ -247,11 +247,19 @@ input[type="radio"]:checked::after { content: ""; position: absolute; inset: 4px
 /* Tooltips */
 .has-tooltip { position: relative; cursor: help; }
 .tooltip-icon {
+  position: relative;
   display: inline-flex; align-items: center; justify-content: center;
   width: 15px; height: 15px; border-radius: 50%; margin-left: var(--s1); vertical-align: middle;
   font-size: 9px; font-weight: 700; cursor: help; flex-shrink: 0;
   color: var(--text-muted); background: var(--glass-toggle-bg); border: 1px solid var(--glass-border);
   transition: color var(--ease), border-color var(--ease);
+}
+/* Keep the 15px visual glyph but extend the pointer/touch hit area to the
+   WCAG 2.5.8 minimum of 24x24px (transparent, centred, no layout shift). */
+.tooltip-icon::after {
+  content: ""; position: absolute; top: 50%; left: 50%;
+  width: 24px; height: 24px; transform: translate(-50%, -50%);
+  border-radius: 50%;
 }
 .has-tooltip:hover .tooltip-icon { color: var(--accent); border-color: var(--accent); }
 .tooltip-text { display: none; }
@@ -506,6 +514,14 @@ tr.status-encoding .status-badge::before { background: var(--accent); animation:
   /* queue hides resolution + HDR too; keeps Filename / From / To / Status */
   #queue-table th:nth-child(5), #queue-table td:nth-child(5),
   #queue-table th:nth-child(6), #queue-table td:nth-child(6) { display: none; }
+  /* compact fallback: surface the dropped Resolution / HDR / bitrate as a
+     muted second line under the filename so the data isn't simply lost */
+  #queue-table td:nth-child(2)[data-compact]:not([data-compact=""])::after {
+    content: attr(data-compact);
+    display: block; margin-top: 2px;
+    font-size: 11px; color: var(--text-muted);
+    white-space: nowrap; overflow: hidden; text-overflow: ellipsis;
+  }
   #status-strip { flex-wrap: wrap; min-height: 0; padding: var(--s2) var(--s4); gap: var(--s3); }
   #status-strip-bars { width: 100%; order: 3; }
   #status-strip-info { order: 1; flex: 1 1 60%; }
