@@ -45,6 +45,13 @@ env:
   SVTAV1_TAG: "v3.1.2"
   ZIMG_TAG: "release-3.0.5"
   NVHEADERS_TAG: "n12.2.72.0"
+  # AMD HW encode (h264/hevc/av1_amf). Header-only: ffmpeg's configure requires
+  # AMF_VERSION >= 0x0001000400240000 (= 1.4.36); the runtime lib is the user's
+  # AMD GPU driver. linux + windows (not a macOS concept).
+  AMF_TAG: "v1.4.36"
+  # Intel QSV via the oneVPL dispatcher (h264/hevc/av1_qsv). ffmpeg
+  # --enable-libvpl probes pkg-config for "vpl >= 2.6". linux + windows.
+  LIBVPL_TAG: "v2.15.0"
 
 jobs:
   linux:
@@ -155,6 +162,31 @@ jobs:
           git clone --depth 1 -b "$NVHEADERS_TAG" https://github.com/FFmpeg/nv-codec-headers.git
           make -C nv-codec-headers install PREFIX="$PREFIX"
 
+      - name: Install AMF headers (AMD HW encode)
+        run: |
+          set -euo pipefail
+          cd "$SRC"
+          git clone --depth 1 -b "$AMF_TAG" https://github.com/GPUOpen-LibrariesAndSDKs/AMF.git
+          # ffmpeg's configure checks for <AMF/core/Version.h>; AMF ships the
+          # headers under amf/public/include. Header-only - the runtime AMF lib
+          # is the user's AMD GPU driver, loaded at runtime.
+          mkdir -p "$PREFIX/include/AMF"
+          cp -a AMF/amf/public/include/. "$PREFIX/include/AMF/"
+
+      - name: Build libvpl (Intel QSV via oneVPL, static)
+        run: |
+          set -euo pipefail
+          cd "$SRC"
+          git clone --depth 1 -b "$LIBVPL_TAG" https://github.com/intel/libvpl.git
+          # The oneVPL dispatcher. Builds shared by default; force static so the
+          # ffmpeg binary stays self-contained. Installs lib/pkgconfig/vpl.pc,
+          # which ffmpeg --enable-libvpl probes for (needs vpl >= 2.6).
+          cmake -S libvpl -B libvpl/_build -G Ninja \
+            -DCMAKE_INSTALL_PREFIX="$PREFIX" -DCMAKE_BUILD_TYPE=Release \
+            -DBUILD_SHARED_LIBS=OFF -DBUILD_TESTS=OFF -DBUILD_TOOLS=OFF -DBUILD_EXAMPLES=OFF
+          ninja -C libvpl/_build
+          ninja -C libvpl/_build install
+
       - name: Configure + build ffmpeg
         run: |
           set -euo pipefail
@@ -172,7 +204,7 @@ jobs:
             --disable-debug --disable-doc --disable-ffplay --enable-ffprobe \
             --disable-network --disable-indevs --disable-outdevs \
             --enable-libx264 --enable-libx265 --enable-libsvtav1 --enable-libzimg \
-            --enable-vaapi --enable-libdrm --enable-ffnvcodec \
+            --enable-vaapi --enable-libdrm --enable-ffnvcodec --enable-amf --enable-libvpl \
             --enable-runtime-cpudetect
           make -j"$(nproc)"
 
@@ -183,6 +215,11 @@ jobs:
           ./ffmpeg -hide_banner -version
           echo "--- encoders ---"
           ./ffmpeg -hide_banner -encoders | grep -E 'libx264|libx265|libsvtav1|nvenc|vaapi' || { echo "MISSING expected encoder"; exit 1; }
+          # AMD (amf) + Intel (qsv) HW encoders: assert they compiled in. No
+          # runtime encode - the CI runner has no AMD/Intel GPU, so these only
+          # need to be *listed* (compile-time proof), not executed.
+          ./ffmpeg -hide_banner -encoders | grep -q hevc_amf || { echo "MISSING amf (AMD) encoder"; exit 1; }
+          ./ffmpeg -hide_banner -encoders | grep -q hevc_qsv || { echo "MISSING qsv (Intel) encoder"; exit 1; }
           echo "--- filters ---"
           ./ffmpeg -hide_banner -filters | grep -E 'zscale|tonemap' || { echo "MISSING zscale/tonemap"; exit 1; }
           echo "--- bsfs ---"
@@ -450,6 +487,28 @@ jobs:
           git clone --depth 1 -b "$NVHEADERS_TAG" https://github.com/FFmpeg/nv-codec-headers.git
           make -C nv-codec-headers install PREFIX="$PREFIX"
 
+      - name: Install AMF headers (AMD HW encode)
+        run: |
+          set -euo pipefail
+          cd "$SRC"
+          git clone --depth 1 -b "$AMF_TAG" https://github.com/GPUOpen-LibrariesAndSDKs/AMF.git
+          # Header-only (see linux job). AMF is the primary AMD path on Windows.
+          mkdir -p "$PREFIX/include/AMF"
+          cp -a AMF/amf/public/include/. "$PREFIX/include/AMF/"
+
+      - name: Build libvpl (Intel QSV via oneVPL, static)
+        run: |
+          set -euo pipefail
+          cd "$SRC"
+          git clone --depth 1 -b "$LIBVPL_TAG" https://github.com/intel/libvpl.git
+          # oneVPL dispatcher, static. POLICY_VERSION_MINIMUM keeps it building
+          # under the cmake 4.x on the windows runner (same as x265/svtav1 here).
+          cmake -S libvpl -B libvpl/_build -G Ninja -DCMAKE_POLICY_VERSION_MINIMUM=3.5 \
+            -DCMAKE_INSTALL_PREFIX="$PREFIX" -DCMAKE_BUILD_TYPE=Release \
+            -DBUILD_SHARED_LIBS=OFF -DBUILD_TESTS=OFF -DBUILD_TOOLS=OFF -DBUILD_EXAMPLES=OFF
+          ninja -C libvpl/_build
+          ninja -C libvpl/_build install
+
       - name: Configure + build ffmpeg
         run: |
           set -euo pipefail
@@ -471,7 +530,7 @@ jobs:
             --disable-debug --disable-doc --disable-ffplay --enable-ffprobe \
             --disable-network --disable-indevs --disable-outdevs \
             --enable-libx264 --enable-libx265 --enable-libsvtav1 --enable-libzimg \
-            --enable-ffnvcodec --enable-d3d11va --enable-dxva2 \
+            --enable-ffnvcodec --enable-d3d11va --enable-dxva2 --enable-amf --enable-libvpl \
             --enable-runtime-cpudetect \
             || { echo "=== ffbuild/config.log (tail) ==="; tail -150 ffbuild/config.log; echo "=== SvtAv1Enc.pc ==="; cat "$PREFIX/lib/pkgconfig/SvtAv1Enc.pc" || true; echo "=== pkg-config probe ==="; PKG_CONFIG_PATH="$PREFIX/lib/pkgconfig" pkg-config --exists --print-errors 'SvtAv1Enc >= 0.9.0' || true; exit 1; }
           make -j"$(nproc)"
@@ -482,6 +541,10 @@ jobs:
           cd "$SRC/ffmpeg"
           ./ffmpeg.exe -hide_banner -version
           ./ffmpeg.exe -hide_banner -encoders | grep -E 'libx264|libx265|libsvtav1|nvenc' || { echo "MISSING expected encoder"; exit 1; }
+          # AMD (amf) + Intel (qsv) HW encoders: compiled-in proof only (the CI
+          # runner has no AMD/Intel GPU, so list them rather than run them).
+          ./ffmpeg.exe -hide_banner -encoders | grep -q hevc_amf || { echo "MISSING amf (AMD) encoder"; exit 1; }
+          ./ffmpeg.exe -hide_banner -encoders | grep -q hevc_qsv || { echo "MISSING qsv (Intel) encoder"; exit 1; }
           ./ffmpeg.exe -hide_banner -filters | grep -E 'zscale|tonemap' || { echo "MISSING zscale/tonemap"; exit 1; }
           ./ffmpeg.exe -hide_banner -bsfs | grep -E 'hevc_mp4toannexb|hevc_metadata' || { echo "MISSING hevc bsf"; exit 1; }
           # Native ffmpeg.exe can't read MSYS2 /dev/zero; make raw files in the
@@ -538,5 +601,5 @@ jobs:
               --repo "$GITHUB_REPOSITORY" \
               --prerelease \
               --title "Custom ffmpeg (experimental)" \
-              --notes "Histv-tailored static ffmpeg built from pinned source (ffmpeg ${FFMPEG_TAG}, x265 ${X265_VER} multilib, x264 stable, SVT-AV1 ${SVTAV1_TAG}, zimg ${ZIMG_TAG}). Experimental test builds - download the per-platform archive and swap it into histv to test."
+              --notes "Histv-tailored static ffmpeg built from pinned source (ffmpeg ${FFMPEG_TAG}, x265 ${X265_VER} multilib, x264 stable, SVT-AV1 ${SVTAV1_TAG}, zimg ${ZIMG_TAG}). HW encode: nvenc + vaapi + AMF ${AMF_TAG} (linux), nvenc + d3d11va/dxva2 + AMF ${AMF_TAG} (windows), Intel QSV via libvpl ${LIBVPL_TAG} (linux+windows), videotoolbox (macos). Experimental test builds - download the per-platform archive and swap it into histv to test."
           gh release upload ffmpeg-experimental --repo "$GITHUB_REPOSITORY" --clobber $(find dist -type f)
