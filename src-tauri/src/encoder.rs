@@ -3598,7 +3598,10 @@ fn assemble_ffmpeg_args(parts: &FfmpegAssemblyParts<'_>) -> Vec<String> {
     if parts.output_path.ends_with(".mp4") {
         args.extend(vec!["-movflags".into(), "+faststart".into()]);
         // HEVC in MP4: force hvc1 tag (parameter sets out-of-band).
-        // ffmpeg defaults to hev1, which macOS/iOS/Safari refuse to play.
+        // ffmpeg defaults to hev1 (in-band parameter sets), which many
+        // hardware decoders refuse or fallback from: Apple (macOS/iOS/Safari),
+        // Android/MediaCodec, NVIDIA Shield, and Chrome on Windows via DXVA.
+        // hvc1 is de facto standard for universal hardware compatibility.
         // Only apply when the codec is actually HEVC to avoid tag mismatches.
         if parts.codec_family == "hevc" {
             args.extend(vec!["-tag:v".into(), "hvc1".into()]);
