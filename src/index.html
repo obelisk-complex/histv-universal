@@ -4,16 +4,18 @@
   <meta charset="UTF-8" />
   <meta name="viewport" content="width=device-width, initial-scale=1.0" />
   <title>Honey, I Shrunk The Vids v2.6.0</title>
+  <link rel="stylesheet" href="css/doublet-tokens.css" />
+  <link rel="stylesheet" href="css/doublet-components.css" />
   <link rel="stylesheet" href="css/app.css" />
 </head>
 <body>
-  <div id="app">
+  <div id="app" class="dx-seam">
     <main id="main-area">
       <!-- ═══ Workspace: files + queue + transport (#left-panel; shown on the
            right of the rail via row-reverse) ═══ -->
       <section id="left-panel">
         <div class="panel-header">
-          <span class="ws-title">Your files</span>
+          <span class="ws-title dx-label">Queue / Your files</span>
           <span id="queue-summary" class="queue-summary"></span>
         </div>
 
@@ -21,7 +23,7 @@
           <div id="drop-overlay">Drop files or folders here</div>
           <div id="queue-empty-state" class="visible">
             <div class="empty-big">Drop your videos here</div>
-            <div class="empty-hint">or use Add — pick a quality on the left, then Start. Folders are scanned automatically.</div>
+            <div class="empty-hint">Or use Add files. Pick a quality, then Start. Folders are scanned automatically.</div>
           </div>
           <table id="queue-table">
             <thead>
@@ -43,7 +45,7 @@
 
         <!-- Destination: always visible, plain-language -->
         <div id="destination-bar">
-          <label for="txt-output-folder">Save to</label>
+          <label for="txt-output-folder" class="dx-label">Save to</label>
           <input type="text" id="txt-output-folder" value="output" />
           <button class="btn" id="btn-browse-output">Browse</button>
         </div>
@@ -70,8 +72,8 @@
       <!-- ═══ Quality rail (#right-panel; shown on the left via row-reverse) ═══ -->
       <aside id="right-panel">
         <div class="rail-scroll">
-          <div class="rail-brand" aria-label="Honey, I Shrunk The Vids">Honey, I <span class="brand-accent">Shrunk</span> The Vids</div>
-          <div class="rail-title">Quality</div>
+          <div class="rail-brand" aria-label="Honey, I Shrunk The Vids">Honey, I <span class="brand-accent dx-accent">Shrunk</span> The Vids</div>
+          <div class="rail-title dx-label">Quality / Profile</div>
 
           <!-- Profile cards: one click = a consistent quality + format. -->
           <div id="profile-list" role="group" aria-label="Quality profile">
@@ -89,7 +91,7 @@
             </button>
             <button type="button" class="profile-card" aria-pressed="false" data-profile="max-compat">
               <span class="profile-name">Max compatibility</span>
-              <span class="profile-desc">H.264/MP4 — plays on almost anything.</span>
+              <span class="profile-desc">H.264/MP4. Plays on almost anything.</span>
             </button>
             <button type="button" class="profile-card" aria-pressed="false" data-profile="custom">
               <span class="profile-name">Custom…</span>
@@ -97,7 +99,7 @@
             </button>
           </div>
 
-          <button type="button" id="advanced-toggle" aria-expanded="false" aria-controls="settings-panel">
+          <button type="button" id="advanced-toggle" class="dx-label" aria-expanded="false" aria-controls="settings-panel">
             <span id="advanced-arrow">&#x25B6;</span> Advanced settings
           </button>
 
@@ -106,7 +108,7 @@
 
             <div class="status-text" id="encoder-summary">Detecting encoders...</div>
 
-            <div class="section-header">Video</div>
+            <div class="section-header dx-label dx-section-label">Advanced / Video</div>
 
             <div class="form-row">
               <label for="num-bitrate" class="has-tooltip">Bitrate (Mbps)
@@ -157,7 +159,7 @@
               <input type="number" id="num-crf" min="0" max="51" value="20" />
             </div>
 
-            <div class="section-header">Output</div>
+            <div class="section-header dx-label dx-section-label">Advanced / Output</div>
 
             <div class="form-row has-tooltip">
               <label class="has-tooltip">Where
@@ -171,7 +173,7 @@
               </div>
             </div>
 
-            <div class="section-header">Behaviour</div>
+            <div class="section-header dx-label dx-section-label">Advanced / Behaviour</div>
 
             <div class="checkbox-row has-tooltip">
               <input type="checkbox" id="chk-hdr" />
@@ -229,7 +231,7 @@
               <span class="tooltip-text">Skip local staging and read/write directly over the network. Fast on a wired LAN, slow or unreliable over Wi-Fi or WAN.</span>
             </div>
 
-            <div class="section-header">Performance</div>
+            <div class="section-header dx-label dx-section-label">Advanced / Performance</div>
 
             <div class="form-row">
               <label for="num-threads" class="has-tooltip">Threads
@@ -243,12 +245,12 @@
               </label>
             </div>
 
-            <div class="section-header">After batch</div>
+            <div class="section-header dx-label dx-section-label">Advanced / After batch</div>
 
             <div class="form-row">
               <label for="sel-post-action" class="has-tooltip">Action
                 <span class="tooltip-icon">?</span>
-                <span class="tooltip-text">Something to do when the batch finishes — handy for overnight encodes.</span>
+                <span class="tooltip-text">Something to do when the batch finishes. Handy for overnight encodes.</span>
               </label>
               <select id="sel-post-action">
                 <option value="None">None</option>
@@ -290,7 +292,7 @@
         </div><!-- /rail-scroll -->
 
         <div class="rail-footer settings-footer">
-          <label for="sel-theme">Theme</label>
+          <label for="sel-theme" class="dx-label">Theme</label>
           <select id="sel-theme"></select>
         </div>
       </aside><!-- /right-panel (rail) -->
@@ -300,19 +302,19 @@
     <footer id="bottom-panel">
       <div id="status-strip">
         <div id="status-strip-info">
-          <span class="status-strip-label" id="job-status">Ready</span>
+          <span class="status-strip-label dx-badge" id="job-status">Ready</span>
           <span class="status-strip-file" id="job-file"></span>
           <span class="status-strip-progress" id="job-progress-text"></span>
         </div>
         <div id="status-strip-bars">
           <div class="bar-row">
-            <span class="bar-label">File</span>
+            <span class="bar-label dx-label">File</span>
             <div class="progress-bar-container" id="progress-bar-container" role="progressbar" aria-valuenow="0" aria-valuemin="0" aria-valuemax="100" aria-label="File encoding progress">
               <div id="progress-bar"></div>
             </div>
           </div>
           <div class="bar-row">
-            <span class="bar-label">All</span>
+            <span class="bar-label dx-label">All</span>
             <div class="progress-bar-container" id="batch-progress-bar-container" role="progressbar" aria-valuenow="0" aria-valuemin="0" aria-valuemax="100" aria-label="Overall batch progress">
               <div id="batch-progress-bar"></div>
             </div>
@@ -359,7 +361,7 @@
     <!-- ═══ Modal: Overwrite prompt ═══ -->
     <div class="modal-overlay" id="modal-overwrite" role="dialog" aria-modal="true" aria-labelledby="modal-overwrite-title">
       <div class="modal-box">
-        <div class="modal-title" id="modal-overwrite-title">File Already Exists</div>
+        <div class="modal-title" id="modal-overwrite-title">File already exists</div>
         <div class="modal-body" id="overwrite-body">Output file already exists. Overwrite?</div>
         <div class="modal-buttons">
           <button class="btn btn-primary" id="ow-yes">Yes</button>
@@ -372,7 +374,7 @@
     <!-- ═══ Modal: Fallback prompt ═══ -->
     <div class="modal-overlay" id="modal-fallback" role="dialog" aria-modal="true" aria-labelledby="modal-fallback-title">
       <div class="modal-box">
-        <div class="modal-title" id="modal-fallback-title">Hardware Encoder Failed</div>
+        <div class="modal-title" id="modal-fallback-title">Hardware encoder failed</div>
         <div class="modal-body" id="fallback-body">Fall back to software encoding for this file and continue?</div>
         <div class="modal-buttons">
           <button class="btn btn-primary" id="fb-yes">Yes</button>
@@ -384,7 +386,7 @@
     <!-- ═══ Modal: Delete-source confirmation ═══ -->
     <div class="modal-overlay" id="modal-delete-confirm" role="dialog" aria-modal="true" aria-labelledby="modal-delete-title">
       <div class="modal-box">
-        <div class="modal-title" id="modal-delete-title">Delete Source Files</div>
+        <div class="modal-title" id="modal-delete-title">Delete source files</div>
         <div class="modal-body">"Delete source" is enabled. Source files will be permanently deleted after each successful encode. Continue?</div>
         <div class="modal-buttons">
           <button class="btn btn-primary" id="dc-yes">Continue</button>
@@ -421,7 +423,7 @@
     <!-- ═══ Modal: Post-batch countdown ═══ -->
     <div class="modal-overlay" id="modal-countdown" role="dialog" aria-modal="true" aria-labelledby="modal-countdown-title">
       <div class="modal-box">
-        <div class="modal-title" id="modal-countdown-title">Post-Batch Action</div>
+        <div class="modal-title" id="modal-countdown-title">Post-batch action</div>
         <div class="modal-body" id="countdown-body">Performing action in <strong id="countdown-value">0</strong> seconds…</div>
         <div class="modal-buttons">
           <button class="btn" id="cd-cancel">Cancel</button>
@@ -432,14 +434,14 @@
     <!-- ═══ Modal: ffmpeg missing ═══ -->
     <div class="modal-overlay" id="modal-ffmpeg-missing" role="dialog" aria-modal="true" aria-labelledby="modal-ffmpeg-title">
       <div class="modal-box">
-        <div class="modal-title" id="modal-ffmpeg-title">ffmpeg Not Found</div>
+        <div class="modal-title" id="modal-ffmpeg-title">ffmpeg not found</div>
         <div class="modal-body" id="ffmpeg-missing-body">
           ffmpeg and ffprobe are required but were not found on your system.
           Would you like to download them automatically? (~80 MB)
         </div>
         <div class="modal-buttons">
           <button class="btn btn-primary" id="ffmpeg-dl-yes">Download</button>
-          <button class="btn" id="ffmpeg-dl-no">Not Now</button>
+          <button class="btn" id="ffmpeg-dl-no">Not now</button>
         </div>
       </div>
     </div>

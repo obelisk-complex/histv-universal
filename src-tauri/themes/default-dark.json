@@ -1,11 +1,11 @@
 {
   "name": "Default Dark",
   "colors": {
-    "primary": "#0078D7",
-    "background": "#1E1E1E",
-    "success": "#4ade80",
-    "text": "#DCDCDC",
-    "error": "#f87171",
-    "surface": "#373737"
+    "primary": "#0A6CFF",
+    "background": "#101014",
+    "success": "#22e07a",
+    "text": "#E6E6EA",
+    "error": "#ff5a5a",
+    "surface": "#24242B"
   }
 }

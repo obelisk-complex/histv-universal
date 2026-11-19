@@ -90,15 +90,16 @@
     const batchProgressBarContainer = $('#batch-progress-bar-container');
     const liveStatus      = $('#live-status');
 
-    // Status icons - done/failed/cancelled colours are updated by applyTheme
-    let STATUS_ICONS = {
+    // Status icons. All strokes use currentColor, so each glyph takes the
+    // colour of the status badge it sits in.
+    const STATUS_ICONS = {
       pending: '',
       probing: '<svg aria-hidden="true" class="spinner" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5"><circle cx="12" cy="12" r="10" stroke-dasharray="31.4 31.4" stroke-linecap="round"/></svg>',
       encoding: '<svg aria-hidden="true" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><circle cx="12" cy="12" r="9"/><path d="M12 6v6l4 2"/></svg>',
-      done: '<svg aria-hidden="true" viewBox="0 0 24 24" fill="none" stroke="#4ade80" stroke-width="2.5"><path d="M5 13l4 4L19 7"/></svg>',
-      failed: '<svg aria-hidden="true" viewBox="0 0 24 24" fill="none" stroke="#f87171" stroke-width="2.5"><path d="M6 6l12 12M18 6L6 18"/></svg>',
+      done: '<svg aria-hidden="true" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5"><path d="M5 13l4 4L19 7"/></svg>',
+      failed: '<svg aria-hidden="true" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5"><path d="M6 6l12 12M18 6L6 18"/></svg>',
       skipped: '<svg aria-hidden="true" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M5 5l14 7-14 7V5z"/><line x1="19" y1="5" x2="19" y2="19"/></svg>',
-      cancelled: '<svg aria-hidden="true" viewBox="0 0 24 24" fill="none" stroke="#fb923c" stroke-width="2.5"><circle cx="12" cy="12" r="9"/><line x1="9" y1="9" x2="15" y2="15"/></svg>',
+      cancelled: '<svg aria-hidden="true" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5"><circle cx="12" cy="12" r="9"/><line x1="9" y1="9" x2="15" y2="15"/></svg>',
 	};
 	
 	// Flatpak mode restrictions removed — with --filesystem=host, all
@@ -265,7 +266,11 @@
     // ═══════════════════════════════════════════════════════════════
     async function loadThemes(savedConfig) {
       try {
-        themes = await invoke('get_themes');
+        // Doublet pairings ship in doublet-tokens.css and head the list;
+        // user themes from the themes/ folder follow.
+        const userThemes = await invoke('get_themes');
+        themes = DOUBLET_THEMES.concat(
+          userThemes.filter(t => !DOUBLET_THEMES.some(d => d.name === t.name)));
         selTheme.innerHTML = '';
         for (const t of themes) {
           const opt = document.createElement('option');
@@ -284,123 +289,151 @@
     }
 
 // ── Theme colour derivation ─────────────────────────────────
-    // New themes only need 6 keys: background, surface, text,
-    // primary, success, error. Everything else is derived here.
-    // Legacy themes with the old keys still work - any explicitly
-    // provided key overrides the derived value.
+    // A theme is six colours: background (cloth), surface, text, primary
+    // (thread), success, error. Everything else is derived here as Doublet
+    // tokens (--dx-*) and set inline on :root, over the defaults in
+    // doublet-tokens.css. Legacy key names still work as fallbacks.
+    //
+    // The Doublet pairings need no derivation: their tokens are already in
+    // doublet-tokens.css, selected with data-dx-pairing.
+
+    const DOUBLET_THEMES = [
+      { name: 'Doublet', pairing: 'electric' },
+      { name: 'Doublet Dusk', pairing: 'dusk' },
+      { name: 'Doublet Ember', pairing: 'ember' },
+      { name: 'Doublet Filigree', pairing: 'filigree' },
+    ];
+
+    // Theme JSON keys that feed the derivation; any other key is passed
+    // through as a custom property (log-* and future variables).
+    const THEME_DERIVATION_KEYS = new Set([
+      'background', 'surface', 'text', 'primary', 'success', 'error',
+      'base-100', 'base-300', 'base-content', 'secondary', 'info',
+      'surface-dim', 'surface-bright', 'text-muted', 'accent',
+      'row-info', 'row-done', 'row-failed', 'row-cancelled',
+      'icon-done', 'icon-failed', 'icon-cancelled',
+      'status-done', 'status-failed', 'status-cancelled',
+    ]);
+
+    let appliedThemeProps = [];
 
     function applyTheme(name) {
       const theme = themes.find(t => t.name === name);
       if (!theme) return;
-      const c = theme.colors;
       const root = document.documentElement;
 
-      // ── Read the 6 core values (with legacy fallbacks) ──
-      const bg      = c['background'] || c['base-100'] || '#1E1E1E';
-      const surface = c['surface']    || c['base-300'] || '#373737';
-      const text    = c['text']       || c['base-content'] || '#DCDCDC';
-      const primary = c['primary']    || '#0078D7';
-      const success = c['success']    || '#4ade80';
-      const error   = c['error']      || '#f87171';
+      // Drop whatever the previous theme set inline.
+      for (const prop of appliedThemeProps) root.style.removeProperty(prop);
+      appliedThemeProps = [];
+      root.style.removeProperty('color-scheme');
+      root.removeAttribute('data-dx-pairing');
 
-      const light = isLightColor(bg);
+      if (theme.pairing) {
+        if (theme.pairing !== 'electric') root.setAttribute('data-dx-pairing', theme.pairing);
+        return;
+      }
 
-      // ── Derive all variables ──
-      // Helpers produce values only if the theme didn't explicitly set them.
-      // This lets power users override any derived value in their JSON.
-      const derived = {};
+      const c = theme.colors || {};
+      const setProp = (key, value) => {
+        root.style.setProperty(`--${key}`, value);
+        appliedThemeProps.push(`--${key}`);
+      };
 
-      // Core
-      derived['background']     = bg;
-      derived['surface']        = surface;
-      derived['text']           = text;
-      derived['primary']        = primary;
-      derived['success']        = success;
-      derived['error']          = error;
+      const tokens = deriveDoubletTokens(c);
+      for (const [key, value] of Object.entries(tokens)) setProp(key, value);
 
-      // Surface hierarchy
-      derived['surface-dim']    = c['surface-dim']    || blendHex(surface, bg, 0.5);
-      derived['surface-bright'] = c['surface-bright'] || shiftBrightness(surface, light ? -0.08 : 0.08);
-      derived['text-muted']     = c['text-muted']     || c['secondary'] || hexToRgba(text, 0.65);
-      derived['accent']         = c['accent']         || primary;
-
-      // Row tints - muted overlays of semantic colours onto the background
-      derived['row-info']       = c['row-info']       || c['info']    || blendHex(primary, bg, 0.15);
-      derived['row-done']       = c['row-done']       || overlayOnBg(success, bg, light);
-      derived['row-encoding']   = c['row-encoding']   || c['warning'] || shiftBrightness(surface, light ? -0.04 : 0.04);
-      derived['row-failed']     = c['row-failed']     || overlayOnBg(error, bg, light);
-      derived['row-cancelled']  = c['row-cancelled']  || blendHex(derived['row-failed'], derived['row-encoding'], 0.5);
-
-      // Progress bar
-      derived['progress-fill']  = c['progress-fill']  || derived['row-done'];
-      derived['progress-bg']    = c['progress-bg']    || derived['row-encoding'];
-
-      // Icon / log colours (bright, full saturation)
-      derived['icon-done']      = c['icon-done']      || c['status-done']      || success;
-      derived['icon-failed']    = c['icon-failed']    || c['status-failed']    || error;
-      derived['icon-cancelled'] = c['icon-cancelled'] || c['status-cancelled'] || '#fb923c';
-      derived['log-result']     = c['log-result']     || derived['icon-done'];
-      derived['log-warn']       = c['log-warn']       || derived['icon-cancelled'];
-      derived['log-error']      = c['log-error']      || derived['icon-failed'];
-      derived['log-detect']     = c['log-detect']     || c['status-detect'] || '#a78bfa';
-      derived['log-file']       = c['log-file']       || '#7dd3fc';
-      derived['log-text']       = c['log-text']       || '#8BC88B';
-      derived['log-cmd']        = c['log-cmd']        || (light ? '#6b7280' : '#7a8090');
-      derived['text-on-primary'] = c['text-on-primary'] || bestTextOn(primary);
-
-      // ── Apply all to :root (with colour validation) ──
+      // Pass through explicit extra keys (with colour validation).
       const isValidCssColor = (v) => {
         if (typeof v !== 'string') return false;
         if (/^#[0-9a-fA-F]{3,8}$/.test(v)) return true;
-        if (/^rgba?\(\s*\d/.test(v)) return true;
+        if (/^rgba?\(\s*\d[\d\s.,%/]*\)$/.test(v)) return true;
         return false;
       };
-      for (const [key, value] of Object.entries(derived)) {
-        if (isValidCssColor(value)) {
-          root.style.setProperty(`--${key}`, value);
-        }
-      }
-
-      // Also apply any extra keys from the theme JSON that we didn't
-      // derive (forward-compatibility for future variables).
       for (const [key, value] of Object.entries(c)) {
-        if (!(key in derived) && isValidCssColor(value)) {
-          root.style.setProperty(`--${key}`, value);
+        if (!THEME_DERIVATION_KEYS.has(key) && /^[a-z0-9-]+$/.test(key) && isValidCssColor(value)) {
+          setProp(key, value);
         }
       }
 
       // Colour-scheme for native form controls
-      root.style.colorScheme = light ? 'light' : 'dark';
+      root.style.colorScheme = isLightColor(tokens['dx-cloth']) ? 'light' : 'dark';
+    }
 
-      // Glass tokens - adapt to theme lightness
-      if (light) {
-        root.style.setProperty('--glass-bg', 'rgba(255, 255, 255, 0.55)');
-        root.style.setProperty('--glass-border', 'rgba(0, 0, 0, 0.08)');
-        root.style.setProperty('--glass-input-bg', 'rgba(0, 0, 0, 0.04)');
-        root.style.setProperty('--glass-th-bg', 'rgba(255, 255, 255, 0.8)');
-        root.style.setProperty('--glass-hover', 'rgba(0, 0, 0, 0.04)');
-        root.style.setProperty('--glass-toggle-bg', 'rgba(0, 0, 0, 0.04)');
-        root.style.setProperty('--glass-log-bg', 'rgba(20, 20, 20, 0.95)');
-        root.style.setProperty('--glass-strip-bg', 'rgba(255, 255, 255, 0.6)');
-        root.style.setProperty('--glass-overlay-bg', 'rgba(255, 255, 255, 0.92)');
-      } else {
-        root.style.setProperty('--glass-bg', 'rgba(40, 40, 40, 0.65)');
-        root.style.setProperty('--glass-border', 'rgba(255, 255, 255, 0.06)');
-        root.style.setProperty('--glass-input-bg', 'rgba(55, 55, 55, 0.5)');
-        root.style.setProperty('--glass-th-bg', 'rgba(55, 55, 55, 0.9)');
-        root.style.setProperty('--glass-hover', 'rgba(255, 255, 255, 0.08)');
-        root.style.setProperty('--glass-toggle-bg', 'rgba(55, 55, 55, 0.4)');
-        root.style.setProperty('--glass-log-bg', 'rgba(8, 8, 8, 0.9)');
-        root.style.setProperty('--glass-strip-bg', 'rgba(40, 40, 40, 0.7)');
-        root.style.setProperty('--glass-overlay-bg', 'rgba(40, 40, 40, 0.92)');
-      }
+    // Six seeds in, the full --dx-* colour set out. Text tokens are moved
+    // toward white (black on a light ground) until they reach 4.5:1 on every
+    // ground they sit on; line tokens until 3:1. Explicit overrides in the
+    // theme JSON are used as the starting point instead of the derived value.
+    function deriveDoubletTokens(c) {
+      const pick = (...keys) => {
+        for (const k of keys) { const h = hex6(c[k]); if (h) return h; }
+        return null;
+      };
+      const cloth   = pick('background', 'base-100') || '#1E1E1E';
+      const surface = pick('surface', 'base-300')    || '#373737';
+      const thread  = pick('primary')                || '#0078D7';
+      const success = pick('success')                || '#4ade80';
+      const error   = pick('error')                  || '#f87171';
+      const light   = isLightColor(cloth);
+      const pole    = light ? '#000000' : '#ffffff';
 
-      // Update SVG status icons with themed colours.
-      // Sanitise colour values to prevent attribute injection from malicious themes.
-      const safeColour = (c) => String(c).replace(/[^a-zA-Z0-9#(),.\s%]/g, '');
-      STATUS_ICONS.done = `<svg aria-hidden="true" viewBox="0 0 24 24" fill="none" stroke="${safeColour(derived['icon-done'])}" stroke-width="2.5"><path d="M5 13l4 4L19 7"/></svg>`;
-      STATUS_ICONS.failed = `<svg aria-hidden="true" viewBox="0 0 24 24" fill="none" stroke="${safeColour(derived['icon-failed'])}" stroke-width="2.5"><path d="M6 6l12 12M18 6L6 18"/></svg>`;
-      STATUS_ICONS.cancelled = `<svg aria-hidden="true" viewBox="0 0 24 24" fill="none" stroke="${safeColour(derived['icon-cancelled'])}" stroke-width="2.5"><circle cx="12" cy="12" r="9"/><line x1="9" y1="9" x2="15" y2="15"/></svg>`;
+      const ensure = (hex, grounds, ratio) => {
+        for (let t = 0; t < 1; t += 0.04) {
+          const candidate = blendHex(pole, hex, t);
+          if (grounds.every(g => contrastRatio(candidate, g) >= ratio)) return candidate;
+        }
+        return pole;
+      };
+      const wash = (hex) => blendHex(hex, cloth, 0.12);
+
+      const surfaceDim    = pick('surface-dim')    || blendHex(surface, cloth, 0.5);
+      const surfaceBright = pick('surface-bright') || shiftBrightness(surface, light ? -0.06 : 0.06);
+      const warn          = pick('icon-cancelled', 'status-cancelled') || (light ? '#9A4A00' : '#F08A1C');
+      const threadWash    = pick('row-info', 'info') || wash(thread);
+      const successWash   = pick('row-done')         || wash(success);
+      const errorWash     = pick('row-failed')       || wash(error);
+      const warnWash      = pick('row-cancelled')    || wash(warn);
+
+      const grounds = [cloth, surfaceDim, surface, surfaceBright, threadWash];
+      const text = ensure(pick('text', 'base-content') || '#DCDCDC', grounds, 4.5);
+
+      return {
+        'dx-cloth': cloth,
+        'dx-surface': surface,
+        'dx-text': text,
+        'dx-thread': thread,
+        'dx-success': success,
+        'dx-error': error,
+        'dx-surface-dim': surfaceDim,
+        'dx-surface-bright': surfaceBright,
+        'dx-text-muted': ensure(pick('text-muted', 'secondary') || blendHex(text, cloth, 0.6), grounds, 4.5),
+        'dx-line': blendHex(text, cloth, 0.14),
+        'dx-line-strong': ensure(blendHex(text, cloth, 0.45), grounds, 3),
+        'dx-thread-line': ensure(pick('accent') || thread, grounds, 3),
+        'dx-thread-deep': blendHex(thread, cloth, 0.5),
+        'dx-thread-wash': threadWash,
+        'dx-on-thread': bestTextOn(thread),
+        'dx-success-text': ensure(pick('icon-done', 'status-done') || success, grounds.concat(successWash), 4.5),
+        'dx-error-text': ensure(pick('icon-failed', 'status-failed') || error, grounds.concat(errorWash), 4.5),
+        'dx-warn-text': ensure(warn, grounds.concat(warnWash), 4.5),
+        'dx-success-wash': successWash,
+        'dx-error-wash': errorWash,
+        'dx-warn-wash': warnWash,
+      };
+    }
+
+    // Normalise #rgb, #rrggbb or #rrggbbaa to #rrggbb; null for anything else.
+    function hex6(v) {
+      if (typeof v !== 'string') return null;
+      const m = /^#([0-9a-fA-F]{3}|[0-9a-fA-F]{6}|[0-9a-fA-F]{8})$/.exec(v.trim());
+      if (!m) return null;
+      const h = m[1];
+      return '#' + (h.length === 3 ? h.replace(/./g, ch => ch + ch) : h.substring(0, 6));
+    }
+
+    // WCAG contrast ratio between two hex colours.
+    function contrastRatio(a, b) {
+      const la = relLuminance(a), lb = relLuminance(b);
+      return (Math.max(la, lb) + 0.05) / (Math.min(la, lb) + 0.05);
     }
 
     // ── Colour helper functions ──────────────────────────────────
@@ -432,12 +465,6 @@
         .map(v => v.toString(16).padStart(2, '0')).join('');
     }
 
-    // Hex to rgba() string
-    function hexToRgba(hex, alpha) {
-      const [r, g, b] = hexToRgb(hex);
-      return `rgba(${r}, ${g}, ${b}, ${alpha})`;
-    }
-
     // Blend two hex colours: result = a * t + b * (1-t)
     function blendHex(a, b, t) {
       const [ar, ag, ab] = hexToRgb(a);
@@ -454,13 +481,6 @@
       const [r, g, b] = hexToRgb(hex);
       const shift = amount * 255;
       return rgbToHex(r + shift, g + shift, b + shift);
-    }
-
-    // Overlay a bright colour onto a background at low opacity to produce a muted tint.
-    // For dark themes: 15% overlay. For light themes: 12% overlay.
-    function overlayOnBg(colour, bg, isLight) {
-      const alpha = isLight ? 0.12 : 0.15;
-      return blendHex(colour, bg, alpha);
     }
 
     // WCAG relative luminance of a hex colour (sRGB).
@@ -770,7 +790,7 @@
         // Status badge
         const tdStatus = document.createElement('td');
         const badge = document.createElement('span');
-        badge.className = 'status-badge';
+        badge.className = 'status-badge dx-badge';
         const icon = STATUS_ICONS[statusLower] || '';
         if (icon) {
           const iconSpan = document.createElement('span');

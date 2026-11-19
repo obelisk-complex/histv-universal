@@ -1,0 +1,129 @@
+/* Doublet tokens v0.6, vendored for HISTV: dark blocks only, spectrum and spark tokens removed.
+   Source of truth is the Doublet archive (seeds.json, build/generate.py); re-vendor, do not hand-edit values.
+   User themes (THEMES.md) override these at runtime from applyTheme() in app.js. */
+:root {
+  /* Type. Self-host the named faces or let the stack fall back; never a font CDN. */
+  --dx-font-sans: "Instrument Sans", "Segoe UI Variable Text", "Segoe UI", system-ui, -apple-system, "Helvetica Neue", sans-serif;
+  --dx-font-mono: "JetBrains Mono", "Cascadia Mono", "SF Mono", ui-monospace, Consolas, monospace;
+  /* Mono carries headings, navigation and buttons; sans carries reading text. */
+  --dx-font-display: var(--dx-font-mono);
+  /* Major third (1.25) scale. */
+  --dx-text-xs: 0.8rem; --dx-text-sm: 0.875rem; --dx-text-md: 1rem; --dx-text-lg: 1.25rem;
+  --dx-text-xl: 1.563rem; --dx-text-2xl: 1.953rem; --dx-text-3xl: 2.441rem; --dx-text-4xl: 3.052rem;
+  --dx-leading-body: 1.5; --dx-leading-tight: 1.15; --dx-measure: 65ch; --dx-tracking-label: 0.08em;
+
+  --dx-space-1: 0.25rem; --dx-space-2: 0.5rem; --dx-space-3: 0.75rem; --dx-space-4: 1rem;
+  --dx-space-5: 1.5rem; --dx-space-6: 2rem; --dx-space-7: 3rem; --dx-space-8: 4rem; --dx-space-9: 6rem;
+
+  /* Square, or nearly: hairline rules do the work corners usually do. */
+  --dx-radius-sm: 0; --dx-radius: 2px; --dx-radius-lg: 2px;
+  --dx-hairline: 1px; --dx-seam: 2px;
+
+  --dx-ease: cubic-bezier(0.2, 0.8, 0.2, 1);
+  --dx-dur-fast: 120ms; --dx-dur: 240ms; --dx-dur-slow: 400ms;
+  --dx-focus: 0 0 0 2px var(--dx-cloth), 0 0 0 4px var(--dx-thread-line);
+}
+
+/* electric */
+:root {
+  color-scheme: dark;
+  --dx-cloth: #0A0D13;
+  --dx-surface: #12161F;
+  --dx-text: #E9EAEE;
+  --dx-thread: #1F6FFF;
+  --dx-success: #2FD07A;
+  --dx-error: #FF4D4D;
+  --dx-surface-dim: #0E1119;
+  --dx-surface-bright: #20242D;
+  --dx-text-muted: #919499;
+  --dx-line: #272A30;
+  --dx-line-strong: #6E7076;
+  --dx-thread-line: #1F6FFF;
+  --dx-thread-deep: #19418B;
+  --dx-thread-wash: #0F1A2E;
+  --dx-on-thread: #000000;
+  --dx-success-text: #2FD07A;
+  --dx-error-text: #FF4D4D;
+  --dx-warn-text: #F08A1C;
+  --dx-success-wash: #132421;
+  --dx-error-wash: #28181C;
+  --dx-warn-wash: #251D1A;
+}
+
+/* dusk */
+:root[data-dx-pairing="dusk"] {
+  color-scheme: dark;
+  --dx-cloth: #16121E;
+  --dx-surface: #201A2B;
+  --dx-text: #ECE8F2;
+  --dx-thread: #FF6A00;
+  --dx-success: #2FD07A;
+  --dx-error: #FF4D4D;
+  --dx-surface-dim: #1B1624;
+  --dx-surface-bright: #2E2839;
+  --dx-text-muted: #9995A1;
+  --dx-line: #322E3B;
+  --dx-line-strong: #77737F;
+  --dx-thread-line: #FF6A00;
+  --dx-thread-deep: #8D4329;
+  --dx-thread-wash: #321F24;
+  --dx-on-thread: #000000;
+  --dx-success-text: #2FD07A;
+  --dx-error-text: #FE5855;
+  --dx-warn-text: #F08A1C;
+  --dx-success-wash: #1F292B;
+  --dx-error-wash: #321C26;
+  --dx-warn-wash: #2F2225;
+}
+
+/* ember */
+:root[data-dx-pairing="ember"] {
+  color-scheme: dark;
+  --dx-cloth: #0F1620;
+  --dx-surface: #18212E;
+  --dx-text: #E8EAF0;
+  --dx-thread: #FF6A00;
+  --dx-success: #2FD07A;
+  --dx-error: #FF4D4D;
+  --dx-surface-dim: #131B27;
+  --dx-surface-bright: #262F3B;
+  --dx-text-muted: #9398A0;
+  --dx-line: #2C323D;
+  --dx-line-strong: #777C85;
+  --dx-thread-line: #FF6A00;
+  --dx-thread-deep: #8B462B;
+  --dx-thread-wash: #2D2325;
+  --dx-on-thread: #000000;
+  --dx-success-text: #2FD07A;
+  --dx-error-text: #FE5F5B;
+  --dx-warn-text: #F08A1C;
+  --dx-success-wash: #162C2D;
+  --dx-error-wash: #2E2128;
+  --dx-warn-wash: #2A2626;
+}
+
+/* filigree */
+:root[data-dx-pairing="filigree"] {
+  color-scheme: dark;
+  --dx-cloth: #0E0F12;
+  --dx-surface: #181A1F;
+  --dx-text: #E6E8EC;
+  --dx-thread: #C9CFD8;
+  --dx-success: #2FD07A;
+  --dx-error: #FF4D4D;
+  --dx-surface-dim: #131418;
+  --dx-surface-bright: #25282D;
+  --dx-text-muted: #929397;
+  --dx-line: #2A2B2F;
+  --dx-line-strong: #6F7174;
+  --dx-thread-line: #C9CFD8;
+  --dx-thread-deep: #6D7076;
+  --dx-thread-wash: #232529;
+  --dx-on-thread: #000000;
+  --dx-success-text: #2FD07A;
+  --dx-error-text: #FF4D4D;
+  --dx-warn-text: #F08A1C;
+  --dx-success-wash: #17261F;
+  --dx-error-wash: #2B1A1B;
+  --dx-warn-wash: #281F19;
+}

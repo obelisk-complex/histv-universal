@@ -1,0 +1,47 @@
+/* Doublet components v0.6, vendored subset for HISTV. Requires doublet-tokens.css.
+   Rules are copied unchanged from the Doublet archive's css/components.css; every colour is a token.
+   Left out: page typography, links, buttons, fields, panel, table, steps, code (app.css sets the
+   GUI-density versions), the toy and .dx-glow. */
+
+*, *::before, *::after { box-sizing: border-box; }
+
+:focus-visible { outline: none; box-shadow: var(--dx-focus); border-radius: var(--dx-radius-sm); }
+
+/* Label: the mono eyebrow. Segments are separated with " / ". */
+.dx-label {
+  font: 500 var(--dx-text-xs) / 1.4 var(--dx-font-mono);
+  letter-spacing: var(--dx-tracking-label);
+  text-transform: uppercase;
+  color: var(--dx-text-muted);
+}
+
+/* Section label: the label runs into a hairline that carries on to the right edge. */
+.dx-section-label { display: flex; align-items: center; gap: var(--dx-space-4); }
+.dx-section-label::after { content: ""; flex: 1; border-top: var(--dx-hairline) solid var(--dx-line); }
+
+/* Accent text. thread-line only clears 3:1, so this is for large display text (1.5rem and up), never body copy. */
+.dx-accent { color: var(--dx-thread-line); }
+
+/* Seam: the one structural thread line each artefact carries. Use once per view. */
+.dx-seam { border-top: var(--dx-seam) solid var(--dx-thread-line); }
+
+.dx-muted { color: var(--dx-text-muted); }
+
+/* Status: filled wash plus a text glyph, so it never reads as thread and never relies on hue. */
+.dx-badge {
+  display: inline-flex; align-items: center; gap: var(--dx-space-2);
+  padding: var(--dx-space-1) var(--dx-space-3); border-radius: var(--dx-radius-sm);
+  font: 500 var(--dx-text-xs) / 1.6 var(--dx-font-mono); letter-spacing: 0.04em;
+  background: var(--dx-surface-bright); color: var(--dx-text);
+}
+.dx-badge::before { content: "\2022"; }
+.dx-badge-success { background: var(--dx-success-wash); color: var(--dx-success-text); }
+.dx-badge-success::before { content: "\2713"; }
+.dx-badge-error { background: var(--dx-error-wash); color: var(--dx-error-text); }
+.dx-badge-error::before { content: "\2715"; }
+.dx-badge-warn { background: var(--dx-warn-wash); color: var(--dx-warn-text); }
+.dx-badge-warn::before { content: "!"; }
+
+@media (prefers-reduced-motion: reduce) {
+  *, *::before, *::after { transition-duration: 0.01ms !important; animation-duration: 0.01ms !important; }
+}

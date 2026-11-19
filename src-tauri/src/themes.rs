@@ -117,12 +117,12 @@ fn theme_from_core(
 fn default_dark_theme() -> Theme {
     theme_from_core(
         "Default Dark",
-        "#1E1E1E", // background
-        "#373737", // surface
-        "#DCDCDC", // text
-        "#0078D7", // primary
-        "#4ade80", // success
-        "#f87171", // error
+        "#101014", // background
+        "#24242B", // surface
+        "#E6E6EA", // text
+        "#0A6CFF", // primary
+        "#22e07a", // success
+        "#ff5a5a", // error
     )
 }
 
