@@ -273,7 +273,7 @@ fn default_light_theme() -> Theme {
 }
 
 fn jessica_dark_theme() -> Theme {
-    theme_from_core(
+    let mut t = theme_from_core(
         "Jessica Dark",
         "#101014", // background
         "#24242B", // surface
@@ -281,7 +281,10 @@ fn jessica_dark_theme() -> Theme {
         "#5B2EBC", // primary
         "#00ea79", // success
         "#ff525a", // error
-    )
+    );
+    // Brighter grey for labels and column headers (derived value is #9D9D9E)
+    t.colors.insert("text-muted".into(), "#B8B8BC".into());
+    t
 }
 
 fn solarised_dark_theme() -> Theme {

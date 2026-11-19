@@ -6,6 +6,7 @@
     "primary": "#5B2EBC",
     "background": "#101014",
     "success": "#00ea79",
-    "text": "#DCDCDC"
+    "text": "#DCDCDC",
+    "text-muted": "#B8B8BC"
   }
 }

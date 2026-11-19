@@ -589,15 +589,23 @@
     function setupSplitter() {
       const splitter = $('#splitter');
       const splitterToggle = $('#splitter-toggle');
-      const leftPanel = $('#left-panel');
       const rightPanel = $('#right-panel');
       const mainArea = $('#main-area');
       let dragging = false;
 
-      // Read the CSS min/max constraints on the right panel
-      const rpStyle = getComputedStyle(rightPanel);
-      const rightMinW = parseInt(rpStyle.minWidth, 10) || 280;
-      const rightMaxW = parseInt(rpStyle.maxWidth, 10) || 520;
+      // The rail (#right-panel) sits on the left and owns the width; the queue
+      // flexes to fill. The width lives in --rail-w on #main-area, so collapsing
+      // keeps it and re-opening restores it. Column mode ignores the variable.
+      const QUEUE_MIN_W = 340;      // matches #left-panel min-width
+      const SPLITTER_W = 9;         // matches #splitter width
+      function clampRail(w) {
+        const cs = getComputedStyle(rightPanel);
+        const minW = parseInt(cs.minWidth, 10) || 258;
+        const maxW = parseInt(cs.maxWidth, 10) || 460;
+        const room = mainArea.getBoundingClientRect().width - QUEUE_MIN_W - SPLITTER_W;
+        return Math.max(minW, Math.min(maxW, room, w));
+      }
+      const isColumnMode = () => window.matchMedia('(max-width: 820px)').matches;
 
       // ── Splitter drag ──
       splitter.addEventListener('mousedown', (e) => {
@@ -610,15 +618,8 @@
 
       document.addEventListener('mousemove', (e) => {
         if (!dragging) return;
-        const rect = mainArea.getBoundingClientRect();
-        const offset = e.clientX - rect.left;
-        const minLeft = 220;
-        // Clamp so right panel stays between its min and max width
-        const maxLeft = rect.width - rightMinW - 5;
-        const minLeftFromMax = rect.width - rightMaxW - 5;
-        const clamped = Math.max(Math.max(minLeft, minLeftFromMax), Math.min(maxLeft, offset));
-        leftPanel.style.flex = 'none';
-        leftPanel.style.width = clamped + 'px';
+        const offset = e.clientX - mainArea.getBoundingClientRect().left;
+        mainArea.style.setProperty('--rail-w', clampRail(offset) + 'px');
       });
 
       document.addEventListener('mouseup', () => {
@@ -628,47 +629,26 @@
         }
       });
 
-      // ── Toggle button ──
+      // ── Toggle button (the rail is on the left: hide points left, show points right) ──
       splitterToggle.addEventListener('click', (e) => {
         e.stopPropagation();
         settingsPanelCollapsed = !settingsPanelCollapsed;
-
-        if (settingsPanelCollapsed) {
-          rightPanel.classList.add('collapsed');
-          splitterToggle.innerHTML = '&#x25C0;';
-          splitterToggle.title = 'Show settings panel';
-          splitterToggle.setAttribute('aria-label', 'Show settings panel');
-          leftPanel.style.flex = '1';
-          leftPanel.style.width = '';
-        } else {
-          rightPanel.classList.remove('collapsed');
-          splitterToggle.innerHTML = '&#x25B6;';
-          splitterToggle.title = 'Hide settings panel';
-          splitterToggle.setAttribute('aria-label', 'Hide settings panel');
-          // Let flex layout restore the split naturally
-          leftPanel.style.flex = 'none';
-          const mainRect = mainArea.getBoundingClientRect();
-          // Default to giving the right panel ~480px
-          const desiredRight = Math.min(rightMaxW, Math.max(rightMinW, 480));
-          leftPanel.style.width = (mainRect.width - desiredRight - 5) + 'px';
-        }
+        rightPanel.classList.toggle('collapsed', settingsPanelCollapsed);
+        const label = settingsPanelCollapsed ? 'Show settings panel' : 'Hide settings panel';
+        splitterToggle.innerHTML = settingsPanelCollapsed ? '&#x25B6;' : '&#x25C0;';
+        splitterToggle.title = label;
+        splitterToggle.setAttribute('aria-label', label);
       });
 
-      // ── Window resize - clamp left panel so right panel stays within min/max ──
+      // ── Window resize: keep a dragged rail width inside its limits ──
       let resizeDebounce;
       window.addEventListener('resize', () => {
         clearTimeout(resizeDebounce);
         resizeDebounce = setTimeout(() => {
-          if (settingsPanelCollapsed) return;
-          if (!leftPanel.style.width) return;
-          const mainRect = mainArea.getBoundingClientRect();
-          let currentLeft = parseInt(leftPanel.style.width, 10);
-          const maxLeft = mainRect.width - rightMinW - 5;
-          const minLeft = mainRect.width - rightMaxW - 5;
-          const clamped = Math.max(220, Math.max(minLeft, Math.min(maxLeft, currentLeft)));
-          if (clamped !== currentLeft) {
-            leftPanel.style.width = clamped + 'px';
-          }
+          const current = parseInt(mainArea.style.getPropertyValue('--rail-w'), 10);
+          if (!current || isColumnMode()) return;
+          const clamped = clampRail(current);
+          if (clamped !== current) mainArea.style.setProperty('--rail-w', clamped + 'px');
         }, 100);
       });
     }

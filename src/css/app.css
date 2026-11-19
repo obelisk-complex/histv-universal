@@ -463,7 +463,7 @@ tr.status-cancelled .status-badge { background: var(--dx-warn-wash); color: var(
   .profile-card[data-profile="archive-balanced"]::after { display: none; }   /* chip clutters the compact row */
   .profile-card[data-profile="archive-balanced"] .profile-name { padding-right: 0; }
   #splitter { display: none; }                               /* no horizontal resize in column mode */
-  #left-panel { min-width: 0; width: auto !important; }       /* drop any inline width set by the splitter drag */
+  #left-panel { min-width: 0; }
   /* queue hides resolution + HDR too; keeps Filename / From / To / Status */
   #queue-table th:nth-child(5), #queue-table td:nth-child(5),
   #queue-table th:nth-child(6), #queue-table td:nth-child(6) { display: none; }
