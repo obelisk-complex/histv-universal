@@ -267,10 +267,11 @@
     async function loadThemes(savedConfig) {
       try {
         // Doublet pairings ship in doublet-tokens.css and head the list;
-        // user themes from the themes/ folder follow.
+        // user themes from the themes/ folder follow. A user theme with the
+        // same name as a Doublet pairing replaces that pairing.
         const userThemes = await invoke('get_themes');
-        themes = DOUBLET_THEMES.concat(
-          userThemes.filter(t => !DOUBLET_THEMES.some(d => d.name === t.name)));
+        const userNames = new Set(userThemes.map(t => t.name));
+        themes = DOUBLET_THEMES.filter(d => !userNames.has(d.name)).concat(userThemes);
         selTheme.innerHTML = '';
         for (const t of themes) {
           const opt = document.createElement('option');
@@ -305,7 +306,9 @@
     ];
 
     // Theme JSON keys that feed the derivation; any other key is passed
-    // through as a custom property (log-* and future variables).
+    // through as a custom property (log-* and future variables). Keys
+    // starting with dx- are never passed through: they would override the
+    // derived tokens and skip contrast enforcement.
     const THEME_DERIVATION_KEYS = new Set([
       'background', 'surface', 'text', 'primary', 'success', 'error',
       'base-100', 'base-300', 'base-content', 'secondary', 'info',
@@ -313,6 +316,7 @@
       'row-info', 'row-done', 'row-failed', 'row-cancelled',
       'icon-done', 'icon-failed', 'icon-cancelled',
       'status-done', 'status-failed', 'status-cancelled',
+      'text-on-primary',
     ]);
 
     let appliedThemeProps = [];
@@ -350,7 +354,7 @@
         return false;
       };
       for (const [key, value] of Object.entries(c)) {
-        if (!THEME_DERIVATION_KEYS.has(key) && /^[a-z0-9-]+$/.test(key) && isValidCssColor(value)) {
+        if (!key.startsWith('dx-') && !THEME_DERIVATION_KEYS.has(key) && /^[a-z0-9-]+$/.test(key) && isValidCssColor(value)) {
           setProp(key, value);
         }
       }
@@ -368,11 +372,11 @@
         for (const k of keys) { const h = hex6(c[k]); if (h) return h; }
         return null;
       };
-      const cloth   = pick('background', 'base-100') || '#1E1E1E';
-      const surface = pick('surface', 'base-300')    || '#373737';
-      const thread  = pick('primary')                || '#0078D7';
-      const success = pick('success')                || '#4ade80';
-      const error   = pick('error')                  || '#f87171';
+      const cloth   = pick('background', 'base-100') || '#101014';
+      const surface = pick('surface', 'base-300')    || '#24242B';
+      const thread  = pick('primary')                || '#0A6CFF';
+      const success = pick('success')                || '#22e07a';
+      const error   = pick('error')                  || '#ff5a5a';
       const light   = isLightColor(cloth);
       const pole    = light ? '#000000' : '#ffffff';
 
@@ -394,7 +398,7 @@
       const warnWash      = pick('row-cancelled')    || wash(warn);
 
       const grounds = [cloth, surfaceDim, surface, surfaceBright, threadWash];
-      const text = ensure(pick('text', 'base-content') || '#DCDCDC', grounds, 4.5);
+      const text = ensure(pick('text', 'base-content') || '#E6E6EA', grounds, 4.5);
 
       return {
         'dx-cloth': cloth,
@@ -411,7 +415,7 @@
         'dx-thread-line': ensure(pick('accent') || thread, grounds, 3),
         'dx-thread-deep': blendHex(thread, cloth, 0.5),
         'dx-thread-wash': threadWash,
-        'dx-on-thread': bestTextOn(thread),
+        'dx-on-thread': pick('text-on-primary') || bestTextOn(thread),
         'dx-success-text': ensure(pick('icon-done', 'status-done') || success, grounds.concat(successWash), 4.5),
         'dx-error-text': ensure(pick('icon-failed', 'status-failed') || error, grounds.concat(errorWash), 4.5),
         'dx-warn-text': ensure(warn, grounds.concat(warnWash), 4.5),

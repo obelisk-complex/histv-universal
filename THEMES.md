@@ -6,7 +6,7 @@ Honey, I Shrunk The Vids supports custom themes via simple JSON files. You pick 
 
 The app's look follows the Doublet design system. Four dark Doublet pairings head the Theme dropdown: Doublet (blue thread on blue-black), Doublet Dusk, Doublet Ember and Doublet Filigree. They are built into the app and have no JSON file.
 
-Your own themes use the same six-colour format and appear below them.
+Your own themes use the same six-colour format and appear below them. A theme file named "Doublet", "Doublet Dusk", "Doublet Ember" or "Doublet Filigree" replaces the built-in pairing of that name.
 
 ## Where to put themes
 
@@ -20,12 +20,12 @@ A theme file is a JSON object with a `name` and a `colors` object containing 6 c
 {
   "name": "My Theme",
   "colors": {
-    "background": "#1E1E1E",
-    "surface": "#373737",
-    "text": "#DCDCDC",
-    "primary": "#0078D7",
-    "success": "#4ade80",
-    "error": "#f87171"
+    "background": "#101014",
+    "surface": "#24242B",
+    "text": "#E6E6EA",
+    "primary": "#0A6CFF",
+    "success": "#22e07a",
+    "error": "#ff5a5a"
   }
 }
 ```
@@ -53,9 +53,9 @@ From your 6 colours, the app computes:
 - **Accent line** - your primary, lightened (darkened on a light background) until it is visible against every surface
 - **Washes** - primary, success, error and amber at 12% over the background, used behind the selected row and the status badges
 - **Status text** - success, error and amber, adjusted until readable on their wash
-- **Text on the accent** - black or white, whichever reads better on your primary
+- **Text on the accent** - black or white, whichever reads better on your primary (override with `text-on-primary`)
 
-**Contrast is enforced.** Text colours are nudged toward white (toward black on a light background) until they reach 4.5:1 on every surface; lines until 3:1. A theme with low-contrast text will look slightly brighter in the app than in its JSON. Colours you pass through as extra keys (`log-*`) are used exactly as written.
+**Contrast is enforced.** Text colours are nudged toward white (toward black on a light background) until they reach 4.5:1 on every surface; lines until 3:1. A theme with low-contrast text will look slightly brighter in the app than in its JSON. Colours you pass through as extra keys (`log-*`) are used exactly as written. Keys starting with `dx-` are ignored, so a theme cannot override the derived tokens and skip this check.
 
 Light backgrounds work: the derivation flips direction when `background` is light.
 
@@ -102,6 +102,7 @@ Power users can override any derived value by adding extra keys to the `colors` 
 | `log-file` | Text |
 | `log-text` | Text |
 | `log-cmd` | Muted text |
+| `text-on-primary` | Black or white, whichever reads better on primary. Used for text on the Start button and other primary fills; an override is used exactly as written, with no contrast check. |
 
 Override values must be hex colours (`#rgb`, `#rrggbb`), except `log-*`, which also accept `rgb()` and `rgba()`.
 

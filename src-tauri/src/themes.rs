@@ -30,6 +30,9 @@ pub fn scan_themes_folder(app: &AppHandle) -> Vec<Theme> {
     let dir = themes_dir(app);
     let mut themes = Vec::new();
 
+    // Upgrade an untouched pre-Doublet Default Dark file before the scan reads it.
+    upgrade_default_dark_if_unedited(&dir);
+
     if dir.exists() && dir.is_dir() {
         if let Ok(entries) = fs::read_dir(&dir) {
             for entry in entries.flatten() {
@@ -85,8 +88,53 @@ pub fn scan_themes_folder(app: &AppHandle) -> Vec<Theme> {
 fn write_builtin_if_missing(dir: &Path, filename: &str, theme: &Theme) {
     let path = dir.join(filename);
     if !path.exists() {
-        if let Ok(json) = serde_json::to_string_pretty(theme) {
-            let _ = fs::write(path, json);
+        write_theme_file(&path, theme);
+    }
+}
+
+fn write_theme_file(path: &Path, theme: &Theme) {
+    if let Ok(json) = serde_json::to_string_pretty(theme) {
+        let _ = fs::write(path, json);
+    }
+}
+
+const DEFAULT_DARK_FILE: &str = "default-dark.json";
+
+/// The Default Dark colours shipped before the Doublet redesign.
+const PREVIOUS_DEFAULT_DARK: [(&str, &str); 6] = [
+    ("background", "#1E1E1E"),
+    ("surface", "#373737"),
+    ("text", "#DCDCDC"),
+    ("primary", "#0078D7"),
+    ("success", "#4ade80"),
+    ("error", "#f87171"),
+];
+
+fn is_previous_default_dark(theme: &Theme) -> bool {
+    theme.colors.len() == PREVIOUS_DEFAULT_DARK.len()
+        && PREVIOUS_DEFAULT_DARK.iter().all(|(key, value)| {
+            theme
+                .colors
+                .get(*key)
+                .is_some_and(|v| v.trim().eq_ignore_ascii_case(value))
+        })
+}
+
+/// Create default-dark.json if it is missing, and replace it with the current
+/// built-in if it still holds exactly the previously shipped colours. Any other
+/// content is a user edit and is left alone.
+fn upgrade_default_dark_if_unedited(dir: &Path) {
+    let path = dir.join(DEFAULT_DARK_FILE);
+    let current = default_dark_theme();
+    let Ok(contents) = fs::read_to_string(&path) else {
+        if !path.exists() && dir.is_dir() {
+            write_theme_file(&path, &current);
+        }
+        return;
+    };
+    if let Ok(existing) = serde_json::from_str::<Theme>(&contents) {
+        if is_previous_default_dark(&existing) {
+            write_theme_file(&path, &current);
         }
     }
 }
@@ -185,4 +233,82 @@ fn vempire_theme() -> Theme {
     // Vempire uses a distinct accent colour
     t.colors.insert("accent".into(), "#FF79C6".into());
     t
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn scratch_dir(tag: &str) -> PathBuf {
+        let dir = std::env::temp_dir().join(format!(
+            "histv-themes-test-{}-{tag}",
+            std::process::id()
+        ));
+        let _ = fs::remove_dir_all(&dir);
+        fs::create_dir_all(&dir).unwrap();
+        dir
+    }
+
+    fn read_theme(dir: &Path) -> Theme {
+        let text = fs::read_to_string(dir.join(DEFAULT_DARK_FILE)).unwrap();
+        serde_json::from_str(&text).unwrap()
+    }
+
+    fn previous_theme() -> Theme {
+        theme_from_core(
+            "Default Dark",
+            "#1E1E1E",
+            "#373737",
+            "#DCDCDC",
+            "#0078D7",
+            "#4ade80",
+            "#f87171",
+        )
+    }
+
+    #[test]
+    fn old_content_file_is_upgraded() {
+        let dir = scratch_dir("upgrade");
+        write_theme_file(&dir.join(DEFAULT_DARK_FILE), &previous_theme());
+        upgrade_default_dark_if_unedited(&dir);
+        assert_eq!(read_theme(&dir).colors, default_dark_theme().colors);
+        let _ = fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn edited_file_is_preserved() {
+        let dir = scratch_dir("edited");
+        let mut edited = previous_theme();
+        edited.colors.insert("primary".into(), "#FF00AA".into());
+        write_theme_file(&dir.join(DEFAULT_DARK_FILE), &edited);
+        upgrade_default_dark_if_unedited(&dir);
+        assert_eq!(read_theme(&dir).colors, edited.colors);
+
+        // An extra key is also an edit.
+        let mut extra = previous_theme();
+        extra.colors.insert("accent".into(), "#FFFFFF".into());
+        write_theme_file(&dir.join(DEFAULT_DARK_FILE), &extra);
+        upgrade_default_dark_if_unedited(&dir);
+        assert_eq!(read_theme(&dir).colors, extra.colors);
+        let _ = fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn missing_file_is_created() {
+        let dir = scratch_dir("missing");
+        upgrade_default_dark_if_unedited(&dir);
+        assert_eq!(read_theme(&dir).colors, default_dark_theme().colors);
+        let _ = fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn new_content_file_is_unchanged() {
+        let dir = scratch_dir("current");
+        let path = dir.join(DEFAULT_DARK_FILE);
+        write_theme_file(&path, &default_dark_theme());
+        let before = fs::read_to_string(&path).unwrap();
+        upgrade_default_dark_if_unedited(&dir);
+        assert_eq!(fs::read_to_string(&path).unwrap(), before);
+        let _ = fs::remove_dir_all(&dir);
+    }
 }

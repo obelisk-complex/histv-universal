@@ -36,6 +36,15 @@
 *, *::before, *::after { margin: 0; padding: 0; }
 [hidden] { display: none !important; }
 
+/* Focus ring. doublet-components.css sets box-shadow and border-radius on every
+   :focus-visible element, which replaces a control's own shadow and radius. The
+   ring is an outline here instead, and the two properties go back to whatever the
+   element's own rules say. This rule sits above every control rule so they win. */
+:focus-visible {
+  outline: 2px solid var(--dx-thread-line); outline-offset: 2px;
+  box-shadow: revert; border-radius: revert;
+}
+
 /* Density: the Doublet type and space scales are kept, on a 13px root (the
    size this layout and its breakpoints were built around). Body is the md
    step, table data and controls sm, labels xs. */
@@ -152,7 +161,7 @@ body {
 }
 .form-row input:hover, .form-row select:hover, .settings-footer select:hover, #destination-bar input:hover { border-color: var(--dx-text-muted); }
 .form-row input:focus, .form-row select:focus, .settings-footer select:focus, #destination-bar input:focus {
-  border-color: var(--dx-thread-line); box-shadow: var(--dx-focus);
+  border-color: var(--dx-thread-line); box-shadow: var(--dx-focus); outline: none;
 }
 input[readonly], input:disabled { opacity: 0.5; }
 select option { background: var(--dx-surface-bright); color: var(--dx-text); }
@@ -189,7 +198,7 @@ input[type="radio"]:checked::after { content: ""; position: absolute; inset: 4px
 .rc-toggle button:not(:last-child) { border-right: var(--dx-hairline) solid var(--dx-line); }
 .rc-toggle button:hover:not(.active) { background: var(--dx-thread-wash); color: var(--dx-text); }
 .rc-toggle button.active { background: var(--dx-surface-bright); color: var(--dx-text); box-shadow: inset 0 calc(-1 * var(--dx-seam)) 0 var(--dx-thread-line); }
-.rc-toggle button:focus-visible { outline: none; box-shadow: inset 0 0 0 2px var(--dx-thread-line); position: relative; z-index: 1; }
+.rc-toggle button:focus-visible { outline-offset: -2px; position: relative; z-index: 1; }
 
 /* Tooltips */
 .has-tooltip { position: relative; cursor: help; }
@@ -379,7 +388,6 @@ tr.status-cancelled .status-badge { background: var(--dx-warn-wash); color: var(
 .log-filter-btn { appearance: none; padding: var(--dx-space-1) var(--dx-space-2); font: 500 var(--dx-text-xs) / 1.4 var(--dx-font-mono); letter-spacing: var(--dx-tracking-label); text-transform: uppercase; color: var(--dx-text-muted); background: transparent; border: none; border-radius: var(--dx-radius-sm); cursor: pointer; transition: color var(--ease), background-color var(--ease); }
 .log-filter-btn:hover { color: var(--dx-text); background: var(--dx-thread-wash); }
 .log-filter-btn.active { color: var(--dx-text); box-shadow: inset 0 calc(-1 * var(--dx-seam)) 0 var(--dx-thread-line); }
-.log-filter-btn:focus-visible { box-shadow: var(--dx-focus); }
 
 #log-content { flex: 1 1 auto; overflow-y: auto; padding: var(--dx-space-2) var(--dx-space-5); font: var(--dx-text-sm) / 1.55 var(--dx-font-mono); color: var(--log-text); background: var(--dx-surface-dim); white-space: pre-wrap; word-break: break-all; -webkit-user-select: text; user-select: text; cursor: text; }
 /* Status lines carry a glyph as well as a colour. */
