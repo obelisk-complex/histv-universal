@@ -1,11 +1,11 @@
 {
   "name": "Jessica Dark",
   "colors": {
-    "error": "#f87171",
-    "surface": "#373737",
-    "primary": "#6F2D86",
-    "background": "#1E1E1E",
-    "success": "#4ade80",
+    "error": "#ff525a",
+    "surface": "#232032",
+    "primary": "#5B2EBC",
+    "background": "#0E0D17",
+    "success": "#00ea79",
     "text": "#DCDCDC"
   }
 }

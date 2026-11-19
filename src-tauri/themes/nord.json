@@ -1,11 +1,11 @@
 {
   "name": "Nord",
   "colors": {
-    "background": "#2E3440",
-    "primary": "#88C0D0",
-    "success": "#4ade80",
+    "background": "#1C222D",
+    "primary": "#76C3D8",
+    "success": "#00ea79",
     "text": "#ECEFF4",
-    "error": "#f87171",
-    "surface": "#434C5E"
+    "error": "#ff525a",
+    "surface": "#2E3747"
   }
 }

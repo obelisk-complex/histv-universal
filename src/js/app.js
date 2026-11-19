@@ -363,10 +363,12 @@
       root.style.colorScheme = isLightColor(tokens['dx-cloth']) ? 'light' : 'dark';
     }
 
-    // Six seeds in, the full --dx-* colour set out. Text tokens are moved
-    // toward white (black on a light ground) until they reach 4.5:1 on every
-    // ground they sit on; line tokens until 3:1. Explicit overrides in the
-    // theme JSON are used as the starting point instead of the derived value.
+    // Six seeds in, the full --dx-* colour set out. Neutral text and line
+    // tokens are moved toward white (black on a light ground) until they reach
+    // 4.5:1 / 3:1 on every ground they sit on. Chromatic tokens (thread line,
+    // success, error, warn) change OKLCH lightness only, so hue and chroma
+    // survive. Explicit overrides in the theme JSON are used as the starting
+    // point instead of the derived value.
     function deriveDoubletTokens(c) {
       const pick = (...keys) => {
         for (const k of keys) { const h = hex6(c[k]); if (h) return h; }
@@ -387,6 +389,7 @@
         }
         return pole;
       };
+      const ensureHue = (hex, grounds, ratio) => liftLightness(hex, grounds, ratio, light);
       const wash = (hex) => blendHex(hex, cloth, 0.12);
 
       const surfaceDim    = pick('surface-dim')    || blendHex(surface, cloth, 0.5);
@@ -412,13 +415,13 @@
         'dx-text-muted': ensure(pick('text-muted', 'secondary') || blendHex(text, cloth, 0.6), grounds, 4.5),
         'dx-line': blendHex(text, cloth, 0.14),
         'dx-line-strong': ensure(blendHex(text, cloth, 0.45), grounds, 3),
-        'dx-thread-line': ensure(pick('accent') || thread, grounds, 3),
+        'dx-thread-line': ensureHue(pick('accent') || thread, grounds, 3),
         'dx-thread-deep': blendHex(thread, cloth, 0.5),
         'dx-thread-wash': threadWash,
         'dx-on-thread': pick('text-on-primary') || bestTextOn(thread),
-        'dx-success-text': ensure(pick('icon-done', 'status-done') || success, grounds.concat(successWash), 4.5),
-        'dx-error-text': ensure(pick('icon-failed', 'status-failed') || error, grounds.concat(errorWash), 4.5),
-        'dx-warn-text': ensure(warn, grounds.concat(warnWash), 4.5),
+        'dx-success-text': ensureHue(pick('icon-done', 'status-done') || success, grounds.concat(successWash), 4.5),
+        'dx-error-text': ensureHue(pick('icon-failed', 'status-failed') || error, grounds.concat(errorWash), 4.5),
+        'dx-warn-text': ensureHue(warn, grounds.concat(warnWash), 4.5),
         'dx-success-wash': successWash,
         'dx-error-wash': errorWash,
         'dx-warn-wash': warnWash,
@@ -438,6 +441,73 @@
     function contrastRatio(a, b) {
       const la = relLuminance(a), lb = relLuminance(b);
       return (Math.max(la, lb) + 0.05) / (Math.min(la, lb) + 0.05);
+    }
+
+    // ── OKLab / OKLCH (Ottosson) ─────────────────────────────────
+    // Used only to change lightness while keeping hue and chroma.
+
+    function srgbToLinear(v) {
+      v /= 255;
+      return v <= 0.04045 ? v / 12.92 : Math.pow((v + 0.055) / 1.055, 2.4);
+    }
+    function linearToSrgb(v) {
+      return 255 * (v <= 0.0031308 ? 12.92 * v : 1.055 * Math.pow(v, 1 / 2.4) - 0.055);
+    }
+
+    // Hex to [L, C, h] (L 0..1, C ~0..0.4, h in degrees).
+    function hexToOklch(hex) {
+      const [r, g, b] = hexToRgb(hex).map(srgbToLinear);
+      const l = Math.cbrt(0.4122214708 * r + 0.5363325363 * g + 0.0514459929 * b);
+      const m = Math.cbrt(0.2119034982 * r + 0.6806995451 * g + 0.1073969566 * b);
+      const s = Math.cbrt(0.0883024619 * r + 0.2817188376 * g + 0.6299787005 * b);
+      const L = 0.2104542553 * l + 0.7936177850 * m - 0.0040720468 * s;
+      const a = 1.9779984951 * l - 2.4285922050 * m + 0.4505937099 * s;
+      const bb = 0.0259040371 * l + 0.7827717662 * m - 0.8086757660 * s;
+      return [L, Math.hypot(a, bb), (Math.atan2(bb, a) * 180 / Math.PI + 360) % 360];
+    }
+
+    // [L, C, h] to linear sRGB components (may fall outside 0..1).
+    function oklchToLinear(L, C, h) {
+      const a = C * Math.cos(h * Math.PI / 180), b = C * Math.sin(h * Math.PI / 180);
+      const l = Math.pow(L + 0.3963377774 * a + 0.2158037573 * b, 3);
+      const m = Math.pow(L - 0.1055613458 * a - 0.0638541728 * b, 3);
+      const s = Math.pow(L - 0.0894841775 * a - 1.2914855480 * b, 3);
+      return [
+        4.0767416621 * l - 3.3077115913 * m + 0.2309699292 * s,
+        -1.2684380046 * l + 2.6097574011 * m - 0.3413193965 * s,
+        -0.0041960863 * l - 0.7034186147 * m + 1.7076147010 * s,
+      ];
+    }
+
+    // [L, C, h] to hex. A colour outside sRGB loses chroma (hue and lightness kept).
+    function oklchToHex(L, C, h) {
+      const inGamut = (c) => oklchToLinear(L, c, h).every(v => v >= -0.0005 && v <= 1.0005);
+      let lo = 0, hi = C;
+      if (!inGamut(C)) {
+        for (let i = 0; i < 24; i++) {
+          const mid = (lo + hi) / 2;
+          if (inGamut(mid)) lo = mid; else hi = mid;
+        }
+        C = lo;
+      }
+      const [r, g, b] = oklchToLinear(L, C, h).map(v => linearToSrgb(Math.max(0, Math.min(1, v))));
+      return rgbToHex(r, g, b);
+    }
+
+    // Move a colour's OKLCH lightness toward white (black when `light`) until it
+    // reaches `ratio`:1 on every ground. Hue is kept; chroma is kept unless the
+    // colour leaves sRGB. Returns the input unchanged if it already passes.
+    function liftLightness(hex, grounds, ratio, light) {
+      const passes = (c) => grounds.every(g => contrastRatio(c, g) >= ratio);
+      if (passes(hex)) return hex;
+      const [L0, C, h] = hexToOklch(hex);
+      const pole = light ? '#000000' : '#ffffff';
+      const dir = light ? -1 : 1;
+      for (let L = L0 + dir * 0.005; light ? L > 0 : L < 1; L += dir * 0.005) {
+        const candidate = oklchToHex(L, C, h);
+        if (passes(candidate)) return candidate;
+      }
+      return pole;
     }
 
     // ── Colour helper functions ──────────────────────────────────

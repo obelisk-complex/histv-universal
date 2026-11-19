@@ -30,8 +30,8 @@ pub fn scan_themes_folder(app: &AppHandle) -> Vec<Theme> {
     let dir = themes_dir(app);
     let mut themes = Vec::new();
 
-    // Upgrade an untouched pre-Doublet Default Dark file before the scan reads it.
-    upgrade_default_dark_if_unedited(&dir);
+    // Upgrade untouched built-in theme files before the scan reads them.
+    upgrade_builtin_themes_if_unedited(&dir);
 
     if dir.exists() && dir.is_dir() {
         if let Ok(entries) = fs::read_dir(&dir) {
@@ -98,21 +98,84 @@ fn write_theme_file(path: &Path, theme: &Theme) {
     }
 }
 
-const DEFAULT_DARK_FILE: &str = "default-dark.json";
+/// A built-in theme file whose colours have changed between releases.
+struct BuiltinUpgrade {
+    file: &'static str,
+    /// Exactly the keys and values shipped before the change. A file holding
+    /// anything else (changed value, extra or missing key) is a user edit.
+    previous: &'static [(&'static str, &'static str)],
+    current: fn() -> Theme,
+}
 
-/// The Default Dark colours shipped before the Doublet redesign.
-const PREVIOUS_DEFAULT_DARK: [(&str, &str); 6] = [
-    ("background", "#1E1E1E"),
-    ("surface", "#373737"),
-    ("text", "#DCDCDC"),
-    ("primary", "#0078D7"),
-    ("success", "#4ade80"),
-    ("error", "#f87171"),
+const BUILTIN_UPGRADES: [BuiltinUpgrade; 5] = [
+    // Pre-Doublet Default Dark.
+    BuiltinUpgrade {
+        file: "default-dark.json",
+        previous: &[
+            ("background", "#1E1E1E"),
+            ("surface", "#373737"),
+            ("text", "#DCDCDC"),
+            ("primary", "#0078D7"),
+            ("success", "#4ade80"),
+            ("error", "#f87171"),
+        ],
+        current: default_dark_theme,
+    },
+    // Dark themes before the saturation and depth tuning.
+    BuiltinUpgrade {
+        file: "jessica-dark.json",
+        previous: &[
+            ("background", "#1E1E1E"),
+            ("surface", "#373737"),
+            ("text", "#DCDCDC"),
+            ("primary", "#6F2D86"),
+            ("success", "#4ade80"),
+            ("error", "#f87171"),
+        ],
+        current: jessica_dark_theme,
+    },
+    BuiltinUpgrade {
+        file: "solarised-dark.json",
+        previous: &[
+            ("background", "#002B36"),
+            ("surface", "#0A4050"),
+            ("text", "#93A1A1"),
+            ("primary", "#268BD2"),
+            ("success", "#4ade80"),
+            ("error", "#f87171"),
+        ],
+        current: solarised_dark_theme,
+    },
+    BuiltinUpgrade {
+        file: "nord.json",
+        previous: &[
+            ("background", "#2E3440"),
+            ("surface", "#434C5E"),
+            ("text", "#ECEFF4"),
+            ("primary", "#88C0D0"),
+            ("success", "#4ade80"),
+            ("error", "#f87171"),
+        ],
+        current: nord_theme,
+    },
+    BuiltinUpgrade {
+        file: "vempire.json",
+        previous: &[
+            ("background", "#282A36"),
+            ("surface", "#44475A"),
+            ("text", "#F8F8F2"),
+            ("primary", "#BD93F9"),
+            ("success", "#4ade80"),
+            ("error", "#f87171"),
+            ("accent", "#FF79C6"),
+        ],
+        current: vempire_theme,
+    },
 ];
 
-fn is_previous_default_dark(theme: &Theme) -> bool {
-    theme.colors.len() == PREVIOUS_DEFAULT_DARK.len()
-        && PREVIOUS_DEFAULT_DARK.iter().all(|(key, value)| {
+fn holds_previous_colours(theme: &Theme, previous: &[(&str, &str)]) -> bool {
+    theme.colors.len() == previous.len()
+        && previous.iter().all(|(key, value)| {
             theme
                 .colors
                 .get(*key)
@@ -120,21 +183,23 @@ fn is_previous_default_dark(theme: &Theme) -> bool {
         })
 }
 
-/// Create default-dark.json if it is missing, and replace it with the current
-/// built-in if it still holds exactly the previously shipped colours. Any other
-/// content is a user edit and is left alone.
-fn upgrade_default_dark_if_unedited(dir: &Path) {
-    let path = dir.join(DEFAULT_DARK_FILE);
-    let current = default_dark_theme();
-    let Ok(contents) = fs::read_to_string(&path) else {
-        if !path.exists() && dir.is_dir() {
-            write_theme_file(&path, &current);
-        }
-        return;
-    };
-    if let Ok(existing) = serde_json::from_str::<Theme>(&contents) {
-        if is_previous_default_dark(&existing) {
-            write_theme_file(&path, &current);
+/// Create each built-in theme file that is missing, and replace one that still
+/// holds exactly the previously shipped colours with the current built-in. Any
+/// other content is a user edit and is left alone.
+fn upgrade_builtin_themes_if_unedited(dir: &Path) {
+    for upgrade in &BUILTIN_UPGRADES {
+        let path = dir.join(upgrade.file);
+        let current = (upgrade.current)();
+        let Ok(contents) = fs::read_to_string(&path) else {
+            if !path.exists() && dir.is_dir() {
+                write_theme_file(&path, &current);
+            }
+            continue;
+        };
+        if let Ok(existing) = serde_json::from_str::<Theme>(&contents) {
+            if holds_previous_colours(&existing, upgrade.previous) {
+                write_theme_file(&path, &current);
+            }
         }
     }
 }
@@ -189,46 +254,46 @@ fn default_light_theme() -> Theme {
 fn jessica_dark_theme() -> Theme {
     theme_from_core(
         "Jessica Dark",
-        "#1E1E1E", // background
-        "#373737", // surface
+        "#0E0D17", // background
+        "#232032", // surface
         "#DCDCDC", // text
-        "#6F2D86", // primary
-        "#4ade80", // success
-        "#f87171", // error
+        "#5B2EBC", // primary
+        "#00ea79", // success
+        "#ff525a", // error
     )
 }
 
 fn solarised_dark_theme() -> Theme {
     theme_from_core(
         "Solarised Dark",
-        "#002B36", // background
-        "#0A4050", // surface
+        "#001921", // background
+        "#002D3A", // surface
         "#93A1A1", // text
-        "#268BD2", // primary
-        "#4ade80", // success
-        "#f87171", // error
+        "#0096EB", // primary
+        "#00ea79", // success
+        "#ff525a", // error
     )
 }
 
 fn nord_theme() -> Theme {
     theme_from_core(
-        "Nord", "#2E3440", // background
-        "#434C5E", // surface
+        "Nord", "#1C222D", // background
+        "#2E3747", // surface
         "#ECEFF4", // text
-        "#88C0D0", // primary
-        "#4ade80", // success
-        "#f87171", // error
+        "#76C3D8", // primary
+        "#00ea79", // success
+        "#ff525a", // error
     )
 }
 
 fn vempire_theme() -> Theme {
     let mut t = theme_from_core(
-        "Vempire", "#282A36", // background
-        "#44475A", // surface
+        "Vempire", "#161826", // background
+        "#313448", // surface
         "#F8F8F2", // text
-        "#BD93F9", // primary
-        "#4ade80", // success
-        "#f87171", // error
+        "#B57CFF", // primary
+        "#00ea79", // success
+        "#ff525a", // error
     );
     // Vempire uses a distinct accent colour
     t.colors.insert("accent".into(), "#FF79C6".into());
@@ -239,65 +304,80 @@ fn vempire_theme() -> Theme {
 mod tests {
     use super::*;
 
+    const DEFAULT_DARK_FILE: &str = "default-dark.json";
+
     fn scratch_dir(tag: &str) -> PathBuf {
-        let dir = std::env::temp_dir().join(format!(
-            "histv-themes-test-{}-{tag}",
-            std::process::id()
-        ));
+        let dir =
+            std::env::temp_dir().join(format!("histv-themes-test-{}-{tag}", std::process::id()));
         let _ = fs::remove_dir_all(&dir);
         fs::create_dir_all(&dir).unwrap();
         dir
     }
 
-    fn read_theme(dir: &Path) -> Theme {
-        let text = fs::read_to_string(dir.join(DEFAULT_DARK_FILE)).unwrap();
+    fn read_theme(dir: &Path, file: &str) -> Theme {
+        let text = fs::read_to_string(dir.join(file)).unwrap();
         serde_json::from_str(&text).unwrap()
     }
 
-    fn previous_theme() -> Theme {
-        theme_from_core(
-            "Default Dark",
-            "#1E1E1E",
-            "#373737",
-            "#DCDCDC",
-            "#0078D7",
-            "#4ade80",
-            "#f87171",
-        )
+    fn upgrade_for(file: &str) -> &'static BuiltinUpgrade {
+        BUILTIN_UPGRADES.iter().find(|u| u.file == file).unwrap()
+    }
+
+    /// The theme as an earlier release shipped it.
+    fn previous_theme(file: &str) -> Theme {
+        let upgrade = upgrade_for(file);
+        Theme {
+            name: (upgrade.current)().name,
+            colors: upgrade
+                .previous
+                .iter()
+                .map(|(k, v)| (k.to_string(), v.to_string()))
+                .collect(),
+        }
+    }
+
+    fn write_previous(dir: &Path, file: &str) {
+        write_theme_file(&dir.join(file), &previous_theme(file));
     }
 
     #[test]
     fn old_content_file_is_upgraded() {
         let dir = scratch_dir("upgrade");
-        write_theme_file(&dir.join(DEFAULT_DARK_FILE), &previous_theme());
-        upgrade_default_dark_if_unedited(&dir);
-        assert_eq!(read_theme(&dir).colors, default_dark_theme().colors);
+        write_previous(&dir, DEFAULT_DARK_FILE);
+        upgrade_builtin_themes_if_unedited(&dir);
+        assert_eq!(
+            read_theme(&dir, DEFAULT_DARK_FILE).colors,
+            default_dark_theme().colors
+        );
         let _ = fs::remove_dir_all(&dir);
     }
 
     #[test]
     fn edited_file_is_preserved() {
         let dir = scratch_dir("edited");
-        let mut edited = previous_theme();
+        let mut edited = previous_theme(DEFAULT_DARK_FILE);
         edited.colors.insert("primary".into(), "#FF00AA".into());
         write_theme_file(&dir.join(DEFAULT_DARK_FILE), &edited);
-        upgrade_default_dark_if_unedited(&dir);
-        assert_eq!(read_theme(&dir).colors, edited.colors);
+        upgrade_builtin_themes_if_unedited(&dir);
+        assert_eq!(read_theme(&dir, DEFAULT_DARK_FILE).colors, edited.colors);
 
         // An extra key is also an edit.
-        let mut extra = previous_theme();
+        let mut extra = previous_theme(DEFAULT_DARK_FILE);
         extra.colors.insert("accent".into(), "#FFFFFF".into());
         write_theme_file(&dir.join(DEFAULT_DARK_FILE), &extra);
-        upgrade_default_dark_if_unedited(&dir);
-        assert_eq!(read_theme(&dir).colors, extra.colors);
+        upgrade_builtin_themes_if_unedited(&dir);
+        assert_eq!(read_theme(&dir, DEFAULT_DARK_FILE).colors, extra.colors);
         let _ = fs::remove_dir_all(&dir);
     }
 
     #[test]
     fn missing_file_is_created() {
         let dir = scratch_dir("missing");
-        upgrade_default_dark_if_unedited(&dir);
-        assert_eq!(read_theme(&dir).colors, default_dark_theme().colors);
+        upgrade_builtin_themes_if_unedited(&dir);
+        assert_eq!(
+            read_theme(&dir, DEFAULT_DARK_FILE).colors,
+            default_dark_theme().colors
+        );
         let _ = fs::remove_dir_all(&dir);
     }
 
@@ -307,8 +387,113 @@ mod tests {
         let path = dir.join(DEFAULT_DARK_FILE);
         write_theme_file(&path, &default_dark_theme());
         let before = fs::read_to_string(&path).unwrap();
-        upgrade_default_dark_if_unedited(&dir);
+        upgrade_builtin_themes_if_unedited(&dir);
         assert_eq!(fs::read_to_string(&path).unwrap(), before);
         let _ = fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn jessica_dark_old_is_upgraded_case_insensitively() {
+        let dir = scratch_dir("jessica-old");
+        let mut old = previous_theme("jessica-dark.json");
+        old.colors.insert("primary".into(), "#6f2d86".into());
+        write_theme_file(&dir.join("jessica-dark.json"), &old);
+        upgrade_builtin_themes_if_unedited(&dir);
+        let upgraded = read_theme(&dir, "jessica-dark.json");
+        assert_eq!(upgraded.colors, jessica_dark_theme().colors);
+        assert_eq!(upgraded.colors["primary"], "#5B2EBC");
+        let _ = fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn jessica_dark_edited_is_kept() {
+        let dir = scratch_dir("jessica-edited");
+        let mut edited = previous_theme("jessica-dark.json");
+        edited.colors.insert("primary".into(), "#7A1FA2".into());
+        write_theme_file(&dir.join("jessica-dark.json"), &edited);
+        upgrade_builtin_themes_if_unedited(&dir);
+        assert_eq!(read_theme(&dir, "jessica-dark.json").colors, edited.colors);
+        let _ = fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn vempire_old_with_accent_is_upgraded() {
+        let dir = scratch_dir("vempire-old");
+        write_previous(&dir, "vempire.json");
+        upgrade_builtin_themes_if_unedited(&dir);
+        let upgraded = read_theme(&dir, "vempire.json");
+        assert_eq!(upgraded.colors, vempire_theme().colors);
+        assert_eq!(upgraded.colors["accent"], "#FF79C6");
+        let _ = fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn vempire_with_extra_or_missing_key_is_kept() {
+        let dir = scratch_dir("vempire-keys");
+        let path = dir.join("vempire.json");
+
+        let mut extra = previous_theme("vempire.json");
+        extra.colors.insert("text-muted".into(), "#999999".into());
+        write_theme_file(&path, &extra);
+        upgrade_builtin_themes_if_unedited(&dir);
+        assert_eq!(read_theme(&dir, "vempire.json").colors, extra.colors);
+
+        let mut missing = previous_theme("vempire.json");
+        missing.colors.remove("accent");
+        write_theme_file(&path, &missing);
+        upgrade_builtin_themes_if_unedited(&dir);
+        assert_eq!(read_theme(&dir, "vempire.json").colors, missing.colors);
+        let _ = fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn every_builtin_upgrades_then_stays_put() {
+        let dir = scratch_dir("all");
+        for upgrade in &BUILTIN_UPGRADES {
+            write_previous(&dir, upgrade.file);
+        }
+        upgrade_builtin_themes_if_unedited(&dir);
+        for upgrade in &BUILTIN_UPGRADES {
+            let current = (upgrade.current)();
+            assert!(
+                !holds_previous_colours(&current, upgrade.previous),
+                "{} colours did not change",
+                upgrade.file
+            );
+            assert_eq!(read_theme(&dir, upgrade.file).colors, current.colors);
+        }
+        let before = fs::read_to_string(dir.join("nord.json")).unwrap();
+        upgrade_builtin_themes_if_unedited(&dir);
+        assert_eq!(fs::read_to_string(dir.join("nord.json")).unwrap(), before);
+        let _ = fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn shipped_json_matches_builtin_fns() {
+        let shipped = [
+            (
+                include_str!("../themes/default-dark.json"),
+                default_dark_theme(),
+            ),
+            (
+                include_str!("../themes/default-light.json"),
+                default_light_theme(),
+            ),
+            (
+                include_str!("../themes/jessica-dark.json"),
+                jessica_dark_theme(),
+            ),
+            (
+                include_str!("../themes/solarised-dark.json"),
+                solarised_dark_theme(),
+            ),
+            (include_str!("../themes/nord.json"), nord_theme()),
+            (include_str!("../themes/vempire.json"), vempire_theme()),
+        ];
+        for (json, builtin) in shipped {
+            let file: Theme = serde_json::from_str(json).unwrap();
+            assert_eq!(file.name, builtin.name);
+            assert_eq!(file.colors, builtin.colors, "{}", builtin.name);
+        }
     }
 }

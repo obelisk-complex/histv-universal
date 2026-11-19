@@ -50,12 +50,12 @@ From your 6 colours, the app computes:
 - **Surface steps** - a dimmer variant (between surface and background) and a brighter variant
 - **Muted text** - your text colour blended 60% over the background
 - **Hairlines** - a faint line for dividers and a stronger one for control borders, both blended from text and background
-- **Accent line** - your primary, lightened (darkened on a light background) until it is visible against every surface
+- **Accent line** - your primary, made lighter (darker on a light background) until it is visible against every surface; hue and chroma are kept
 - **Washes** - primary, success, error and amber at 12% over the background, used behind the selected row and the status badges
-- **Status text** - success, error and amber, adjusted until readable on their wash
+- **Status text** - success, error and amber, shifted in lightness until readable on their wash; hue and chroma are kept
 - **Text on the accent** - black or white, whichever reads better on your primary (override with `text-on-primary`)
 
-**Contrast is enforced.** Text colours are nudged toward white (toward black on a light background) until they reach 4.5:1 on every surface; lines until 3:1. A theme with low-contrast text will look slightly brighter in the app than in its JSON. Colours you pass through as extra keys (`log-*`) are used exactly as written. Keys starting with `dx-` are ignored, so a theme cannot override the derived tokens and skip this check.
+**Contrast is enforced.** Text colours are nudged toward white (toward black on a light background) until they reach 4.5:1 on every surface; lines until 3:1. Coloured tokens (accent line, success, error and amber text) change OKLCH lightness only, so a saturated primary stays saturated instead of fading to pastel; chroma drops only if the colour would leave the sRGB gamut. A theme with low-contrast text will look slightly brighter in the app than in its JSON. Colours you pass through as extra keys (`log-*`) are used exactly as written. Keys starting with `dx-` are ignored, so a theme cannot override the derived tokens and skip this check.
 
 Light backgrounds work: the derivation flips direction when `background` is light.
 
@@ -67,8 +67,8 @@ Power users can override any derived value by adding extra keys to the `colors` 
 {
   "name": "Custom",
   "colors": {
-    "background": "#272822",
-    "surface": "#3E3D32",
+    "background": "#161710",
+    "surface": "#2B2B1F",
     "text": "#F8F8F2",
     "primary": "#F92672",
     "success": "#A6E22E",
@@ -128,8 +128,8 @@ Themes using the old key names `base-100`, `base-300`, `base-content`, `secondar
 {
   "name": "Monokai",
   "colors": {
-    "background": "#272822",
-    "surface": "#3E3D32",
+    "background": "#161710",
+    "surface": "#2B2B1F",
     "text": "#F8F8F2",
     "primary": "#F92672",
     "success": "#A6E22E",
@@ -144,12 +144,12 @@ Themes using the old key names `base-100`, `base-300`, `base-content`, `secondar
 {
   "name": "Solarised Dark",
   "colors": {
-    "background": "#002B36",
-    "surface": "#0A4050",
+    "background": "#001921",
+    "surface": "#002D3A",
     "text": "#93A1A1",
-    "primary": "#268BD2",
-    "success": "#4ade80",
-    "error": "#f87171"
+    "primary": "#0096EB",
+    "success": "#00ea79",
+    "error": "#ff525a"
   }
 }
 ```
@@ -160,12 +160,12 @@ Themes using the old key names `base-100`, `base-300`, `base-content`, `secondar
 {
   "name": "Nord",
   "colors": {
-    "background": "#2E3440",
-    "surface": "#434C5E",
+    "background": "#1C222D",
+    "surface": "#2E3747",
     "text": "#ECEFF4",
-    "primary": "#88C0D0",
-    "success": "#4ade80",
-    "error": "#f87171"
+    "primary": "#76C3D8",
+    "success": "#00ea79",
+    "error": "#ff525a"
   }
 }
 ```

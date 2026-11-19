@@ -217,3 +217,69 @@ describe('formatEstimatedSize', () => {
     assert.ok(result.startsWith('~'));
   });
 });
+
+// ── Theme colour derivation (extracted from app.js) ─────────────
+
+const fs = require('node:fs');
+const path = require('node:path');
+
+// app.js is a browser script, so pull the colour functions out of its source.
+function loadColourFns() {
+  const src = fs.readFileSync(path.join(__dirname, 'app.js'), 'utf8');
+  const names = ['deriveDoubletTokens', 'hex6', 'contrastRatio', 'isLightColor', 'hexToRgb', 'rgbToHex',
+    'blendHex', 'shiftBrightness', 'relLuminance', 'bestTextOn', 'srgbToLinear', 'linearToSrgb',
+    'hexToOklch', 'oklchToLinear', 'oklchToHex', 'liftLightness'];
+  let code = '';
+  for (const n of names) {
+    const i = src.indexOf(`function ${n}(`);
+    assert.ok(i >= 0, `app.js is missing ${n}`);
+    let depth = 0;
+    let k = src.indexOf('{', src.indexOf(')', i));
+    for (; k < src.length; k++) {
+      if (src[k] === '{') depth++;
+      else if (src[k] === '}' && --depth === 0) break;
+    }
+    code += src.slice(i, k + 1) + '\n';
+  }
+  return new Function(`${code}\nreturn { ${names.join(', ')} };`)();
+}
+
+describe('deriveDoubletTokens', () => {
+  const fns = loadColourFns();
+  const dir = path.join(__dirname, '..', '..', 'src-tauri', 'themes');
+  const themes = fs.readdirSync(dir).filter(f => f.endsWith('.json'))
+    .map(f => JSON.parse(fs.readFileSync(path.join(dir, f), 'utf8')));
+  const hueGap = (a, b) => Math.abs(((a - b + 540) % 360) - 180);
+
+  for (const theme of themes) {
+    it(`${theme.name}: text tokens reach 4.5:1 and thread line 3:1`, () => {
+      const t = fns.deriveDoubletTokens(theme.colors);
+      const cr = fns.contrastRatio;
+      for (const ground of ['dx-cloth', 'dx-surface-dim', 'dx-surface', 'dx-surface-bright']) {
+        for (const k of ['dx-text', 'dx-text-muted', 'dx-success-text', 'dx-error-text', 'dx-warn-text']) {
+          assert.ok(cr(t[k], t[ground]) >= 4.5, `${k} on ${ground}: ${cr(t[k], t[ground]).toFixed(2)}`);
+        }
+        assert.ok(cr(t['dx-thread-line'], t[ground]) >= 3, `thread-line on ${ground}`);
+      }
+    });
+  }
+
+  it('Jessica Dark thread line keeps the primary hue and chroma', () => {
+    const jessica = themes.find(t => t.name === 'Jessica Dark');
+    const t = fns.deriveDoubletTokens(jessica.colors);
+    const [, seedC, seedH] = fns.hexToOklch(jessica.colors.primary);
+    const [, lineC, lineH] = fns.hexToOklch(t['dx-thread-line']);
+    assert.ok(hueGap(seedH, lineH) <= 3, `hue ${seedH.toFixed(1)} vs ${lineH.toFixed(1)}`);
+    assert.ok(lineC >= 0.85 * seedC, `chroma ${lineC.toFixed(3)} vs ${seedC.toFixed(3)}`);
+  });
+
+  it('lightness shift keeps hue and never adds chroma', () => {
+    const [, c0, h0] = fns.hexToOklch('#5B2EBC');
+    const out = fns.liftLightness('#5B2EBC', ['#0E0D17'], 6, false);
+    const [l1, c1, h1] = fns.hexToOklch(out);
+    assert.ok(fns.contrastRatio(out, '#0E0D17') >= 6);
+    assert.ok(hueGap(h0, h1) <= 3);
+    assert.ok(l1 > 0.45 && c1 <= c0 * 1.02);
+    assert.equal(fns.liftLightness('#ffffff', ['#000000'], 4.5, false), '#ffffff');
+  });
+});

@@ -1,12 +1,12 @@
 {
   "name": "Vempire",
   "colors": {
-    "surface": "#44475A",
-    "error": "#f87171",
+    "surface": "#313448",
+    "error": "#ff525a",
     "accent": "#FF79C6",
-    "primary": "#BD93F9",
-    "background": "#282A36",
+    "primary": "#B57CFF",
+    "background": "#161826",
     "text": "#F8F8F2",
-    "success": "#4ade80"
+    "success": "#00ea79"
   }
 }
