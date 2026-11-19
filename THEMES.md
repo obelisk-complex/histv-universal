@@ -144,10 +144,10 @@ Themes using the old key names `base-100`, `base-300`, `base-content`, `secondar
 {
   "name": "Solarised Dark",
   "colors": {
-    "background": "#001921",
-    "surface": "#002D3A",
+    "background": "#101014",
+    "surface": "#24242B",
     "text": "#93A1A1",
-    "primary": "#0096EB",
+    "primary": "#17B3A4",
     "success": "#00ea79",
     "error": "#ff525a"
   }
@@ -166,6 +166,24 @@ Themes using the old key names `base-100`, `base-300`, `base-content`, `secondar
     "primary": "#76C3D8",
     "success": "#00ea79",
     "error": "#ff525a"
+  }
+}
+```
+
+### Creditor
+
+```json
+{
+  "name": "Creditor",
+  "colors": {
+    "background": "#26070F",
+    "surface": "#47101A",
+    "text": "#F5E9CF",
+    "primary": "#D9A21B",
+    "success": "#4FD98A",
+    "error": "#E5483F",
+    "surface-bright": "#342E30",
+    "icon-cancelled": "#E3B02A"
   }
 }
 ```

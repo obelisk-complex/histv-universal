@@ -70,6 +70,12 @@ pub fn scan_themes_folder(app: &AppHandle) -> Vec<Theme> {
     if !themes.iter().any(|t| t.name == "Vempire") {
         themes.push(vempire_theme());
     }
+    if !themes.iter().any(|t| t.name == "Creditor") {
+        themes.push(creditor_theme());
+    }
+    if !themes.iter().any(|t| t.name == "Monokai") {
+        themes.push(monokai_theme());
+    }
 
     // Ensure themes/ folder exists and write built-in themes if missing
     if !dir.exists() {
@@ -81,6 +87,8 @@ pub fn scan_themes_folder(app: &AppHandle) -> Vec<Theme> {
     write_builtin_if_missing(&dir, "solarised-dark.json", &solarised_dark_theme());
     write_builtin_if_missing(&dir, "nord.json", &nord_theme());
     write_builtin_if_missing(&dir, "vempire.json", &vempire_theme());
+    write_builtin_if_missing(&dir, "creditor.json", &creditor_theme());
+    write_builtin_if_missing(&dir, "monokai.json", &monokai_theme());
 
     themes
 }
@@ -107,7 +115,7 @@ struct BuiltinUpgrade {
     current: fn() -> Theme,
 }
 
-const BUILTIN_UPGRADES: [BuiltinUpgrade; 5] = [
+const BUILTIN_UPGRADES: [BuiltinUpgrade; 6] = [
     // Pre-Doublet Default Dark.
     BuiltinUpgrade {
         file: "default-dark.json",
@@ -170,6 +178,19 @@ const BUILTIN_UPGRADES: [BuiltinUpgrade; 5] = [
             ("accent", "#FF79C6"),
         ],
         current: vempire_theme,
+    },
+    // Monokai before the deeper grounds.
+    BuiltinUpgrade {
+        file: "monokai.json",
+        previous: &[
+            ("background", "#272822"),
+            ("surface", "#3E3D32"),
+            ("text", "#F8F8F2"),
+            ("primary", "#F92672"),
+            ("success", "#A6E22E"),
+            ("error", "#F92672"),
+        ],
+        current: monokai_theme,
     },
 ];
 
@@ -254,8 +275,8 @@ fn default_light_theme() -> Theme {
 fn jessica_dark_theme() -> Theme {
     theme_from_core(
         "Jessica Dark",
-        "#0E0D17", // background
-        "#232032", // surface
+        "#101014", // background
+        "#24242B", // surface
         "#DCDCDC", // text
         "#5B2EBC", // primary
         "#00ea79", // success
@@ -266,10 +287,10 @@ fn jessica_dark_theme() -> Theme {
 fn solarised_dark_theme() -> Theme {
     theme_from_core(
         "Solarised Dark",
-        "#001921", // background
-        "#002D3A", // surface
+        "#101014", // background
+        "#24242B", // surface
         "#93A1A1", // text
-        "#0096EB", // primary
+        "#17B3A4", // primary
         "#00ea79", // success
         "#ff525a", // error
     )
@@ -288,8 +309,8 @@ fn nord_theme() -> Theme {
 
 fn vempire_theme() -> Theme {
     let mut t = theme_from_core(
-        "Vempire", "#161826", // background
-        "#313448", // surface
+        "Vempire", "#101014", // background
+        "#24242B", // surface
         "#F8F8F2", // text
         "#B57CFF", // primary
         "#00ea79", // success
@@ -298,6 +319,32 @@ fn vempire_theme() -> Theme {
     // Vempire uses a distinct accent colour
     t.colors.insert("accent".into(), "#FF79C6".into());
     t
+}
+
+fn creditor_theme() -> Theme {
+    let mut t = theme_from_core(
+        "Creditor", "#26070F", // background
+        "#47101A", // surface
+        "#F5E9CF", // text
+        "#D9A21B", // primary
+        "#4FD98A", // success
+        "#E5483F", // error
+    );
+    // Neutral grey for the Pending/Encoding/Skipped/Probing badges, gold for Cancelled
+    t.colors.insert("surface-bright".into(), "#342E30".into());
+    t.colors.insert("icon-cancelled".into(), "#E3B02A".into());
+    t
+}
+
+fn monokai_theme() -> Theme {
+    theme_from_core(
+        "Monokai", "#161710", // background
+        "#2B2B1F", // surface
+        "#F8F8F2", // text
+        "#F92672", // primary
+        "#A6E22E", // success
+        "#F92672", // error
+    )
 }
 
 #[cfg(test)]
@@ -489,6 +536,8 @@ mod tests {
             ),
             (include_str!("../themes/nord.json"), nord_theme()),
             (include_str!("../themes/vempire.json"), vempire_theme()),
+            (include_str!("../themes/creditor.json"), creditor_theme()),
+            (include_str!("../themes/monokai.json"), monokai_theme()),
         ];
         for (json, builtin) in shipped {
             let file: Theme = serde_json::from_str(json).unwrap();

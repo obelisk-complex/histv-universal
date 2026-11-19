@@ -2,10 +2,10 @@
   "name": "Solarised Dark",
   "colors": {
     "error": "#ff525a",
-    "primary": "#0096EB",
+    "primary": "#17B3A4",
     "text": "#93A1A1",
     "success": "#00ea79",
-    "surface": "#002D3A",
-    "background": "#001921"
+    "surface": "#24242B",
+    "background": "#101014"
   }
 }

@@ -1,0 +1,13 @@
+{
+  "name": "Creditor",
+  "colors": {
+    "error": "#E5483F",
+    "surface": "#47101A",
+    "primary": "#D9A21B",
+    "background": "#26070F",
+    "success": "#4FD98A",
+    "text": "#F5E9CF",
+    "surface-bright": "#342E30",
+    "icon-cancelled": "#E3B02A"
+  }
+}

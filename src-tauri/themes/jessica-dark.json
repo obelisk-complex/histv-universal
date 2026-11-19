@@ -2,9 +2,9 @@
   "name": "Jessica Dark",
   "colors": {
     "error": "#ff525a",
-    "surface": "#232032",
+    "surface": "#24242B",
     "primary": "#5B2EBC",
-    "background": "#0E0D17",
+    "background": "#101014",
     "success": "#00ea79",
     "text": "#DCDCDC"
   }
