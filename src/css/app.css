@@ -19,7 +19,7 @@
 :root {
   /* App geometry (not colour) */
   --ctl-h: 32px;
-  --rail-w: 312px;
+  --rail-w: 316px;
   --ease: var(--dx-dur-fast) var(--dx-ease);
 
   /* Log line colours. Aliases, so a theme JSON that sets log-* still wins. */
@@ -73,7 +73,7 @@ body {
 
 /* ═══ Quality rail (#right-panel, visually left) ═══ */
 #right-panel {
-  flex: 0 0 var(--rail-w); min-width: 258px; max-width: 460px;
+  flex: 0 0 var(--rail-w); min-width: 316px; max-width: 460px;
   display: flex; flex-direction: column;
   background: var(--dx-surface);
   z-index: 2; min-height: 0;
@@ -442,7 +442,7 @@ tr.status-cancelled .status-badge { background: var(--dx-warn-wash); color: var(
 
 /* Medium: tighten rail, drop the two bitrate columns */
 @media (max-width: 1040px) {
-  :root { --rail-w: 280px; }
+  :root { --rail-w: 316px; }
   #queue-table th:nth-child(7), #queue-table td:nth-child(7),
   #queue-table th:nth-child(8), #queue-table td:nth-child(8) { display: none; }
   #status-strip-bars { width: 168px; }

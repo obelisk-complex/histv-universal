@@ -600,7 +600,7 @@
       const SPLITTER_W = 9;         // matches #splitter width
       function clampRail(w) {
         const cs = getComputedStyle(rightPanel);
-        const minW = parseInt(cs.minWidth, 10) || 258;
+        const minW = parseInt(cs.minWidth, 10) || 316;
         const maxW = parseInt(cs.maxWidth, 10) || 460;
         const room = mainArea.getBoundingClientRect().width - QUEUE_MIN_W - SPLITTER_W;
         return Math.max(minW, Math.min(maxW, room, w));
