@@ -636,7 +636,7 @@ mod gui_commands {
         if pending_items.is_empty() {
             let mut b = state_arc.batch.lock().await;
             b.running = false;
-            return Err("No pending files in the queue.".into());
+            return Err("No pending files".into());
         }
 
         // Create batch control wrapping the GUI's shared state

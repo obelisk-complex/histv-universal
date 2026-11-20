@@ -776,11 +776,7 @@ pub fn preflight_scan(queue: &[QueueItem]) -> Vec<PreflightWarning> {
         if let Some(profile) = item.probe.dovi_profile {
             if !caps.can_package_dovi_mp4 {
                 let source_type = format!("Dolby Vision Profile {}", profile);
-                let actual = if profile == 5 {
-                    "HDR10 fallback (Profile 5 → 8.1 conversion requires MP4Box)".to_string()
-                } else {
-                    "HDR10 fallback (DV tools not found)".to_string()
-                };
+                let actual = "HDR10 fallback".to_string();
                 let best = "Full DV preservation".to_string();
                 warnings.push(PreflightWarning {
                     file_name: item.file_name.clone(),

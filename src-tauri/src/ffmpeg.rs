@@ -333,12 +333,12 @@ pub async fn download_to_dir(
 ) -> Result<(), String> {
     let urls = download_urls();
     if urls.is_empty() {
-        return Err("Automatic download is not available for this platform. \
-                     Please install ffmpeg manually (e.g. via Homebrew on macOS)."
+        return Err("Automatic download is not available on this platform \
+                     (install ffmpeg manually, e.g. via Homebrew on macOS)"
             .to_string());
     }
 
-    sink.ffmpeg_download_progress("Downloading ffmpeg... 0%");
+    sink.ffmpeg_download_progress("Downloading ffmpeg 0%");
 
     let client = reqwest::Client::builder()
         .redirect(reqwest::redirect::Policy::limited(10))
@@ -365,15 +365,13 @@ pub async fn download_to_dir(
         }
     }
     if !succeeded {
-        return Err(format!(
-            "All download mirrors failed. Last error: {last_err}"
-        ));
+        return Err(format!("All download mirrors failed: {last_err}"));
     }
 
     // On macOS, ffprobe is a separate download from evermeet.cx
     let probe_urls = ffprobe_download_urls();
     if !probe_urls.is_empty() {
-        sink.ffmpeg_download_progress("Downloading ffprobe...");
+        sink.ffmpeg_download_progress("Downloading ffprobe");
         let mut probe_ok = false;
         let mut probe_err = String::new();
         for (i, (url, archive_type)) in probe_urls.iter().enumerate() {
@@ -393,9 +391,7 @@ pub async fn download_to_dir(
             }
         }
         if !probe_ok {
-            return Err(format!(
-                "All ffprobe download mirrors failed. Last error: {probe_err}"
-            ));
+            return Err(format!("All ffprobe download mirrors failed: {probe_err}"));
         }
     }
 
@@ -403,10 +399,10 @@ pub async fn download_to_dir(
     let ffmpeg_name = format!("ffmpeg{EXE_EXT}");
     let ffprobe_name = format!("ffprobe{EXE_EXT}");
     if !target_dir.join(&ffmpeg_name).exists() || !target_dir.join(&ffprobe_name).exists() {
-        return Err("Extraction completed but ffmpeg/ffprobe not found in archive.".to_string());
+        return Err("ffmpeg/ffprobe not found in archive".to_string());
     }
 
-    sink.ffmpeg_download_progress("Done!");
+    sink.ffmpeg_download_progress("ffmpeg downloaded");
     Ok(())
 }
 
@@ -432,7 +428,7 @@ async fn download_file(
         .map_err(|e| format!("Download request failed: {e}"))?;
 
     if !response.status().is_success() {
-        return Err(format!("Download failed with HTTP {}", response.status()));
+        return Err(format!("HTTP {}", response.status()));
     }
 
     let total_size = response.content_length().unwrap_or(0);
@@ -462,7 +458,7 @@ async fn download_file(
                 let mb_done = downloaded as f64 / 1_048_576.0;
                 let mb_total = total_size as f64 / 1_048_576.0;
                 sink.ffmpeg_download_progress(&format!(
-                    "Downloading {label}... {pct}% ({mb_done:.1} / {mb_total:.1} MB)"
+                    "Downloading {label} {pct}% ({mb_done:.1} / {mb_total:.1} MB)"
                 ));
             }
         }
@@ -482,7 +478,7 @@ async fn download_file(
         ));
     }
 
-    sink.ffmpeg_download_progress(&format!("Extracting {label}..."));
+    sink.ffmpeg_download_progress(&format!("Extracting {label}"));
 
     // Extract the binary from the archive
     #[cfg(target_os = "windows")]
