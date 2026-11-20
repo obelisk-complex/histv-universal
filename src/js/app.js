@@ -630,14 +630,24 @@
       });
 
       // ── Toggle button (the rail is on the left: hide points left, show points right) ──
-      splitterToggle.addEventListener('click', (e) => {
-        e.stopPropagation();
-        settingsPanelCollapsed = !settingsPanelCollapsed;
-        rightPanel.classList.toggle('collapsed', settingsPanelCollapsed);
-        const label = settingsPanelCollapsed ? 'Show settings panel' : 'Hide settings panel';
-        splitterToggle.innerHTML = settingsPanelCollapsed ? '&#x25B6;' : '&#x25C0;';
+      function setCollapsed(collapsed) {
+        settingsPanelCollapsed = collapsed;
+        rightPanel.classList.toggle('collapsed', collapsed);
+        splitter.classList.toggle('rail-collapsed', collapsed);
+        const label = collapsed ? 'Show settings panel' : 'Hide settings panel';
+        splitterToggle.innerHTML = collapsed ? '&#x25B6;' : '&#x25C0;';
         splitterToggle.title = label;
         splitterToggle.setAttribute('aria-label', label);
+      }
+      splitterToggle.addEventListener('click', (e) => {
+        e.stopPropagation();
+        setCollapsed(!settingsPanelCollapsed);
+      });
+
+      // Column mode hides the splitter (and its toggle), so a collapsed rail
+      // would be unreachable: entering it re-opens the rail.
+      window.matchMedia('(max-width: 820px)').addEventListener('change', (e) => {
+        if (e.matches && settingsPanelCollapsed) setCollapsed(false);
       });
 
       // ── Window resize: keep a dragged rail width inside its limits ──
