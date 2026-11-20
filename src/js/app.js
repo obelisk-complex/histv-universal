@@ -1728,10 +1728,10 @@
       // shrink threshold: files above it are shrunk to it, files below are
       // re-encoded for quality at the QP values.
       const PROFILES = {
-        'archive-high':     { bitrate: 12, rc: 'QP', qpI: 18, qpP: 20, peak: '2.5', compat: false, av1: true,  hdr: true },
-        'archive-balanced': { bitrate: 6,  rc: 'QP', qpI: 20, qpP: 22, peak: '2',   compat: false, av1: true,  hdr: true },
+        'archive-high':     { bitrate: 12, rc: 'QP', qpI: 18, qpP: 20, peak: '3',   compat: false, av1: true,  hdr: true },
+        'archive-balanced': { bitrate: 6,  rc: 'QP', qpI: 20, qpP: 22, peak: '3',   compat: false, av1: true,  hdr: true },
         'space-saver':      { bitrate: 3,  rc: 'QP', qpI: 24, qpP: 26, peak: '1.5', compat: false, av1: true,  hdr: true },
-        'max-compat':       { bitrate: 6,  rc: 'QP', qpI: 22, qpP: 24, peak: '1.5', compat: true,  av1: false, hdr: false },
+        'max-compat':       { bitrate: 6,  rc: 'QP', qpI: 22, qpP: 24, peak: '3',   compat: true,  av1: false, hdr: false },
       };
 
       let applying = false;
