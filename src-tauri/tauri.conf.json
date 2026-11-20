@@ -10,7 +10,7 @@
 	"withGlobalTauri": true,
     "windows": [
       {
-        "title": "Honey, I Shrunk The Vids v2.6.0",
+        "title": "Honey, I Shrunk The Vids v2.7.0-dev.0",
         "width": 1100,
         "height": 915,
         "minWidth": 910,
