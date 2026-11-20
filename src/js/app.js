@@ -154,13 +154,13 @@
           document.querySelector('#ffmpeg-dl-yes').onclick = async () => {
             releaseFocusTrap(modal);
             modal.classList.remove('visible');
-            encoderSummary.textContent = 'Downloading ffmpeg...';
+            encoderSummary.textContent = 'Downloading ffmpeg';
             try {
               await invoke('download_ffmpeg');
             } catch (e) {
               encoderSummary.textContent = 'Download failed: ' + e;
               const body = document.querySelector('#ffmpeg-missing-body');
-              body.textContent = 'Download failed: ' + e + '. You can install ffmpeg manually and restart the app.';
+              body.textContent = 'Download failed: ' + e + ' (install ffmpeg, then restart)';
               modal.classList.add('visible');
             }
           };
@@ -168,7 +168,7 @@
           document.querySelector('#ffmpeg-dl-no').onclick = () => {
             releaseFocusTrap(modal);
             modal.classList.remove('visible');
-            encoderSummary.textContent = 'ffmpeg not found - install ffmpeg and restart';
+            encoderSummary.textContent = 'ffmpeg not found (install ffmpeg, then restart)';
           };
         }
       }
@@ -1880,7 +1880,7 @@
       const { family, encoder } = resolveActiveEncoder();
       const isHw = !encoder.startsWith('lib');
       const familyLabel = family === 'h264' ? 'H.264' : family === 'av1' ? 'AV1' : 'HEVC';
-      encoderSummary.textContent = `Encoder: ${encoder} (${isHw ? 'HW' : 'SW'}) - ${familyLabel}`;
+      encoderSummary.textContent = `Encoder: ${encoder} (${isHw ? 'HW' : 'SW'}), ${familyLabel}`;
     }
 
     // ═══════════════════════════════════════════════════════════════
@@ -2336,10 +2336,6 @@
       if (btnStart.disabled) {
         if (!encoderDetectionDone) {
           startTooltip.textContent = 'Waiting for encoder detection…';
-        } else if (batchRunning) {
-          startTooltip.textContent = 'Batch already running';
-        } else if (!hasPending) {
-          startTooltip.textContent = 'No pending items in the queue';
         } else {
           startTooltip.textContent = '';
         }
@@ -2413,9 +2409,10 @@
       if (unknownFiles.length > 0) {
         const names = unknownFiles.slice(0, 10).map(f => f.fileName);
         let body = names.join('\n');
-        if (unknownFiles.length > 10) body += `\n...and ${unknownFiles.length - 10} more`;
+        if (unknownFiles.length > 10) body += `\n+${unknownFiles.length - 10} more`;
         const target = chkCompat.checked ? 'H.264/MP4' : 'HEVC/MKV';
-        body += `\n\nThese files will be converted to ${target}.`;
+        body += `\n\nOutput: ${target}`;
+        $('#modal-unknown-codec-title').textContent = `Unreadable video codec: ${unknownFiles.length} ${unknownFiles.length === 1 ? 'file' : 'files'}`;
         $('#unknown-codec-body').textContent = body;
         $('#unknown-codec-body').style.whiteSpace = 'pre-line';
         const ucModal = $('#modal-unknown-codec');
@@ -2647,6 +2644,7 @@
         const tbody = $('#preflight-table-body');
         tbody.innerHTML = '';
         const hasMissing = warnings.some(w => w.missingTool);
+        $('#modal-preflight-title').textContent = `Missing tools: ${warnings.length} ${warnings.length === 1 ? 'file' : 'files'}`;
 
         for (const w of warnings) {
           const tr = document.createElement('tr');
@@ -2697,7 +2695,7 @@
       const s2 = document.createElement('strong');
       s2.id = 'countdown-value';
       s2.textContent = remaining;
-      body.append(s1, ' in ', s2, ' seconds...');
+      body.append(s1, ' in ', s2, ' seconds');
       modal.classList.add('visible');
       trapFocusInModal(modal);
 
@@ -2794,12 +2792,12 @@
         document.querySelector('#ffmpeg-dl-yes').onclick = async () => {
           releaseFocusTrap(modal);
           modal.classList.remove('visible');
-          encoderSummary.textContent = 'Downloading ffmpeg...';
+          encoderSummary.textContent = 'Downloading ffmpeg';
           try {
             await invoke('download_ffmpeg');
           } catch (e) {
             encoderSummary.textContent = 'Download failed: ' + e;
-            body.textContent = 'Download failed: ' + e + '. You can install ffmpeg manually and restart the app.';
+            body.textContent = 'Download failed: ' + e + ' (install ffmpeg, then restart)';
             modal.classList.add('visible');
             trapFocusInModal(modal);
           }
@@ -2808,7 +2806,7 @@
         document.querySelector('#ffmpeg-dl-no').onclick = () => {
           releaseFocusTrap(modal);
           modal.classList.remove('visible');
-          encoderSummary.textContent = 'ffmpeg not found - install ffmpeg and restart';
+          encoderSummary.textContent = 'ffmpeg not found (install ffmpeg, then restart)';
         };
       });
 
@@ -2939,7 +2937,7 @@
       listen('batch-started', () => {
         batchRunning = true;
         btnPause.textContent = 'Pause';
-        jobStatus.textContent = 'Encoding...';
+        jobStatus.textContent = 'Encoding';
         announceStatus('Encoding started');
         document.querySelector('#bottom-panel')?.classList.add('is-encoding');
         updateBatchButtons();
@@ -2951,7 +2949,7 @@
         batchCurrentFile = current;
         batchTotalFiles = total;
         fileEncodeStart = performance.now();
-        jobStatus.textContent = `Encoding file ${current} of ${total}`;
+        jobStatus.textContent = `Encoding ${current}/${total}`;
         announceStatus(`Encoding file ${current} of ${total}`);
         // Reset per-file progress bar when a new file starts
         progressBar.style.width = '0%';
@@ -2965,7 +2963,7 @@
 
       // Batch status label (current file name)
       listen('batch-status', (event) => {
-        jobStatus.textContent = 'Encoding...';
+        jobStatus.textContent = 'Encoding';
         jobFile.textContent = event.payload;
         jobFile.title = event.payload;
         announceStatus('Encoding ' + event.payload);
@@ -2998,7 +2996,7 @@
         fileEncodeStart = 0;
         document.title = defaultTitle;
         btnPause.textContent = 'Pause';
-        jobStatus.textContent = 'No job running';
+        jobStatus.textContent = 'Ready';
         statusCmd.textContent = '';
         jobFile.textContent = '';
         jobProgressText.textContent = '';
@@ -3048,7 +3046,7 @@
       // Overwrite prompt from backend
       listen('overwrite-prompt', (event) => {
         const filename = event.payload;
-        $('#overwrite-body').textContent = `Output file already exists:\n${filename}\n\nOverwrite?`;
+        $('#overwrite-body').textContent = filename;
         const owModal = $('#modal-overwrite');
         owModal.classList.add('visible');
         trapFocusInModal(owModal);
@@ -3057,8 +3055,7 @@
       // Fallback prompt from backend
       listen('fallback-prompt', (event) => {
         const filename = event.payload;
-        $('#fallback-body').textContent =
-          `Hardware encoder failed for "${filename}".\nFall back to software encoding for this file and continue?`;
+        $('#fallback-body').textContent = filename;
         const fbModal = $('#modal-fallback');
         fbModal.classList.add('visible');
         trapFocusInModal(fbModal);

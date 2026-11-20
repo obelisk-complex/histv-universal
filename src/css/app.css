@@ -261,7 +261,6 @@ input[type="radio"]:checked::after { content: ""; position: absolute; inset: 4px
 #queue-empty-state { display: none; position: absolute; inset: 0; flex-direction: column; align-items: center; justify-content: center; gap: var(--dx-space-3); text-align: center; padding: var(--dx-space-6); pointer-events: none; }
 #queue-empty-state.visible { display: flex; }
 .empty-big { font: 600 var(--dx-text-2xl) / var(--dx-leading-tight) var(--dx-font-display); letter-spacing: -0.02em; color: var(--dx-text); }
-.empty-hint { color: var(--dx-text-muted); max-width: 420px; line-height: 1.55; }
 
 /* Drop overlay */
 #drop-overlay { display: none; position: absolute; inset: var(--dx-space-3); z-index: 40; align-items: center; justify-content: center; font: 600 var(--dx-text-xl) / 1.2 var(--dx-font-display); color: var(--dx-text); background: var(--dx-thread-wash); border: var(--dx-seam) dashed var(--dx-thread-line); border-radius: var(--dx-radius); pointer-events: none; }
@@ -274,12 +273,12 @@ input[type="radio"]:checked::after { content: ""; position: absolute; inset: 4px
   position: relative; background: var(--dx-cloth); color: var(--dx-text-muted); text-align: left;
   font: 500 var(--dx-text-xs) / 1.4 var(--dx-font-mono); letter-spacing: var(--dx-tracking-label); text-transform: uppercase;
   padding: var(--dx-space-2); border-bottom: var(--dx-hairline) solid var(--dx-line-strong);
-  white-space: nowrap; overflow: hidden; text-overflow: ellipsis; user-select: none;
+  white-space: normal; overflow: hidden; vertical-align: bottom; user-select: none;
 }
 #queue-table .col-check { width: 36px; padding-left: 0; padding-right: 0; text-align: center; text-overflow: clip; }
 /* Two columns get a floor so their content never clips; the rest share evenly.
    Dragging a header edge still overrides these. */
-#queue-table th:nth-child(4) { width: 98px; }                 /* "To (est.)" plus its tooltip icon */
+#queue-table th:nth-child(4) { width: 112px; }                /* "Output size (est.)" wraps to two lines; floor keeps the tooltip icon visible */
 #queue-table th:nth-child(9) { width: 112px; }                /* the widest status badge */
 #queue-table th:nth-child(3), #queue-table td:nth-child(3),
 #queue-table th:nth-child(4), #queue-table td:nth-child(4),

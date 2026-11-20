@@ -20,22 +20,21 @@
         </div>
 
         <div id="queue-container">
-          <div id="drop-overlay">Drop files or folders here</div>
+          <div id="drop-overlay">Drop files or folders</div>
           <div id="queue-empty-state" class="visible">
-            <div class="empty-big">Drop your videos here</div>
-            <div class="empty-hint">Or use Add files. Pick a quality, then Start. Folders are scanned automatically.</div>
+            <div class="empty-big">Add files</div>
           </div>
           <table id="queue-table">
             <thead>
               <tr>
-                <th class="col-check"><input type="checkbox" id="select-all" title="Select / deselect all"></th>
+                <th class="col-check"><input type="checkbox" id="select-all" title="Select all"></th>
                 <th>Filename</th>
-                <th>From</th>
-                <th class="has-tooltip">To (est.)<span class="tooltip-icon">?</span><span class="tooltip-text">Estimated output size for the chosen quality. Tilde (~) means the exact size can't be predicted for quality-based encoding.</span></th>
+                <th>Source size</th>
+                <th class="has-tooltip">Output size (est.)<span class="tooltip-icon">?</span><span class="tooltip-text">Estimated output size for the chosen quality. Tilde (~) means the exact size can't be predicted for quality-based encoding.</span></th>
                 <th>Resolution</th>
                 <th>HDR</th>
-                <th>From B/R</th>
-                <th>To B/R</th>
+                <th>Source bitrate</th>
+                <th>Target bitrate</th>
                 <th>Status</th>
               </tr>
             </thead>
@@ -106,7 +105,7 @@
           <!-- Advanced drawer: every raw control lives here, hidden by default. -->
           <div id="settings-panel" class="collapsed-adv" hidden>
 
-            <div class="status-text" id="encoder-summary">Detecting encoders...</div>
+            <div class="status-text" id="encoder-summary">Detecting encoders</div>
 
             <div class="section-header dx-label dx-section-label">Advanced / Video</div>
 
@@ -163,12 +162,12 @@
             <div class="section-header dx-label dx-section-label">Advanced / Output</div>
 
             <div class="form-row has-tooltip">
-              <label class="has-tooltip">Where
+              <label class="has-tooltip">Output location
                 <span class="tooltip-icon">?</span>
                 <span class="tooltip-text">"Use the Save to folder" saves to the folder set above. "Next to source" makes an output folder beside each input. "Replace source" swaps the original with the encoded version.</span>
               </label>
               <div class="radio-group" id="radio-output-mode">
-                <label class="radio-label"><input type="radio" name="output-mode" value="folder" checked /> Use the Save to folder</label>
+                <label class="radio-label"><input type="radio" name="output-mode" value="folder" checked /> Save to folder</label>
                 <label class="radio-label"><input type="radio" name="output-mode" value="beside" /> Next to each source</label>
                 <label class="radio-label"><input type="radio" name="output-mode" value="replace" /> Replace source</label>
               </div>
@@ -249,10 +248,7 @@
             <div class="section-header dx-label dx-section-label">Advanced / After batch</div>
 
             <div class="form-row">
-              <label for="sel-post-action" class="has-tooltip">Action
-                <span class="tooltip-icon">?</span>
-                <span class="tooltip-text">Something to do when the batch finishes. Handy for overnight encodes.</span>
-              </label>
+              <label for="sel-post-action">Action</label>
               <select id="sel-post-action">
                 <option value="None">None</option>
                 <option value="Shutdown">Shutdown</option>
@@ -332,7 +328,7 @@
             <div class="log-filters">
               <button class="log-filter-btn active" data-filter="all" aria-pressed="true" title="Show or hide all log categories at once">All</button>
               <button class="log-filter-btn active" data-filter="error" aria-pressed="true" title="Error messages from ffmpeg or the app">Errors</button>
-              <button class="log-filter-btn active" data-filter="warn" aria-pressed="true" title="Non-fatal warnings (skipped streams, fallback decisions, etc.)">Warn</button>
+              <button class="log-filter-btn active" data-filter="warn" aria-pressed="true" title="Non-fatal warnings (skipped streams, fallback decisions, etc.)">Warnings</button>
               <button class="log-filter-btn active" data-filter="result" aria-pressed="true" title="Encoding results (file sizes, savings, copy/remux outcomes)">Results</button>
               <button class="log-filter-btn active" data-filter="cmd" aria-pressed="true" title="Full ffmpeg command lines (useful for debugging)">CMD</button>
               <button class="log-filter-btn active" data-filter="detect" aria-pressed="true" title="Encoder detection messages from startup">Detect</button>
@@ -362,12 +358,12 @@
     <!-- ═══ Modal: Overwrite prompt ═══ -->
     <div class="modal-overlay" id="modal-overwrite" role="dialog" aria-modal="true" aria-labelledby="modal-overwrite-title">
       <div class="modal-box">
-        <div class="modal-title" id="modal-overwrite-title">File already exists</div>
-        <div class="modal-body" id="overwrite-body">Output file already exists. Overwrite?</div>
+        <div class="modal-title" id="modal-overwrite-title">Replace 1 file?</div>
+        <div class="modal-body" id="overwrite-body"></div>
         <div class="modal-buttons">
-          <button class="btn btn-primary" id="ow-yes">Yes</button>
-          <button class="btn" id="ow-no">No</button>
-          <button class="btn" id="ow-always">Always</button>
+          <button class="btn btn-primary" id="ow-yes">Replace</button>
+          <button class="btn" id="ow-no">Skip</button>
+          <button class="btn" id="ow-always">Replace all</button>
         </div>
       </div>
     </div>
@@ -376,7 +372,7 @@
     <div class="modal-overlay" id="modal-fallback" role="dialog" aria-modal="true" aria-labelledby="modal-fallback-title">
       <div class="modal-box">
         <div class="modal-title" id="modal-fallback-title">Hardware encoder failed</div>
-        <div class="modal-body" id="fallback-body">Fall back to software encoding for this file and continue?</div>
+        <div class="modal-body" id="fallback-body"></div>
         <div class="modal-buttons">
           <button class="btn btn-primary" id="fb-yes">Yes</button>
           <button class="btn" id="fb-no">No</button>
@@ -388,7 +384,7 @@
     <div class="modal-overlay" id="modal-delete-confirm" role="dialog" aria-modal="true" aria-labelledby="modal-delete-title">
       <div class="modal-box">
         <div class="modal-title" id="modal-delete-title">Delete source files</div>
-        <div class="modal-body">"Delete source" is enabled. Source files will be permanently deleted after each successful encode. Continue?</div>
+        <div class="modal-body">Deleted permanently after each successful encode</div>
         <div class="modal-buttons">
           <button class="btn btn-primary" id="dc-yes">Continue</button>
           <button class="btn" id="dc-no">Cancel</button>
@@ -399,7 +395,7 @@
     <!-- ═══ Modal: Pre-flight DV/HDR10+ warnings ═══ -->
     <div class="modal-overlay" id="modal-preflight" role="dialog" aria-modal="true" aria-labelledby="modal-preflight-title">
       <div class="modal-box modal-wide">
-        <div class="modal-title" id="modal-preflight-title">Some files need additional tools for best results</div>
+        <div class="modal-title" id="modal-preflight-title">Missing tools</div>
         <div class="modal-body" id="preflight-body">
           <table class="preflight-table">
             <thead>
@@ -437,12 +433,11 @@
       <div class="modal-box">
         <div class="modal-title" id="modal-ffmpeg-title">ffmpeg not found</div>
         <div class="modal-body" id="ffmpeg-missing-body">
-          ffmpeg and ffprobe are required but were not found on your system.
-          Would you like to download them automatically? (~80 MB)
+          Download ffmpeg and ffprobe (~80 MB)
         </div>
         <div class="modal-buttons">
           <button class="btn btn-primary" id="ffmpeg-dl-yes">Download</button>
-          <button class="btn" id="ffmpeg-dl-no">Not now</button>
+          <button class="btn" id="ffmpeg-dl-no">Cancel</button>
         </div>
       </div>
     </div>
@@ -450,7 +445,7 @@
     <!-- ═══ Modal: Unknown codec warning ═══ -->
     <div class="modal-overlay" id="modal-unknown-codec" role="dialog" aria-modal="true" aria-labelledby="modal-unknown-codec-title">
       <div class="modal-box">
-        <div class="modal-title" id="modal-unknown-codec-title">Some files have unreadable video codecs</div>
+        <div class="modal-title" id="modal-unknown-codec-title">Unreadable video codec</div>
         <div class="modal-body" id="unknown-codec-body"></div>
         <div class="modal-buttons">
           <button class="btn btn-primary" id="uc-continue">Continue</button>
