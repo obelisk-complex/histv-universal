@@ -180,6 +180,36 @@ case "$PLATFORM" in
     need encoders h264_videotoolbox hevc_videotoolbox ;;
 esac
 
+# Exact feature switches. Static libraries leave no trace in the DLL/dylib/ELF
+# imports, so the configure line is what shows what was linked in: with
+# --disable-autodetect (and --disable-iconv, which autodetect does not cover)
+# only the --enable-* named here can be. Same external libraries everywhere;
+# only the hardware APIs differ by platform.
+want_config="--disable-autodetect --disable-iconv --enable-gpl --enable-version3
+  --enable-static --enable-ffprobe --enable-indev=lavfi --enable-runtime-cpudetect
+  --enable-zlib --enable-libx264 --enable-libx265 --enable-libsvtav1
+  --enable-libdav1d --enable-libzimg --enable-libopus --enable-libvorbis
+  --enable-libmp3lame"
+case "$PLATFORM" in
+  linux) want_config="$want_config --enable-vaapi --enable-libdrm --enable-ffnvcodec
+    --enable-cuda --enable-cuvid --enable-nvdec --enable-nvenc --enable-amf
+    --enable-libvpl --enable-vulkan" ;;
+  windows) want_config="$want_config --enable-ffnvcodec --enable-cuda --enable-cuvid
+    --enable-nvdec --enable-nvenc --enable-d3d11va --enable-dxva2 --enable-d3d12va
+    --enable-amf --enable-libvpl --enable-vulkan" ;;
+  macos) want_config="$want_config --enable-videotoolbox --enable-audiotoolbox" ;;
+esac
+"$FF" -hide_banner -version | tr -d '\r' | sed -n 's/^configuration: //p' | tr ' ' '\n' |
+  tr -d "'\"" | grep -E '^--enable-|^--disable-(autodetect|iconv)$' | LC_ALL=C sort -u >config_have.txt
+printf '%s\n' $want_config | LC_ALL=C sort -u >config_want.txt
+if cmp -s config_have.txt config_want.txt; then
+  ok
+else
+  extra=$(LC_ALL=C comm -23 config_have.txt config_want.txt | tr '\n' ' ')
+  lack=$(LC_ALL=C comm -13 config_have.txt config_want.txt | tr '\n' ' ')
+  bad "configure switches differ (unexpected: ${extra:-none}; missing: ${lack:-none})"
+fi
+
 # --- 3. Links only system libraries ------------------------------------------
 
 check_deps() {
