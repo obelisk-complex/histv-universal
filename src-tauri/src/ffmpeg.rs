@@ -6,7 +6,9 @@
 //!
 //! Resolution order:
 //! 1. Tauri sidecar / resource directory (bundled binaries next to the app).
-//! 2. Same directory as the running executable.
+//! 2. Same directory as the running executable, skipped when that is a
+//!    system directory such as `/usr/bin` (a packaged install), so a system
+//!    ffmpeg beside the app does not shadow the downloaded one in step 3.
 //! 3. App-data binary directory (where auto-downloaded ffmpeg lives).
 //! 4. Well-known platform directories (Homebrew, MacPorts, Xcode CLT, snap, Chocolatey, etc.).
 //!    This is critical on macOS where GUI apps do not inherit the shell PATH,
@@ -914,6 +916,26 @@ fn shell_path_dirs() -> Vec<PathBuf> {
 
 // ── Binary resolution ───────────────────────────────────────────
 
+/// Directories where a distro package or package manager installs
+/// executables. `WELL_KNOWN_DIRS` does not fit here: it omits `/bin` and the
+/// `sbin` directories and includes locations that only hold ffmpeg itself.
+const SYSTEM_EXE_DIRS: &[&str] = &[
+    "/usr/bin",
+    "/usr/local/bin",
+    "/bin",
+    "/usr/sbin",
+    "/usr/local/sbin",
+    "/opt/homebrew/bin",
+];
+
+/// True when `dir` is a shared system directory. An ffmpeg found there
+/// belongs to the OS, not to this app, so it must not shadow the pinned
+/// ffmpeg that HISTV downloads. Compared by path component, so a trailing
+/// slash does not matter.
+fn exe_dir_is_system_dir(dir: &Path) -> bool {
+    SYSTEM_EXE_DIRS.iter().any(|d| Path::new(d) == dir)
+}
+
 /// Resolve a binary name to a full path. Checks multiple locations
 /// in priority order, falling back to a bare name for PATH lookup.
 fn resolve_binary(resource_dir: Option<&Path>, name: &str) -> PathBuf {
@@ -925,12 +947,16 @@ fn resolve_binary(resource_dir: Option<&Path>, name: &str) -> PathBuf {
         }
     }
 
-    // 2. Same directory as the running executable
+    // 2. Same directory as the running executable, unless that is a system
+    //    directory (distro package in /usr/bin): the ffmpeg there is the
+    //    OS's, and step 3 must get the chance to supply the pinned fork.
     if let Ok(exe) = std::env::current_exe() {
         if let Some(dir) = exe.parent() {
-            let candidate = dir.join(name);
-            if candidate.exists() {
-                return candidate;
+            if !exe_dir_is_system_dir(dir) {
+                let candidate = dir.join(name);
+                if candidate.exists() {
+                    return candidate;
+                }
             }
         }
     }
@@ -1101,6 +1127,49 @@ mod tests {
         // Should fall through to other locations or bare name
         // (won't be the resource dir path)
         assert!(!result.starts_with(tmp.path()));
+    }
+
+    // ── exe_dir_is_system_dir ───────────────────────────────────
+
+    #[test]
+    fn test_exe_dir_is_system_dir_true_for_system_dirs() {
+        for dir in [
+            "/usr/bin",
+            "/usr/local/bin",
+            "/bin",
+            "/usr/sbin",
+            "/usr/local/sbin",
+            "/opt/homebrew/bin",
+        ] {
+            assert!(exe_dir_is_system_dir(Path::new(dir)), "{dir}");
+        }
+    }
+
+    #[test]
+    fn test_exe_dir_is_system_dir_ignores_trailing_slash() {
+        assert!(exe_dir_is_system_dir(Path::new("/usr/bin/")));
+        assert!(exe_dir_is_system_dir(Path::new("/usr/local/bin/")));
+    }
+
+    #[test]
+    fn test_exe_dir_is_system_dir_false_for_bundled_layouts() {
+        for dir in [
+            "/tmp/.mount_HISTV-abc123/usr/bin",
+            "/opt/histv",
+            "/opt/histv/bin",
+            "/usr/lib/histv",
+            "/usr/local/lib/histv",
+            "/usr/bin/histv-portable",
+            "/usr/binx",
+            "/home/user/Apps/histv",
+            "/Applications/HISTV.app/Contents/MacOS",
+            "/usr",
+            "/",
+            "usr/bin",
+            "",
+        ] {
+            assert!(!exe_dir_is_system_dir(Path::new(dir)), "{dir}");
+        }
     }
 
     // ── log_resolved_path ───────────────────────────────────────
