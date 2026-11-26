@@ -128,6 +128,8 @@
       setupModalButtons();
       setupBottomButtons();
       listenTauriEvents();
+      // Replays log lines emitted before the listener existed
+      await invoke('attach_log_listener');
 
       // In case encoder detection completed before listeners were ready
       const alreadyDone = await invoke('get_encoder_detection_status');

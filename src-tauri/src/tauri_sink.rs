@@ -6,9 +6,11 @@
 //! macro to avoid per-tick Map/Value heap allocations (#16).
 
 use serde::Serialize;
-use tauri::{AppHandle, Emitter};
+use std::sync::Arc;
 
-use crate::events::EventSink;
+use tauri::{AppHandle, Emitter, Manager};
+
+use crate::events::{EventSink, LogBuffer};
 use crate::queue::QueueItem;
 
 // ── Typed event payloads (#16) ─────────────────────────────────
@@ -77,7 +79,14 @@ impl TauriSink {
 
 impl EventSink for TauriSink {
     fn log(&self, message: &str) {
-        let _ = self.app.emit("log", message);
+        match self.app.try_state::<Arc<LogBuffer>>() {
+            Some(buf) => buf.log(message, |m| {
+                let _ = self.app.emit("log", m);
+            }),
+            None => {
+                let _ = self.app.emit("log", message);
+            }
+        }
     }
 
     fn file_progress(&self, percent: f64, time_secs: f64, total_secs: f64, pass: Option<(u8, u8)>) {

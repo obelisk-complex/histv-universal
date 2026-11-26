@@ -123,6 +123,48 @@ pub trait BatchControl: Send + Sync {
     fn fallback_prompt(&self, filename: &str) -> String;
 }
 
+/// Holds log lines emitted before the frontend has attached its listener.
+///
+/// Until [`LogBuffer::attach`] is called, lines are queued. `attach` hands the
+/// queue to the caller in order, then later lines pass straight through.
+/// Both methods run the emit callback under the lock, so a line logged during
+/// the flush cannot overtake the queued ones.
+#[derive(Default)]
+pub struct LogBuffer {
+    state: std::sync::Mutex<LogBufferState>,
+}
+
+#[derive(Default)]
+struct LogBufferState {
+    attached: bool,
+    pending: Vec<String>,
+}
+
+impl LogBuffer {
+    pub fn new() -> Self {
+        Self::default()
+    }
+
+    /// Queue `line` if no listener is attached yet, otherwise pass it to `emit`.
+    pub fn log(&self, line: &str, emit: impl FnOnce(&str)) {
+        let mut st = self.state.lock().unwrap_or_else(|e| e.into_inner());
+        if st.attached {
+            emit(line);
+        } else {
+            st.pending.push(line.to_string());
+        }
+    }
+
+    /// Mark the listener as attached and pass every queued line to `emit`, oldest first.
+    pub fn attach(&self, mut emit: impl FnMut(&str)) {
+        let mut st = self.state.lock().unwrap_or_else(|e| e.into_inner());
+        st.attached = true;
+        for line in st.pending.drain(..) {
+            emit(&line);
+        }
+    }
+}
+
 // ── Unit tests ─────────────────────────────────────────────────
 
 #[cfg(test)]
@@ -131,6 +173,37 @@ mod tests {
     use crate::queue::{QueueItem, QueueItemStatus};
     use crate::test_helpers::{synthetic_probe, CapturingSink};
     use std::sync::Arc;
+
+    #[test]
+    fn log_buffer_holds_lines_until_attach_then_flushes_in_order() {
+        let buf = LogBuffer::new();
+        let mut out: Vec<String> = Vec::new();
+        for l in ["a", "b", "c"] {
+            buf.log(l, |m| out.push(m.to_string()));
+        }
+        assert!(out.is_empty());
+        buf.attach(|m| out.push(m.to_string()));
+        assert_eq!(out, ["a", "b", "c"]);
+    }
+
+    #[test]
+    fn log_buffer_passes_lines_through_after_attach() {
+        let buf = LogBuffer::new();
+        let mut out: Vec<String> = Vec::new();
+        buf.attach(|m| out.push(m.to_string()));
+        buf.log("late", |m| out.push(m.to_string()));
+        assert_eq!(out, ["late"]);
+    }
+
+    #[test]
+    fn log_buffer_second_attach_does_not_replay() {
+        let buf = LogBuffer::new();
+        let mut out: Vec<String> = Vec::new();
+        buf.log("x", |m| out.push(m.to_string()));
+        buf.attach(|m| out.push(m.to_string()));
+        buf.attach(|m| out.push(m.to_string()));
+        assert_eq!(out, ["x"]);
+    }
 
     fn make_item(path: &str, status: QueueItemStatus) -> QueueItem {
         QueueItem {

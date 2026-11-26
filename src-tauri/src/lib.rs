@@ -177,6 +177,18 @@ mod gui_commands {
         config::save_config(&app, &config).map_err(|e| e.to_string())
     }
 
+    /// Called by the frontend once its `log` listener is attached; replays
+    /// the lines logged during start-up.
+    #[tauri::command]
+    pub fn attach_log_listener(
+        app: tauri::AppHandle,
+        buf: tauri::State<'_, Arc<crate::events::LogBuffer>>,
+    ) {
+        buf.attach(|m| {
+            let _ = app.emit("log", m);
+        });
+    }
+
     #[tauri::command]
     pub async fn get_encoder_detection_status(
         state: tauri::State<'_, Arc<AppState>>,
@@ -892,12 +904,14 @@ pub fn run() {
         .plugin(tauri_plugin_fs::init())
         .plugin(tauri_plugin_shell::init())
         .manage(app_state.clone())
+        .manage(Arc::new(events::LogBuffer::new()))
         .invoke_handler(tauri::generate_handler![
             is_flatpak,
             get_themes,
             load_themes,
             get_config,
             save_config,
+            attach_log_listener,
             get_encoder_detection_status,
             get_ffmpeg_missing_status,
             get_detected_encoders,
