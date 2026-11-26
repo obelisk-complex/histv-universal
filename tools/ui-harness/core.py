@@ -280,11 +280,20 @@ def check_applied(page, theme, style, tree):
 DUMP_JS = """() => {
   const r2 = (v) => Math.round(v * 100) / 100;
   const out = {}, dup = [];
-  for (const e of document.querySelectorAll('[id]')) {
-    if (Object.prototype.hasOwnProperty.call(out, e.id)) { dup.push(e.id); continue; }
+  const add = (key, e) => {
+    if (Object.prototype.hasOwnProperty.call(out, key)) { dup.push(key); return; }
     const b = e.getBoundingClientRect(), cs = getComputedStyle(e);
-    out[e.id] = { x: r2(b.x), y: r2(b.y), w: r2(b.width), h: r2(b.height), display: cs.display, visibility: cs.visibility };
-  }
+    out[key] = { x: r2(b.x), y: r2(b.y), w: r2(b.width), h: r2(b.height), display: cs.display, visibility: cs.visibility,
+      color: cs.color, bg: cs.backgroundColor, borderTop: cs.borderTopColor, borderBottom: cs.borderBottomColor,
+      shadow: cs.boxShadow };
+  };
+  for (const e of document.querySelectorAll('[id]')) add(e.id, e);
+  // Queue rows and their status badges carry the status colours but have no ids; they are keyed by position.
+  document.querySelectorAll('#queue-body > tr').forEach((tr, i) => {
+    add('queue-row-' + i, tr);
+    const badge = tr.children[8] && tr.children[8].firstElementChild;
+    if (badge) add('queue-row-' + i + '-status', badge);
+  });
   const link = document.getElementById('ui-style-css');
   return {
     elements: out, duplicates: dup,
@@ -299,6 +308,11 @@ DUMP_JS = """() => {
 
 
 def dump(page):
+    # A hovered or focused control is drawn differently; where the last click landed differs
+    # between refs, so park the pointer in the corner and drop focus before reading colours.
+    page.mouse.move(0, 0)
+    page.evaluate("document.activeElement && document.activeElement.blur()")
+    page.wait_for_timeout(50)
     return page.evaluate(DUMP_JS)
 
 

@@ -1,5 +1,6 @@
 """Classic parity: the same cells rendered on two refs, bounding boxes of the shared element ids compared."""
 import json
+import re
 from pathlib import Path
 
 import core
@@ -7,9 +8,13 @@ from cells import render_cell
 from core import EXIT_DIFF, EXIT_NOTHING, EXIT_OK, CellFailure, Report, Session, Site, slug
 from states import STATES
 
-# Old theme name -> the name the same palette has in the candidate (spec decision 3).
-CLASSIC_ALIAS = {"Default Dark": "Classic Dark", "Default Light": "Classic Light"}
+# Old theme name -> the name the same palette has in the candidate (spec decision 3: the implementer
+# built Classic Dark and Classic Light from the old Default Dark and Default Light values). Only
+# these pairs get colour checks; the other themes changed palette on purpose since 2.6.0.
+DEFAULT_MAP = {"Default Dark": "Classic Dark", "Default Light": "Classic Light"}
 THEMES = ["Default Dark", "Default Light", "Nord", "Jessica Dark"]
+COLOUR_PROPS = {"color": "color", "bg": "background-color", "borderTop": "border-top-color",
+                "borderBottom": "border-bottom-color", "shadow": "box-shadow"}
 EXPLAINED = Path(__file__).resolve().parent / "parity-explained.json"
 BOX = ("x", "y", "w", "h")
 # Ids the contract adds on top of the old markup; they have no counterpart to compare with.
@@ -31,8 +36,41 @@ def explained_by(entries, state, el_id, prop):
     return None
 
 
-def compare(base, cand, tol):
-    """-> list of (id, prop, baseline value, candidate value) for one cell pair."""
+_TOKEN = re.compile(r"rgba?\([^)]*\)|-?\d*\.?\d+px|\S+")
+
+
+def _channels(tok):
+    nums = [float(x) for x in re.findall(r"-?\d*\.?\d+", tok)]
+    return nums + [1.0] * (4 - len(nums)) if len(nums) == 3 else nums
+
+
+def colours_close(a, b, ctol, tol):
+    """Computed colour or box-shadow strings. Colours: every channel within ctol (0-255), alpha within
+    0.02. Lengths inside a shadow: within tol px. Anything else in the string must be identical."""
+    if a == b:
+        return True
+    ta, tb = _TOKEN.findall(a), _TOKEN.findall(b)
+    if len(ta) != len(tb):
+        return False
+    for x, y in zip(ta, tb):
+        if x == y:
+            continue
+        if x.startswith("rgb") and y.startswith("rgb"):
+            ca, cb = _channels(x), _channels(y)
+            if len(ca) != len(cb) or any(abs(i - j) > ctol for i, j in zip(ca[:3], cb[:3])) \
+                    or abs(ca[3] - cb[3]) > 0.02:
+                return False
+        elif x.endswith("px") and y.endswith("px"):
+            if abs(float(x[:-2]) - float(y[:-2])) > tol:
+                return False
+        else:
+            return False
+    return True
+
+
+def compare(base, cand, tol, colour=False, ctol=2):
+    """-> list of (id, prop, baseline value, candidate value) for one cell pair.
+    colour=True also compares the computed colours of elements shown on both sides."""
     out = []
     be, ce = base["elements"], cand["elements"]
     for i in sorted((set(be) | set(ce)) - CONTRACT_IDS):
@@ -48,25 +86,42 @@ def compare(base, cand, tol):
         for prop in BOX:
             if abs(be[i][prop] - ce[i][prop]) > tol:
                 out.append((i, prop, be[i][prop], ce[i][prop]))
+        if colour and be[i]["display"] != "none" and ce[i]["display"] != "none":
+            for key, name in COLOUR_PROPS.items():
+                if not colours_close(be[i][key], ce[i][key], ctol, tol):
+                    out.append((i, name, be[i][key], ce[i][key]))
     return out
 
 
-def pair_themes(base, cand, rep):
+def pair_themes(base, cand, rep, mapping):
+    """-> [(baseline theme, candidate theme, colour check?)]. A theme in `mapping` whose candidate name
+    exists is compared for geometry and colour; any other theme is compared for geometry only."""
     pairs = []
     for t in THEMES:
-        ct = CLASSIC_ALIAS.get(t, t)
-        if ct not in cand.theme_names():
-            if t in cand.theme_names():
-                ct = t
-                rep.skip(f"{cand.spec}: no '{CLASSIC_ALIAS[t]}' theme, so '{t}' is used for the candidate")
-            else:
-                rep.skip(f"{cand.spec}: theme '{ct}' is not in src-tauri/themes, so '{t}' is not compared")
-                continue
         if t not in base.theme_names():
             rep.skip(f"{base.spec}: theme '{t}' is not in src-tauri/themes, so it is not compared")
             continue
-        pairs.append((t, ct))
+        if t in mapping and mapping[t] in cand.theme_names():
+            pairs.append((t, mapping[t], True))
+        elif t in cand.theme_names():
+            if t in mapping:
+                rep.skip(f"{cand.spec}: no '{mapping[t]}' theme, so '{t}' is compared for geometry only (no colour check)")
+            pairs.append((t, t, False))
+        else:
+            rep.skip(f"{cand.spec}: theme '{t}' is not in src-tauri/themes, so it is not compared")
     return pairs
+
+
+def parse_map(items):
+    if items is None:
+        return dict(DEFAULT_MAP)
+    out = {}
+    for it in items:
+        old, sep, new = it.partition("=")
+        if not sep or not old or not new:
+            raise core.HarnessError(f"--map expects OLD=NEW, got {it!r}")
+        out[old] = new
+    return out
 
 
 def cmd_parity(a):
@@ -79,14 +134,16 @@ def cmd_parity(a):
         if why:
             rep.skip(why)
     states = a.states or list(STATES)
+    mapping = parse_map(a.map)
     explained = load_explained()
-    compared = diffs = accepted = 0
+    compared = coloured = diffs = accepted = 0
     detail = []
     if not (why_b or why_c):
         print(f"parity: {base.spec} ({b_label}) -> {cand.spec} ({c_label}), tolerance {a.tol}px, "
               f"{len(states)} states\n")
         with Site(base) as sb, Site(cand) as sc, Session() as s:
-            for bt, ct in pair_themes(base, cand, rep):
+            for bt, ct, colour in pair_themes(base, cand, rep, mapping):
+                colour = colour and b_label == c_label
                 for state in states:
                     where = f"{state} / {bt}" + (f" vs {ct}" if ct != bt else "")
                     try:
@@ -96,7 +153,8 @@ def cmd_parity(a):
                         rep.fail(where, str(e))
                         continue
                     compared += 1
-                    for el, prop, vb, vc in compare(db, dc, a.tol):
+                    coloured += colour
+                    for el, prop, vb, vc in compare(db, dc, a.tol, colour, a.colour_tol):
                         why = explained_by(explained, state, el, prop)
                         d = {"cell": where, "id": el, "prop": prop, "baseline": vb, "candidate": vc, "explained": why}
                         detail.append(d)
@@ -110,7 +168,7 @@ def cmd_parity(a):
     out = core.OUT / "parity"
     out.mkdir(parents=True, exist_ok=True)
     (out / f"{slug(base.label)}__{slug(cand.label)}.json").write_text(json.dumps(
-        {"baseline": a.baseline, "candidate": a.candidate, "tol": a.tol, "compared": compared,
+        {"baseline": a.baseline, "candidate": a.candidate, "tol": a.tol, "compared": compared, "colour_checked": coloured, "map": mapping, "colour_tol": a.colour_tol,
          "differences": detail, "skipped": rep.skips, "failed": rep.failures}, indent=1))
     by_id = {}
     for d in detail:
@@ -120,7 +178,7 @@ def cmd_parity(a):
         print("\nunexplained differences by id (id: states):")
         for i, st in sorted(by_id.items(), key=lambda kv: (-len(kv[1]), kv[0])):
             print(f"  #{i}: {', '.join(sorted(st))}")
-    print(f"\nparity: {compared} cells compared, {diffs} unexplained differences, {accepted} explained, "
+    print(f"\nparity: {compared} cells compared ({coloured} with colour checks), {diffs} unexplained differences, {accepted} explained, "
           f"{len(rep.failures)} cells failed, {len(rep.skips)} skip notes")
     if compared == 0:
         print("nothing was compared: parity cannot pass")

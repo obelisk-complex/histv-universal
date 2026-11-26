@@ -63,6 +63,28 @@ def s_rail_collapsed(loaded):
         raise CellFailure(f"rail did not shrink when collapsed ({before} -> {after})")
 
 
+def _rail_at_limit(loaded, width, limit):
+    """Set --rail-w on #main-area (what a drag does in the current front end; e4d0ee2's drag does not
+    move the rail at all, so the variable is the one route both refs share) to a value far outside the
+    rail's min-width / max-width, so the CSS limit decides the width."""
+    populate(loaded)
+    page = loaded.page
+    page.evaluate("(w) => document.querySelector('#main-area').style.setProperty('--rail-w', w)", width)
+    raf2(page, 150)
+    got = page.evaluate("""(prop) => { const r = document.querySelector('#right-panel');
+        return [r.getBoundingClientRect().width, parseFloat(getComputedStyle(r)[prop])]; }""", limit)
+    if abs(got[0] - got[1]) > 1:
+        raise CellFailure(f"rail is {got[0]}px with --rail-w {width}, expected its {limit} of {got[1]}px")
+
+
+def s_rail_min(loaded):
+    _rail_at_limit(loaded, "1px", "minWidth")
+
+
+def s_rail_max(loaded):
+    _rail_at_limit(loaded, "2000px", "maxWidth")
+
+
 def s_narrow(loaded):
     populate(loaded)
 
@@ -107,6 +129,8 @@ STATES = {
     "rows": (VIEWPORT, s_rows),
     "drawer": (VIEWPORT, s_drawer),
     "rail-collapsed": (VIEWPORT, s_rail_collapsed),
+    "rail-min": (VIEWPORT, s_rail_min),
+    "rail-max": (VIEWPORT, s_rail_max),
     "narrow-800": (NARROW, s_narrow),
     "modal-overwrite": (VIEWPORT, s_modal_overwrite),
     "modal-fallback": (VIEWPORT, s_modal_fallback),
