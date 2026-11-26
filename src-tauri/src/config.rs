@@ -10,6 +10,8 @@ use tauri::Manager;
 #[serde(default)]
 pub struct AppConfig {
     pub theme: String,
+    #[serde(deserialize_with = "deserialize_ui_style")]
+    pub ui_style: String, // "doublet" | "classic"
     pub output_folder: String,
     pub output_mode: String, // "folder" | "beside" | "replace"
     pub overwrite: bool,
@@ -46,6 +48,7 @@ impl Default for AppConfig {
     fn default() -> Self {
         Self {
             theme: "Default Dark".to_string(),
+            ui_style: "doublet".to_string(),
             output_folder: "output".to_string(),
             output_mode: "folder".to_string(),
             overwrite: false,
@@ -75,6 +78,22 @@ impl Default for AppConfig {
             force_local: false,
         }
     }
+}
+
+/// Reads `uiStyle`. "classic" is kept; any other value, including one of the
+/// wrong type, reads as "doublet" so a bad entry never discards the rest of
+/// the config. Mirrors normaliseUiStyle in src/js/lib.js.
+fn deserialize_ui_style<'de, D>(deserializer: D) -> Result<String, D::Error>
+where
+    D: serde::Deserializer<'de>,
+{
+    let value = serde_json::Value::deserialize(deserializer)?;
+    let style = if value.as_str() == Some("classic") {
+        "classic"
+    } else {
+        "doublet"
+    };
+    Ok(style.to_string())
 }
 
 /// Get the directory where config.json lives.
@@ -211,5 +230,40 @@ mod tests {
         assert!(json.contains("rateControlMode"));
         assert!(json.contains("peakMultiplier"));
         assert!(!json.contains("output_folder")); // Should NOT have snake_case
+    }
+
+    #[test]
+    fn ui_style_defaults_to_doublet() {
+        assert_eq!(AppConfig::default().ui_style, "doublet");
+    }
+
+    #[test]
+    fn ui_style_round_trips_as_camel_case() {
+        let config = AppConfig {
+            ui_style: "classic".to_string(),
+            ..AppConfig::default()
+        };
+        let json = serde_json::to_string(&config).unwrap();
+        assert!(json.contains(r#""uiStyle":"classic""#), "{json}");
+        let back: AppConfig = serde_json::from_str(&json).unwrap();
+        assert_eq!(back.ui_style, "classic");
+    }
+
+    #[test]
+    fn ui_style_missing_reads_as_doublet() {
+        let config: AppConfig = serde_json::from_str(r#"{"theme":"Nord"}"#).unwrap();
+        assert_eq!(config.ui_style, "doublet");
+        assert_eq!(config.theme, "Nord");
+    }
+
+    #[test]
+    fn ui_style_unknown_value_reads_as_doublet() {
+        for raw in [r#""neon""#, r#""Classic""#, r#""""#, "42", "null", "[]"] {
+            let json = format!(r#"{{"theme":"Nord","uiStyle":{raw}}}"#);
+            let config: AppConfig = serde_json::from_str(&json).unwrap();
+            assert_eq!(config.ui_style, "doublet", "uiStyle {raw}");
+            // A bad value must not discard the rest of the config.
+            assert_eq!(config.theme, "Nord", "uiStyle {raw}");
+        }
     }
 }
