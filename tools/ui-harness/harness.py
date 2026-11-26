@@ -1,0 +1,77 @@
+#!/usr/bin/env python3
+"""Entry point: harness.py matrix|parity|toggle|paint ... (run through run.sh)."""
+import argparse
+import json
+import sys
+
+import core
+from core import EXIT_DIFF, EXIT_HARNESS, EXIT_NOTHING, EXIT_OK, CellFailure, HarnessError, Report, Session, Site, slug
+from cells import render_cell
+from states import STATES, STYLES, THEMES
+
+
+def cmd_matrix(a):
+    tree = core.prepare_tree(a.ref)
+    for n in tree.notes:
+        print(f"NOTE  {n}")
+    styles = a.styles or STYLES
+    themes = a.themes or THEMES
+    states = a.states or list(STATES)
+    rep = Report()
+    outdir = core.OUT / "matrix" / tree.label
+    index = []
+    with Site(tree) as site, Session() as s:
+        for style in styles:
+            label, ui_style, why = core.resolve_style(tree, style)
+            if why:
+                rep.skip(why)
+                continue
+            for theme in themes:
+                why = core.theme_skip(tree, theme)
+                if why:
+                    rep.skip(why)
+                    continue
+                for state in states:
+                    cell = f"{tree.label}/{label}/{theme}/{state}"
+                    base = outdir / label / slug(theme) / state
+                    try:
+                        d = render_cell(s, site, tree, theme, ui_style, state, shot_path=base.with_suffix(".png"),
+                                        drop=a.mock_drop)
+                    except CellFailure as e:
+                        rep.fail(cell, str(e))
+                        continue
+                    base.with_suffix(".json").write_text(json.dumps(d, indent=1, sort_keys=True))
+                    rep.rendered += 1
+                    index.append(cell)
+    (outdir).mkdir(parents=True, exist_ok=True)
+    (outdir / "summary.json").write_text(json.dumps(
+        {"ref": a.ref, "rendered": index, "skipped": rep.skips, "failed": rep.failures}, indent=1))
+    print(f"\nmatrix {tree.label}: {rep.rendered} cells rendered, {len(rep.skips)} skip notes, "
+          f"{len(rep.failures)} failed; output in {outdir}")
+    if rep.rendered == 0:
+        print("nothing was rendered")
+        return EXIT_NOTHING
+    return EXIT_DIFF if rep.failures else EXIT_OK
+
+
+def main():
+    p = argparse.ArgumentParser(prog="run.sh")
+    sub = p.add_subparsers(dest="cmd", required=True)
+    m = sub.add_parser("matrix", help="render the state matrix of one ref")
+    m.add_argument("ref", help="git ref, @worktree, or dir:PATH")
+    m.add_argument("--styles", nargs="*")
+    m.add_argument("--themes", nargs="*")
+    m.add_argument("--states", nargs="*", choices=list(STATES))
+    m.add_argument("--mock-drop", nargs="*", default=[], metavar="CMD",
+                   help="negative control: make the mock not know these commands")
+    m.set_defaults(fn=cmd_matrix)
+    a = p.parse_args()
+    try:
+        return a.fn(a)
+    except HarnessError as e:
+        print(f"HARNESS ERROR: {e}", file=sys.stderr)
+        return EXIT_HARNESS
+
+
+if __name__ == "__main__":
+    sys.exit(main())
