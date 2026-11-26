@@ -102,6 +102,8 @@ def main():
                         "learn by itself (e.g. \"window.__HISTV_UI_STYLE__='classic'\")")
     n.set_defaults(fn=cmd_paint)
     c = sub.add_parser("selftest", help="negative controls: each command must fail where it should")
+    c.add_argument("--candidate-repo", metavar="PATH",
+                   help="worktree with the style toggle; enables the controls that mutate its front end")
     c.set_defaults(fn=cmd_selftest)
     a = p.parse_args()
     if a.repo:
