@@ -125,12 +125,45 @@ need bsfs hevc_mp4toannexb hevc_metadata h264_mp4toannexb aac_adtstoasc
 need protocols file pipe
 need pix_fmts yuv420p yuv420p10le p010le nv12 rgba rgb24
 
+# Vulkan: the hwcontext must be compiled in (it is listed as a device type).
+# The loader is dlopened, so on a host without libvulkan the device open then
+# reports "Unable to open the libvulkan library" while everything else still
+# works; that state is printed, not failed. No GPU or loader needed.
+check_vulkan_hwcontext() {
+  if "$FF" -hide_banner -init_hw_device list 2>/dev/null | tr -d '\r' | grep -qx 'vulkan'; then
+    ok
+  else
+    bad "Vulkan hwcontext not compiled in"
+    return
+  fi
+  if "$FF" -hide_banner -v verbose -init_hw_device vulkan=vk \
+    -f lavfi -i nullsrc -frames:v 1 -f null - >vulkan.log 2>&1; then
+    echo "vulkan: device created on this host"
+  elif grep -q 'Unable to open the libvulkan library' vulkan.log; then
+    echo "vulkan: compiled in, no loader on this host"
+  else
+    echo "vulkan: compiled in, no usable device on this host"
+  fi
+}
+
+# Native Dolby Vision RPU coding is an encoder option (needs a DV source to
+# exercise end to end), so assert the option exists.
+for enc in libx265 libsvtav1; do
+  if "$FF" -hide_banner -h "encoder=$enc" 2>/dev/null | tr -d '\r' | grep -q '^ *-dolbyvision '; then
+    ok
+  else
+    bad "$enc has no -dolbyvision option"
+  fi
+done
+
 # Platform HW encoders: listed only (compile-time proof; no GPU in CI).
 case "$PLATFORM" in
   linux)
     need encoders h264_nvenc hevc_nvenc av1_nvenc h264_vaapi hevc_vaapi av1_vaapi \
-      h264_amf hevc_amf av1_amf h264_qsv hevc_qsv av1_qsv
+      h264_amf hevc_amf av1_amf h264_qsv hevc_qsv av1_qsv \
+      h264_vulkan hevc_vulkan av1_vulkan
     need filters scale_vaapi
+    check_vulkan_hwcontext
     # VAAPI must reach a DRM render node. Without the DRM display path
     # (vaapi_drm) the encoders still list but every device open fails with
     # "No VA display found". A missing node path tells the two apart, no GPU
@@ -140,7 +173,9 @@ case "$PLATFORM" in
     if grep -q 'as DRM device node' vaapi_drm.log; then ok; else bad "VAAPI built without the DRM display path (vaapi_drm)"; fi ;;
   windows)
     need encoders h264_nvenc hevc_nvenc av1_nvenc h264_amf hevc_amf av1_amf \
-      h264_qsv hevc_qsv av1_qsv ;;
+      h264_qsv hevc_qsv av1_qsv h264_vulkan hevc_vulkan av1_vulkan \
+      h264_d3d12va hevc_d3d12va av1_d3d12va
+    check_vulkan_hwcontext ;;
   macos)
     need encoders h264_videotoolbox hevc_videotoolbox ;;
 esac
@@ -282,6 +317,32 @@ else
   bad "rawvideo over pipe:"
   cat pipe1.log pipe2.log | tr -d '\r' | tail -n 4 | sed 's/^/    /' >&2
 fi
+
+# x265 HDR10+ (ENABLE_HDR10_PLUS): dynamic metadata from an LLC-format JSON
+# must come out as SMPTE 2094-40 side data on the decoded frames.
+{
+  printf '{"JSONInfo":{"HDR10plusProfile":"B","Version":"1.0"},"SceneInfo":['
+  i=0
+  while [ $i -lt 5 ]; do
+    [ $i -gt 0 ] && printf ','
+    printf '{"SceneFrameIndex":%d,"SceneId":0,"SequenceFrameIndex":%d,' $i $i
+    printf '"LuminanceParameters":{"AverageRGB":120,"MaxScl":[900,800,700],'
+    printf '"LuminanceDistributions":{"DistributionIndex":[1,5,10,25,50,75,90,95,99],'
+    printf '"DistributionValues":[1,3,6,20,60,150,400,600,850]}},'
+    printf '"NumberOfWindows":1,"TargetedSystemDisplayMaximumLuminance":400}'
+    i=$((i + 1))
+  done
+  printf ']}'
+} >hdr10plus.json
+run "libx265 HDR10+ (dhdr10-info)" "$FF" $Q -i hevc10.mkv -frames:v 5 -c:v libx265 -preset ultrafast \
+  -x265-params "dhdr10-info=hdr10plus.json" hdr10plus.mkv &&
+  if "$FP" -v error -select_streams v:0 -read_intervals "%+#1" -show_frames \
+    -show_entries frame_side_data=side_data_type hdr10plus.mkv 2>/dev/null | tr -d '\r' |
+    grep -q 'SMPTE2094-40'; then
+    ok
+  else
+    bad "libx265 HDR10+: no SMPTE 2094-40 side data in the output"
+  fi
 
 # Two-pass: pass 1 to the null device with a container format (encoder.rs).
 run "two-pass pass 1 to $NULLDEV" "$FF" $Q -f lavfi -i "$SRC_V" -c:v libx264 -b:v 200k \

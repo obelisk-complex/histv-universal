@@ -29,7 +29,7 @@ sha256() {
 # Pins that do not apply to a platform are left out of its BUILDINFO.
 skip_pin() {
   case "$platform:$1" in
-    macos:NVHEADERS_* | macos:AMF_* | macos:LIBVPL_*) return 0 ;;
+    macos:NVHEADERS_* | macos:AMF_* | macos:LIBVPL_* | macos:VULKAN_*) return 0 ;;
     macos:ZLIB_* | macos:LIBDRM_* | macos:LIBVA_*) return 0 ;;
     windows:ZLIB_* | windows:LIBDRM_* | windows:LIBVA_*) return 0 ;;
   esac
@@ -70,6 +70,7 @@ compiler=$(cc --version 2>/dev/null | head -n 1 || true)
     echo "  NVHEADERS_TAG   https://github.com/FFmpeg/nv-codec-headers.git"
     echo "  AMF_TAG         https://github.com/GPUOpen-LibrariesAndSDKs/AMF.git"
     echo "  LIBVPL_TAG      https://github.com/intel/libvpl.git"
+    echo "  VULKAN_HEADERS_TAG https://github.com/KhronosGroup/Vulkan-Headers.git"
   fi
   echo "  Tarball sources are the *_URL entries, checked against *_SHA256."
   echo
