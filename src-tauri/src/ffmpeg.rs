@@ -247,7 +247,7 @@ pub fn exe_dir() -> Option<PathBuf> {
 #[cfg(feature = "downloader")]
 #[allow(dead_code)] // each platform uses only its own pin
 mod histv_release {
-    pub const TAG: &str = "ffmpeg-n8.1.1-histv.1";
+    pub const TAG: &str = "ffmpeg-n8.1.3-histv.1";
     pub const SHA256_LINUX_X64: &str =
         "0000000000000000000000000000000000000000000000000000000000000000";
     pub const SHA256_WINDOWS_X64: &str =
@@ -1227,7 +1227,7 @@ mod download_tests {
         let first = &list[0];
         assert!(first
             .url
-            .contains("/releases/download/ffmpeg-n8.1.1-histv.1/histv-ffmpeg-"));
+            .contains("/releases/download/ffmpeg-n8.1.3-histv.1/histv-ffmpeg-"));
         assert!(first.sha256.is_some());
         assert!(list[1..].iter().all(|c| c.sha256.is_none()));
     }
