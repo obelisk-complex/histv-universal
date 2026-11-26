@@ -275,13 +275,14 @@ jobs:
           # libva: DRM backend only (no X11/Wayland/GLX), so nothing links
           # libX11/libxcb. Autotools because libva's meson build is shared-only.
           # The driver search path covers Debian/Ubuntu, Fedora/openSUSE and
-          # Arch layouts; LIBVA_DRIVERS_PATH still overrides it at run time.
+          # Arch layouts, plus the Flatpak runtime's (intel/nvidia subdirs and
+          # the GL extension); LIBVA_DRIVERS_PATH still overrides it at run time.
           bash "$TOOLS/fetch.sh" "$LIBVA_URL" "$LIBVA_SHA256" libva
           cd libva
           ./configure --prefix="$PREFIX" --sysconfdir=/etc \
             --enable-static --disable-shared --enable-drm \
             --disable-x11 --disable-glx --disable-wayland --disable-docs \
-            --with-drivers-path="/usr/lib/x86_64-linux-gnu/dri:/usr/lib64/dri:/usr/lib/dri:/usr/local/lib/dri"
+            --with-drivers-path="/usr/lib/x86_64-linux-gnu/dri:/usr/lib/x86_64-linux-gnu/dri/intel-vaapi-driver:/usr/lib/x86_64-linux-gnu/dri/nvidia-vaapi-driver:/usr/lib/x86_64-linux-gnu/GL/lib/dri:/usr/lib64/dri:/usr/lib/dri:/usr/local/lib/dri"
           make -j"$(nproc)"
           make install
           # Upstream libva-drm.pc assumes shared libs and omits libdrm. Without
