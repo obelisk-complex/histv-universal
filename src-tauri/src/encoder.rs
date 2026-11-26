@@ -930,13 +930,15 @@ pub fn hdr10plus_preflight_issue(
     let ff_caps = ffmpeg_caps();
     let family = encoder_family(encoder);
     let dovi = probe.dovi_profile.map(|p| {
-        dovi_route(
+        dovi_route_for_encoder(
             p,
+            encoder,
             family,
-            is_hardware_encoder_name(encoder),
+            &[],
             &ff_caps,
             caps.can_process_dovi && caps.can_package_dovi_mp4,
             true,
+            vaapi_dv_env_allowed(),
         )
     });
     let (encoder, family) = match dovi {
@@ -1027,6 +1029,62 @@ pub fn dovi_route(
         return DoviRoute::RpuPipeline;
     }
     DoviRoute::Hdr10
+}
+
+/// Whether `HISTV_ALLOW_VAAPI_DV=1` keeps a VAAPI encoder for Dolby Vision
+/// (testing the RPU pipeline on VAAPI).
+fn vaapi_dv_env_allowed() -> bool {
+    std::env::var("HISTV_ALLOW_VAAPI_DV")
+        .map(|v| v == "1")
+        .unwrap_or(false)
+}
+
+/// Whether a VAAPI HEVC encoder is replaced by libx265 for Dolby Vision.
+/// AMD VAAPI 10-bit HEVC produced visible artifacts, so Linux swaps it out
+/// unless `allow_vaapi_dv` is set.
+fn vaapi_dv_swap(encoder: &str, allow_vaapi_dv: bool) -> bool {
+    cfg!(target_os = "linux") && is_vaapi_encoder(encoder) && !allow_vaapi_dv
+}
+
+/// `dovi_route` for the encoder `encode_single_file` will actually run.
+///
+/// The RPU pipeline needs HEVC, and a VAAPI HEVC encoder is swapped for
+/// libx265 (`vaapi_dv_swap`). libx265 then codes DV natively where it can,
+/// which keeps HDR10+ and the configured container, so the route is decided
+/// again for libx265 rather than left as the hardware encoder's
+/// `RpuPipeline`. Profile 7 and an ffmpeg without native DV stay on the
+/// RPU pipeline.
+#[allow(clippy::too_many_arguments)]
+pub fn dovi_route_for_encoder(
+    profile: u8,
+    encoder: &str,
+    family: &str,
+    detected_encoders: &[EncoderInfo],
+    caps: &FfmpegCaps,
+    rpu_pipeline_ok: bool,
+    preserve_hdr: bool,
+    allow_vaapi_dv: bool,
+) -> DoviRoute {
+    let route = dovi_route(
+        profile,
+        family,
+        is_hardware_encoder_name(encoder),
+        caps,
+        rpu_pipeline_ok,
+        preserve_hdr,
+    );
+    if route != DoviRoute::RpuPipeline {
+        return route;
+    }
+    let hevc_encoder = if family == "hevc" {
+        encoder.to_string()
+    } else {
+        pick_encoder("hevc", detected_encoders)
+    };
+    if vaapi_dv_swap(&hevc_encoder, allow_vaapi_dv) {
+        return dovi_route(profile, "hevc", false, caps, rpu_pipeline_ok, preserve_hdr);
+    }
+    route
 }
 
 /// Whether an encoder name is a hardware encoder (software ones are the
@@ -1546,6 +1604,7 @@ pub fn resolve_output_ext(
         detected_encoders,
         &ffmpeg_caps(),
         rpu_pipeline_available(),
+        vaapi_dv_env_allowed(),
     )
 }
 
@@ -1560,6 +1619,7 @@ fn resolve_output_ext_with(
     detected_encoders: &[EncoderInfo],
     caps: &FfmpegCaps,
     rpu_pipeline_ok: bool,
+    allow_vaapi_dv: bool,
 ) -> &'static str {
     if settings.compatibility_mode {
         return "mp4";
@@ -1570,14 +1630,15 @@ fn resolve_output_ext_with(
             .map(|e| e.to_string_lossy().to_lowercase())
             .unwrap_or_default();
         let r = resolve_file_settings(source_video_codec, &ext, settings, detected_encoders);
-        let hw = is_hardware_encoder_name(&r.encoder_name);
-        if dovi_route(
+        if dovi_route_for_encoder(
             profile,
+            &r.encoder_name,
             &r.codec_family,
-            hw,
+            detected_encoders,
             caps,
             rpu_pipeline_ok,
             preserve_hdr,
+            allow_vaapi_dv,
         ) == DoviRoute::RpuPipeline
         {
             return "mp4";
@@ -2316,16 +2377,20 @@ async fn encode_single_file(
     let mut resolved =
         resolve_file_settings(&item_video_codec, &source_ext, settings, detected_encoders);
 
-    // Dolby Vision: one routing decision (see `dovi_route`). Compatibility
-    // mode tonemaps to SDR H.264, so it never keeps DV.
+    // Dolby Vision: one routing decision (see `dovi_route_for_encoder`, which
+    // accounts for the VAAPI swap). Compatibility mode tonemaps to SDR
+    // H.264, so it never keeps DV.
+    let allow_vaapi_dv = vaapi_dv_env_allowed();
     let dovi_route_kind = item_dovi_profile.map(|profile| {
-        dovi_route(
+        dovi_route_for_encoder(
             profile,
+            &resolved.encoder_name,
             &resolved.codec_family,
-            is_hardware_encoder_name(&resolved.encoder_name),
+            detected_encoders,
             &ffmpeg_caps(),
             caps.can_process_dovi && caps.can_package_dovi_mp4,
             preserve_hdr && !settings.compatibility_mode,
+            allow_vaapi_dv,
         )
     });
     let is_dovi_native = matches!(dovi_route_kind, Some(DoviRoute::Native { .. }));
@@ -2352,11 +2417,10 @@ async fn encode_single_file(
             // AMD VAAPI 10-bit HEVC encoding previously produced visible
             // artifacts. Fall back to libx265 unless HISTV_ALLOW_VAAPI_DV=1
             // is set, which permits VAAPI for the RPU pipeline (testing).
-            #[cfg(target_os = "linux")]
-            if is_vaapi_encoder(&resolved.encoder_name) {
-                let allow_vaapi_dv = std::env::var("HISTV_ALLOW_VAAPI_DV")
-                    .map(|v| v == "1")
-                    .unwrap_or(false);
+            // Only profile 7 and an ffmpeg without native DV reach this swap:
+            // otherwise `dovi_route_for_encoder` has already chosen the
+            // native libx265 route.
+            if cfg!(target_os = "linux") && is_vaapi_encoder(&resolved.encoder_name) {
                 if allow_vaapi_dv {
                     sink.log(
                         "  Dolby Vision: HISTV_ALLOW_VAAPI_DV=1 - keeping VAAPI encoder for DV (test mode)",
@@ -8800,6 +8864,7 @@ mod tests {
             &[],
             &CAPS_ALL,
             true,
+            false,
         );
         assert_eq!(ext, "mkv");
         let forced = resolve_output_ext_with(
@@ -8811,6 +8876,7 @@ mod tests {
             &[],
             &CAPS_ALL,
             true,
+            false,
         );
         assert_eq!(forced, "mkv");
     }
@@ -8828,6 +8894,7 @@ mod tests {
                 &[],
                 &caps,
                 true,
+                false,
             );
             assert_eq!(ext, "mp4", "profile {profile}");
         }
@@ -8841,6 +8908,7 @@ mod tests {
             &[],
             &CAPS_ALL,
             false,
+            false,
         );
         assert_eq!(ext, "mkv");
     }
@@ -8848,7 +8916,7 @@ mod tests {
     #[test]
     fn resolve_output_ext_hw_encoder_uses_rpu_pipeline() {
         let hw = [
-            enc("hevc_vaapi", "hevc", true),
+            enc("hevc_nvenc", "hevc", true),
             enc("libx265", "hevc", false),
         ];
         // Hardware encoder with MP4Box: the RPU pipeline, so MP4.
@@ -8861,6 +8929,7 @@ mod tests {
             &hw,
             &CAPS_ALL,
             true,
+            false,
         );
         assert_eq!(ext, "mp4");
         // Without MP4Box: native libx265, which keeps MKV.
@@ -8873,8 +8942,144 @@ mod tests {
             &hw,
             &CAPS_ALL,
             false,
+            false,
         );
         assert_eq!(ext, "mkv");
+    }
+
+    /// A VAAPI encoder is swapped for libx265 for Dolby Vision, and libx265
+    /// codes DV natively: the output keeps the configured container.
+    #[cfg(target_os = "linux")]
+    #[test]
+    fn resolve_output_ext_vaapi_swap_keeps_mkv() {
+        let vaapi = [
+            enc("hevc_vaapi", "hevc", true),
+            enc("libx265", "hevc", false),
+        ];
+        let ext = resolve_output_ext_with(
+            "/v/p81.mkv",
+            "hevc",
+            Some(8),
+            &dv_settings("mkv"),
+            true,
+            &vaapi,
+            &CAPS_ALL,
+            true,
+            false,
+        );
+        assert_eq!(ext, "mkv");
+    }
+
+    /// A VAAPI encoder with `HISTV_ALLOW_VAAPI_DV=1` keeps the RPU pipeline.
+    #[test]
+    fn resolve_output_ext_vaapi_allowed_uses_rpu_pipeline() {
+        let vaapi = [
+            enc("hevc_vaapi", "hevc", true),
+            enc("libx265", "hevc", false),
+        ];
+        let ext = resolve_output_ext_with(
+            "/v/p81.mkv",
+            "hevc",
+            Some(8),
+            &dv_settings("mkv"),
+            true,
+            &vaapi,
+            &CAPS_ALL,
+            true,
+            true,
+        );
+        assert_eq!(ext, "mp4");
+    }
+
+    #[cfg(target_os = "linux")]
+    #[test]
+    fn dovi_route_for_encoder_vaapi_swap_is_native() {
+        let native = DoviRoute::Native {
+            encoder: "libx265",
+            family: "hevc",
+        };
+        let detected = [
+            enc("hevc_vaapi", "hevc", true),
+            enc("h264_vaapi", "h264", true),
+        ];
+        let route = |profile, enc, fam, caps: &FfmpegCaps, rpu, allow| {
+            dovi_route_for_encoder(profile, enc, fam, &detected, caps, rpu, true, allow)
+        };
+        // Profiles 5 and 8 on VAAPI end on native libx265.
+        for profile in [5, 8] {
+            assert_eq!(
+                route(profile, "hevc_vaapi", "hevc", &CAPS_ALL, true, false),
+                native
+            );
+            // An H.264 target is forced to HEVC, which is VAAPI too.
+            assert_eq!(
+                route(profile, "h264_vaapi", "h264", &CAPS_ALL, true, false),
+                native
+            );
+            // HISTV_ALLOW_VAAPI_DV keeps VAAPI on the RPU pipeline.
+            assert_eq!(
+                route(profile, "hevc_vaapi", "hevc", &CAPS_ALL, true, true),
+                DoviRoute::RpuPipeline
+            );
+            // Without native DV in ffmpeg the swap still needs the pipeline.
+            assert_eq!(
+                route(profile, "hevc_vaapi", "hevc", &CAPS_NONE, true, false),
+                DoviRoute::RpuPipeline
+            );
+        }
+        // Profile 7 cannot be coded natively.
+        assert_eq!(
+            route(7, "hevc_vaapi", "hevc", &CAPS_ALL, true, false),
+            DoviRoute::RpuPipeline
+        );
+        // Other hardware encoders are not swapped.
+        assert_eq!(
+            route(8, "hevc_nvenc", "hevc", &CAPS_ALL, true, false),
+            DoviRoute::RpuPipeline
+        );
+        // Without the pipeline the route is already native, as before.
+        assert_eq!(
+            route(8, "hevc_vaapi", "hevc", &CAPS_ALL, false, false),
+            native
+        );
+    }
+
+    /// The swap to libx265 keeps HDR10+ through x265 instead of dropping it.
+    #[cfg(target_os = "linux")]
+    #[test]
+    fn dovi_vaapi_swap_keeps_hdr10plus() {
+        let dovi =
+            dovi_route_for_encoder(8, "hevc_vaapi", "hevc", &[], &CAPS_ALL, true, true, false);
+        let DoviRoute::Native { encoder, family } = dovi else {
+            panic!("{dovi:?}");
+        };
+        assert_eq!(
+            hdr10plus_route(
+                true,
+                true,
+                true,
+                encoder,
+                family,
+                Some(dovi),
+                &CAPS_ALL,
+                "B"
+            ),
+            Ok(Some(Hdr10PlusRoute::X265Native))
+        );
+        // The same file kept on the RPU pipeline loses HDR10+.
+        assert_eq!(
+            hdr10plus_route(
+                true,
+                true,
+                true,
+                "libx265",
+                "hevc",
+                Some(DoviRoute::RpuPipeline),
+                &CAPS_ALL,
+                "B"
+            ),
+            Err(hdr10plus_loss::DOVI_KEPT)
+        );
     }
 
     #[test]
