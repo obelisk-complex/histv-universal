@@ -204,7 +204,7 @@ class Loaded:
         """Raise HarnessError if the mock was asked something it does not know,
         or the page threw. Called after every step that touches the page."""
         failures = self.page.evaluate("window.__MOCK__ ? window.__MOCK__.failures : [{kind:'mock', name:'missing'}]")
-        problems = [f"{f['kind']} {f['name']}" for f in failures] + list(self.errors)
+        problems = [f"the mock does not know {f['kind']} {f['name']}" for f in failures] + list(self.errors)
         if problems:
             raise HarnessError("; ".join(problems))
 

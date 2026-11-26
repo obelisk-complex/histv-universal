@@ -89,7 +89,7 @@ def build_stub(variant, base_ref="HEAD", classic_ref="e4d0ee2"):
         (dest / "src-tauri" / "themes" / src.replace("default", "classic")).write_text(
             t.replace('"Default Dark"', f'"{name}"').replace('"Default Light"', f'"{name}"'))
     index = (dest / "src" / "index.html").read_text()
-    if variant == "correct":
+    if variant in ("correct", "leaky"):
         index = _replace_once(index, LINKS, "  " + EARLY_HEAD)
     else:
         index = _replace_once(index, '<link rel="stylesheet" href="css/app.css" />',

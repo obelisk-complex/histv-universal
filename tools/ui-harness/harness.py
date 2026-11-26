@@ -7,7 +7,9 @@ import sys
 import core
 from core import EXIT_DIFF, EXIT_HARNESS, EXIT_NOTHING, EXIT_OK, CellFailure, HarnessError, Report, Session, Site, slug
 from cells import render_cell
+from paint import cmd_paint
 from parity import cmd_parity
+from selftest import cmd_selftest
 from toggle import cmd_toggle
 from states import STATES, STYLES, THEMES
 
@@ -82,6 +84,18 @@ def main():
     t.add_argument("--cycles", type=int, default=3, help="doublet -> classic -> doublet rounds (default 3)")
     t.add_argument("--max-lines", type=int, default=12, help="differences printed per failing switch")
     t.set_defaults(fn=cmd_toggle)
+    n = sub.add_parser("paint", help="persisted style applied in the first painted frame")
+    n.add_argument("ref", nargs="?", default="@worktree", help="git ref, @worktree (default) or dir:PATH")
+    n.add_argument("--theme", default="Default Dark")
+    n.add_argument("--styles", nargs="*", default=["classic", "doublet"], choices=["classic", "doublet"])
+    n.add_argument("--ipc-delay", type=int, default=300, metavar="MS",
+                   help="how long get_config and get_themes take to answer (default 300)")
+    n.add_argument("--seed", default="", metavar="JS",
+                   help="script run before the page's own in the watched load, for an early channel the harness cannot "
+                        "learn by itself (e.g. \"window.__HISTV_UI_STYLE__='classic'\")")
+    n.set_defaults(fn=cmd_paint)
+    c = sub.add_parser("selftest", help="negative controls: each command must fail where it should")
+    c.set_defaults(fn=cmd_selftest)
     a = p.parse_args()
     try:
         return a.fn(a)
