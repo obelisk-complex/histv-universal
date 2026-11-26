@@ -127,9 +127,13 @@
       setupTooltips();
       setupModalButtons();
       setupBottomButtons();
-      listenTauriEvents();
+      await listenTauriEvents();
       // Replays log lines emitted before the listener existed
-      await invoke('attach_log_listener');
+      try {
+        await invoke('attach_log_listener');
+      } catch (e) {
+        console.error('attach_log_listener failed:', e);
+      }
 
       // In case encoder detection completed before listeners were ready
       const alreadyDone = await invoke('get_encoder_detection_status');
@@ -2807,9 +2811,14 @@
       }
     });
 
+    // Resolves once the backend has registered every listener, so events
+    // emitted afterwards (such as the log replay) are not missed.
     function listenTauriEvents() {
+      const registrations = [];
+      const on = (event, handler) => { registrations.push(listen(event, handler)); };
+
       // Encoder detection complete
-      listen('encoder-detection-done', async () => {
+      on('encoder-detection-done', async () => {
         encoderDetectionDone = true;
         try {
           const [ve] = await invoke('get_detected_encoders');
@@ -2824,7 +2833,7 @@
       });
 
       // ffmpeg not found - prompt to download
-      listen('ffmpeg-missing', () => {
+      on('ffmpeg-missing', () => {
         encoderSummary.textContent = 'ffmpeg not found';
         const modal = document.querySelector('#modal-ffmpeg-missing');
         const body = document.querySelector('#ffmpeg-missing-body');
@@ -2853,22 +2862,22 @@
       });
 
       // Download progress updates
-      listen('ffmpeg-download-progress', (event) => {
+      on('ffmpeg-download-progress', (event) => {
         encoderSummary.textContent = event.payload;
       });
 
       // Log messages
-      listen('log', (event) => {
+      on('log', (event) => {
         appendLog(event.payload);
       });
 
       // ffmpeg stderr lines
-      listen('ffmpeg-stderr', (event) => {
+      on('ffmpeg-stderr', (event) => {
         appendLog(event.payload);
       });
 
       // Per-file progress (duration-based)
-      listen('file-progress', (event) => {
+      on('file-progress', (event) => {
         const { percent, timeSecs, totalSecs, pass } = event.payload;
         progressBar.style.width = percent.toFixed(1) + '%';
         if (progressBarContainer) progressBarContainer.setAttribute('aria-valuenow', Math.round(percent));
@@ -2916,7 +2925,7 @@
       // Queue item updated (status change) - patch only the affected row
       // instead of walking the entire queue table. Also tracks the currently-
       // encoding row index so the file-progress listener can skip querySelector.
-      listen('queue-item-updated', (event) => {
+      on('queue-item-updated', (event) => {
         const [index, status] = event.payload;
         if (index >= 0 && index < queueData.length) {
           queueData[index].status = status;
@@ -2963,7 +2972,7 @@
       // critical path: no get_queue clone, no ~6.5 MB JSON round trip per
       // probe event. renderQueue() is already a differential update, so
       // the DOM cost is bounded to cells that actually changed.
-      listen('queue-item-probed', (event) => {
+      on('queue-item-probed', (event) => {
         const [index, item] = event.payload;
         if (index >= queueData.length) {
           // Index out of sync with frontend state — fall back to a full
@@ -2976,7 +2985,7 @@
       });
 
       // Batch started
-      listen('batch-started', () => {
+      on('batch-started', () => {
         batchRunning = true;
         btnPause.textContent = 'Pause';
         jobStatus.textContent = 'Encoding';
@@ -2986,7 +2995,7 @@
       });
 
       // Batch progress (file count)
-      listen('batch-progress', (event) => {
+      on('batch-progress', (event) => {
         const { current, total } = event.payload;
         batchCurrentFile = current;
         batchTotalFiles = total;
@@ -3004,7 +3013,7 @@
       });
 
       // Batch status label (current file name)
-      listen('batch-status', (event) => {
+      on('batch-status', (event) => {
         jobStatus.textContent = 'Encoding';
         jobFile.textContent = event.payload;
         jobFile.title = event.payload;
@@ -3012,13 +3021,13 @@
       });
 
       // Batch command label
-      listen('batch-command', (event) => {
+      on('batch-command', (event) => {
         statusCmd.textContent = event.payload;
         statusCmd.title = event.payload;
       });
 
       // Wave progress (Phase 3)
-      listen('wave-progress', (event) => {
+      on('wave-progress', (event) => {
         const { wave, totalWaves, fileInWave, waveSize } = event.payload;
         if (totalWaves > 0) {
           jobStatus.textContent = `Wave ${wave}/${totalWaves} [${fileInWave}/${waveSize} files] - Encoding file ${batchCurrentFile} of ${batchTotalFiles}`;
@@ -3026,12 +3035,12 @@
       });
 
       // Wave status (Phase 3)
-      listen('wave-status', (event) => {
+      on('wave-status', (event) => {
         jobStatus.textContent = event.payload;
       });
 
       // Batch finished
-      listen('batch-finished', async (event) => {
+      on('batch-finished', async (event) => {
         batchRunning = false;
         document.querySelector('#bottom-panel')?.classList.remove('is-encoding');
         currentEncodingIndex = -1;
@@ -3069,7 +3078,7 @@
       // Queue sync complete — the backend syncs queue statuses after
       // batch-finished fires. Re-fetch to pick up the authoritative state,
       // then auto-continue if new files were added during the batch.
-      listen('queue-sync-complete', async () => {
+      on('queue-sync-complete', async () => {
         await fetchQueue();
         renderQueue();
 
@@ -3086,7 +3095,7 @@
       });
 
       // Overwrite prompt from backend
-      listen('overwrite-prompt', (event) => {
+      on('overwrite-prompt', (event) => {
         const filename = event.payload;
         $('#overwrite-body').textContent = filename;
         const owModal = $('#modal-overwrite');
@@ -3095,7 +3104,7 @@
       });
 
       // Fallback prompt from backend
-      listen('fallback-prompt', (event) => {
+      on('fallback-prompt', (event) => {
         const filename = event.payload;
         $('#fallback-body').textContent = filename;
         const fbModal = $('#modal-fallback');
@@ -3104,7 +3113,7 @@
       });
 
       // Toast notification (§7.7)
-      listen('toast', async (event) => {
+      on('toast', async (event) => {
         try {
           // Tauri v2 notification plugin
           const permitted = await invoke('plugin:notification|is_permission_granted');
@@ -3121,9 +3130,11 @@
       });
 
       // Post-batch action (§7.6)
-      listen('post-batch', (event) => {
+      on('post-batch', (event) => {
         const { action, countdown } = event.payload;
         startCountdown(action, countdown);
       });
+
+      return Promise.all(registrations);
     }
 
