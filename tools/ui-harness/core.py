@@ -7,6 +7,7 @@ import re
 import shutil
 import subprocess
 import threading
+import time
 from dataclasses import dataclass, field
 from pathlib import Path
 
@@ -152,11 +153,23 @@ class _Handler(http.server.SimpleHTTPRequestHandler):
         self.send_header("Cache-Control", "no-store")
         super().end_headers()
 
+    def send_head(self):
+        # Slow or failing files, set through Site.hold() (a slow asset protocol, a broken bundle).
+        rel = self.path.split("?")[0].lstrip("/")
+        ms = self.server.delays.get(rel)
+        if ms:
+            time.sleep(ms / 1000)
+        if rel in self.server.failing:
+            self.send_error(404, "failed on purpose by the harness")
+            return None
+        return super().send_head()
+
 
 class Site:
     def __init__(self, tree):
         handler = functools.partial(_Handler, directory=str(tree.src))
         self.httpd = http.server.ThreadingHTTPServer(("127.0.0.1", 0), handler)
+        self.httpd.delays, self.httpd.failing = {}, set()
         self.url = f"http://127.0.0.1:{self.httpd.server_address[1]}/"
         self.thread = threading.Thread(target=self.httpd.serve_forever, daemon=True)
 
@@ -167,6 +180,11 @@ class Site:
     def __exit__(self, *a):
         self.httpd.shutdown()
         self.httpd.server_close()
+
+    def hold(self, paths=(), ms=0, fail=()):
+        """From now on, answer `paths` (relative to src/) after `ms` milliseconds and `fail` with 404."""
+        self.httpd.delays = {p: ms for p in paths}
+        self.httpd.failing = set(fail)
 
 
 # ── Browser session ──────────────────────────────────────────────────────────

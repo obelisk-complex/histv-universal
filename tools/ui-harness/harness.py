@@ -10,6 +10,7 @@ from cells import render_cell
 from paint import cmd_paint
 from parity import cmd_parity
 from selftest import cmd_selftest
+from switch import cmd_switch
 from toggle import cmd_toggle
 from states import STATES, STYLES, THEMES
 
@@ -91,7 +92,13 @@ def main():
     t.add_argument("--cycles", type=int, default=3, help="doublet -> classic -> doublet rounds (default 3)")
     t.add_argument("--max-lines", type=int, default=12, help="differences printed per failing switch")
     t.set_defaults(fn=cmd_toggle)
-    n = sub.add_parser("paint", help="persisted style applied in the first painted frame")
+    w = sub.add_parser("switch", help="live switches with slow or failing stylesheets, sampled every frame")
+    w.add_argument("ref", nargs="?", default="@worktree", help="git ref, @worktree (default) or dir:PATH")
+    w.add_argument("--themes", nargs="*", default=["Default Dark", "Nord"])
+    w.add_argument("--css-delay", type=int, default=500, metavar="MS",
+                   help="how long each stylesheet takes to arrive during a switch (default 500)")
+    w.set_defaults(fn=cmd_switch)
+    n = sub.add_parser("paint",help="persisted style applied in the first painted frame")
     n.add_argument("ref", nargs="?", default="@worktree", help="git ref, @worktree (default) or dir:PATH")
     n.add_argument("--theme", default="Default Dark")
     n.add_argument("--styles", nargs="*", default=["classic", "doublet"], choices=["classic", "doublet"])

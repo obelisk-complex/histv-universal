@@ -74,6 +74,7 @@ tools/ui-harness/run.sh matrix <ref>      # render the state matrix of one ref
 tools/ui-harness/run.sh parity            # classic on HEAD against e4d0ee2
 tools/ui-harness/run.sh toggle [ref]      # live style switches against fresh loads
 tools/ui-harness/run.sh paint [ref]       # persisted style in the first painted frame
+tools/ui-harness/run.sh switch [ref]      # live switches with slow or failing stylesheets, every frame
 tools/ui-harness/run.sh selftest          # the negative controls below (about 30 s)
 ```
 
@@ -81,7 +82,7 @@ Needs Python 3 with Playwright (`pip install playwright`; tested with 1.62) and 
 
 Output goes to `$UI_HARNESS_OUT` (default `${TMPDIR:-/tmp}/histv-ui-harness`), never into the repo.
 
-`--repo PATH` (before the command) resolves refs and `@worktree` in another repository or worktree, read-only, for example `run.sh --repo ../ui-style-toggle toggle @worktree`. A `ref` is a git ref (`git archive <ref> src src-tauri/themes` into a scratch folder), `@worktree` (the working tree, uncommitted changes included; the default for `toggle` and `paint`) or `dir:PATH` (a folder holding `src/` and `src-tauri/themes/`).
+`--repo PATH` (before the command) resolves refs and `@worktree` in another repository or worktree, read-only, for example `run.sh --repo ../ui-style-toggle toggle @worktree`. A `ref` is a git ref (`git archive <ref> src src-tauri/themes` into a scratch folder), `@worktree` (the working tree, uncommitted changes included; the default for `toggle`, `paint` and `switch`) or `dir:PATH` (a folder holding `src/` and `src-tauri/themes/`).
 
 Exit codes, the same for every command: `0` passed, `1` a difference or failed check, `2` nothing was compared or checked (a gate that compared nothing must not pass), `3` harness error (the mock was asked an unknown command or event, or the page threw).
 
@@ -151,6 +152,14 @@ Load 1 persists the style (`get_config` answers `uiStyle`; whatever the app stor
 
 A missing `data-ui-style` while the right sheets are active is reported as a `WARNING`, not a failure.
 
+## switch
+
+`run.sh switch [ref] [--themes "Default Dark" Nord] [--css-delay 500]`
+
+`toggle` compares the page after a switch has settled; `switch` watches the frames in between. The static server answers every stylesheet request 500 ms late while a switch runs (a slow asset protocol), the switch is made through `#sel-ui-style`, and a `requestAnimationFrame` loop samples each frame: `data-ui-style`, the stylesheets that apply (loaded, enabled, media matching, not empty) and the names of the custom properties set inline on `<html>`. Every frame from the switch on must be the page as it was before the switch or the page after it, in that order, and the page after it must have the target style's sheets (doublet: `app.css`, `doublet-tokens.css`, `doublet-components.css`; classic: `app-classic.css`). A frame with no stylesheet, with the old sheet under the new marker, or with the new sheets and the old palette fails.
+
+Runs per theme: from doublet to classic, doublet, classic; from classic loaded from the cache (the Doublet sheets were never fetched) to doublet, classic; and two failing loads, `app-classic.css` and `doublet-tokens.css` answered with 404, where every frame must keep the old style, the control must show the old style again, and a second attempt with the file back must succeed.
+
 ## Negative controls
 
 `run.sh selftest` runs each command where it must fail and where it must pass and checks the exit code and a line of the output. `stubs.py` builds the failing trees: a copy of the front end at `5e73dad` (the last commit before the style toggle; the selftest also uses it as the tree with no style control) with a minimal implementation of the contract table (`#sel-ui-style`, `data-ui-style`, `#ui-style-css` written with `document.write` in `<head>`, Doublet sheets with ids `doublet-tokens-css` and `doublet-components-css` disabled under classic, `Classic Dark`/`Classic Light` themes, `css/app-classic.css` copied from `e4d0ee2`). Variants: `correct` (style applied in `<head>` from a cache), `leaky` (a live switch leaves the other style's custom properties on `<html>`), `late` (style applied only after `get_config`). They are controls for the harness, not a model of the real implementation.
@@ -182,6 +191,8 @@ Result on 2026-11-26 (11 of 11 behaved as expected; the 5 candidate-mutation con
 | rail `max-width` 460px to 400px | exit 1 | exit 1: `#right-panel w` 460 against 400 in `rail-max` |
 
 All 16 controls behaved as expected. The `rail-min` and `rail-max` mutations were not caught before the two rail states existed.
+
+Two more controls run `switch` with `--candidate-repo`: on `e955e95`, where a live switch changed the stylesheet href at once, it must exit 1 with frames that show neither style; on the unmutated copy it must exit 0. A third, without `--candidate-repo`, runs it on the tree with no style control (exit 2).
 
 Two controls found harness bugs while they were built and are the reason for the current design: a first toggle run reported 187 colour differences between a switched and a fresh page because transitions started before the zero-duration rule was installed (it is now installed before page scripts run), and a first paint run flagged a missing `data-ui-style` on a page whose style sheets were correct (now a warning).
 
@@ -237,4 +248,4 @@ The full list is in the run's `parity/` report and `parity` prints it by id at t
 
 ## Files
 
-`run.sh` and `harness.py` (commands), `core.py` (trees, server, browser, dumps), `states.py` (scenarios), `cells.py` (one cell), `fixtures.py`, `mock-tauri.js`, `parity.py`, `toggle.py`, `paint.py`, `stubs.py` and `selftest.py` (controls), `parity-explained.json`.
+`run.sh` and `harness.py` (commands), `core.py` (trees, server, browser, dumps), `states.py` (scenarios), `cells.py` (one cell), `fixtures.py`, `mock-tauri.js`, `parity.py`, `toggle.py`, `paint.py`, `switch.py`, `stubs.py` and `selftest.py` (controls), `parity-explained.json`.

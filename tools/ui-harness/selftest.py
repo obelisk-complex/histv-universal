@@ -13,6 +13,9 @@ HARNESS = str(core.HERE / "harness.py")
 # The harness base: the last front end before the style toggle. The controls that need a tree with no
 # style control, and the stubs, are built from it; HEAD has the toggle once the branches meet.
 NO_CONTROL = "5e73dad"
+# The toggle as first built: a live switch changed the stylesheet href at once, before the new
+# sheet had loaded. The switch command must fail on it.
+SWAP_FIRST = "e955e95"
 
 
 def run(args, repo=None):
@@ -97,6 +100,7 @@ def cmd_selftest(a):
         ("paint: stub that applies the style after get_config answers",
          ["paint", late], EXIT_DIFF, "painted frames show the wrong style"),
         ("paint: tree with no style control", ["paint", NO_CONTROL], EXIT_NOTHING, "nothing was checked"),
+        ("switch: tree with no style control", ["switch", NO_CONTROL], EXIT_NOTHING, "nothing was switched"),
     ]
     skipped = []
     if a.candidate_repo:
@@ -110,6 +114,11 @@ def cmd_selftest(a):
                           parity_args(base, mutant(name)), EXIT_DIFF, expect, repo))
         cases.append(("parity on the candidate's front end, unmutated copy (colour and rail states)",
                       parity_args(base, mutant("unmutated")), EXIT_OK, "with colour checks), 0 unexplained", repo, "(0 with colour"))
+        cases.append(("switch: candidate at e955e95, which swapped the stylesheets before the new ones had loaded",
+                      ["switch", SWAP_FIRST, "--themes", "Default Dark"], EXIT_DIFF,
+                      "frames show neither style fully applied", repo))
+        cases.append(("switch: the candidate's front end, unmutated copy",
+                      ["switch", base, "--themes", "Default Dark"], EXIT_OK, "switches checked", repo, "FAIL"))
     else:
         skipped = ["colour, shadow, rail-min and rail-max mutations need --candidate-repo PATH "
                    "(a worktree whose front end has the style toggle)"]
