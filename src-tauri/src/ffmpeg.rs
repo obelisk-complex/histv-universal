@@ -241,20 +241,75 @@ pub fn exe_dir() -> Option<PathBuf> {
 
 // ── Download URLs ───────────────────────────────────────────────
 
-/// Download URL candidates for the platform-appropriate ffmpeg static build.
-/// Returns a list of (url, archive_type) pairs to try in order.
-/// If the primary mirror is unreachable, the next candidate is tried.
+/// Pinned histv ffmpeg release. Fill in the four SHA-256 values below once
+/// the release is built (one edit); an all-zero value means "not pinned yet"
+/// and the candidate is skipped in favour of the fallbacks.
 #[cfg(feature = "downloader")]
-fn download_urls() -> Vec<(&'static str, &'static str)> {
-    // Each entry: (url, archive_type)
+#[allow(dead_code)] // each platform uses only its own pin
+mod histv_release {
+    pub const TAG: &str = "ffmpeg-n8.1.1-histv.1";
+    pub const SHA256_LINUX_X64: &str =
+        "0000000000000000000000000000000000000000000000000000000000000000";
+    pub const SHA256_WINDOWS_X64: &str =
+        "0000000000000000000000000000000000000000000000000000000000000000";
+    pub const SHA256_MACOS_ARM64: &str =
+        "0000000000000000000000000000000000000000000000000000000000000000";
+    pub const SHA256_MACOS_X64: &str =
+        "0000000000000000000000000000000000000000000000000000000000000000";
+}
+
+/// One place to fetch an ffmpeg archive from, with an optional pinned digest.
+#[cfg(feature = "downloader")]
+#[derive(Debug, Clone, PartialEq, Eq)]
+struct Candidate {
+    url: String,
+    archive_type: &'static str,
+    /// Lowercase hex SHA-256 of the archive. `None` means unverified.
+    sha256: Option<&'static str>,
+}
+
+#[cfg(feature = "downloader")]
+impl Candidate {
+    fn unverified(url: &str, archive_type: &'static str) -> Self {
+        Self {
+            url: url.to_string(),
+            archive_type,
+            sha256: None,
+        }
+    }
+
+    /// An asset of the histv release, verified against `sha256`.
+    #[allow(dead_code)] // unused on platforms without a histv build
+    fn histv(asset: &str, archive_type: &'static str, sha256: &'static str) -> Self {
+        Self {
+            url: format!(
+                "https://github.com/obelisk-complex/histv-universal/releases/download/{}/{asset}",
+                histv_release::TAG
+            ),
+            archive_type,
+            sha256: Some(sha256),
+        }
+    }
+}
+
+/// Download candidates for the platform-appropriate ffmpeg static build,
+/// tried in order. The histv release comes first and is verified; the
+/// third-party builds after it are unverified fallbacks.
+#[cfg(feature = "downloader")]
+fn download_urls() -> Vec<Candidate> {
     #[cfg(all(target_os = "windows", target_arch = "x86_64"))]
     {
         vec![
-            (
+            Candidate::histv(
+                "histv-ffmpeg-windows-x64.zip",
+                "zip",
+                histv_release::SHA256_WINDOWS_X64,
+            ),
+            Candidate::unverified(
                 "https://github.com/BtbN/FFmpeg-Builds/releases/download/latest/ffmpeg-master-latest-win64-gpl.zip",
                 "zip",
             ),
-            (
+            Candidate::unverified(
                 "https://github.com/BtbN/FFmpeg-Builds/releases/download/latest/ffmpeg-n7.1-latest-win64-gpl-7.1.zip",
                 "zip",
             ),
@@ -263,15 +318,20 @@ fn download_urls() -> Vec<(&'static str, &'static str)> {
     #[cfg(all(target_os = "linux", target_arch = "x86_64"))]
     {
         vec![
-            (
+            Candidate::histv(
+                "histv-ffmpeg-linux-x64.tar.gz",
+                "tar.gz",
+                histv_release::SHA256_LINUX_X64,
+            ),
+            Candidate::unverified(
                 "https://github.com/BtbN/FFmpeg-Builds/releases/download/latest/ffmpeg-master-latest-linux64-gpl.tar.xz",
                 "tar.xz",
             ),
-            (
+            Candidate::unverified(
                 "https://github.com/BtbN/FFmpeg-Builds/releases/download/latest/ffmpeg-n7.1-latest-linux64-gpl-7.1.tar.xz",
                 "tar.xz",
             ),
-            (
+            Candidate::unverified(
                 "https://johnvansickle.com/ffmpeg/releases/ffmpeg-release-amd64-static.tar.xz",
                 "tar.xz",
             ),
@@ -280,15 +340,27 @@ fn download_urls() -> Vec<(&'static str, &'static str)> {
     #[cfg(all(target_os = "macos", target_arch = "x86_64"))]
     {
         // BtbN does not publish macOS x86_64 builds; only the evermeet
-        // universal/x64 archive is available. If evermeet is down, users
-        // should install via Homebrew (`brew install ffmpeg`).
-        vec![("https://evermeet.cx/ffmpeg/get/zip", "zip")]
+        // universal/x64 archive is available as a fallback. If evermeet is
+        // down, users should install via Homebrew (`brew install ffmpeg`).
+        vec![
+            Candidate::histv(
+                "histv-ffmpeg-macos-x64.zip",
+                "zip",
+                histv_release::SHA256_MACOS_X64,
+            ),
+            Candidate::unverified("https://evermeet.cx/ffmpeg/get/zip", "zip"),
+        ]
     }
     #[cfg(all(target_os = "macos", target_arch = "aarch64"))]
     {
         vec![
-            ("https://evermeet.cx/ffmpeg/get/zip", "zip"),
-            (
+            Candidate::histv(
+                "histv-ffmpeg-macos-arm64.zip",
+                "zip",
+                histv_release::SHA256_MACOS_ARM64,
+            ),
+            Candidate::unverified("https://evermeet.cx/ffmpeg/get/zip", "zip"),
+            Candidate::unverified(
                 "https://github.com/BtbN/FFmpeg-Builds/releases/download/latest/ffmpeg-master-latest-macosarm64-gpl.zip",
                 "zip",
             ),
@@ -345,37 +417,20 @@ pub async fn download_to_dir(
         .build()
         .map_err(|e| format!("Failed to create HTTP client: {e}"))?;
 
-    // Try each URL in order; move to the next on failure.
-    let mut last_err = String::new();
-    let mut succeeded = false;
-    for (i, (url, archive_type)) in urls.iter().enumerate() {
-        match download_file(&client, url, target_dir, archive_type, "ffmpeg", sink).await {
-            Ok(()) => {
-                succeeded = true;
-                break;
-            }
-            Err(e) => {
-                last_err = e;
-                if i + 1 < urls.len() {
-                    sink.log(&format!(
-                        "[ffmpeg] Mirror {url} failed ({last_err}), trying next..."
-                    ));
-                }
-            }
-        }
-    }
-    if !succeeded {
-        return Err(format!("All download mirrors failed: {last_err}"));
-    }
+    download_from_candidates(&client, &urls, target_dir, "ffmpeg", sink)
+        .await
+        .map_err(|e| format!("All download mirrors failed: {e}"))?;
 
-    // On macOS, ffprobe is a separate download from evermeet.cx
+    // On macOS, the evermeet fallback ships ffprobe separately. Skip it when
+    // the primary archive already provided one.
     let probe_urls = ffprobe_download_urls();
-    if !probe_urls.is_empty() {
+    if !probe_urls.is_empty() && !target_dir.join(format!("ffprobe{EXE_EXT}")).exists() {
         sink.ffmpeg_download_progress("Downloading ffprobe");
         let mut probe_ok = false;
         let mut probe_err = String::new();
         for (i, (url, archive_type)) in probe_urls.iter().enumerate() {
-            match download_file(&client, url, target_dir, archive_type, "ffprobe", sink).await {
+            let candidate = Candidate::unverified(url, archive_type);
+            match download_file(&client, &candidate, target_dir, "ffprobe", sink).await {
                 Ok(()) => {
                     probe_ok = true;
                     break;
@@ -406,19 +461,90 @@ pub async fn download_to_dir(
     Ok(())
 }
 
-/// Download a single archive, extract the relevant binary, and clean up.
+/// Try each candidate in order and stop at the first that downloads,
+/// verifies and extracts. Candidates whose pinned digest is still the
+/// all-zero placeholder are skipped. On failure returns the last error.
 #[cfg(feature = "downloader")]
-async fn download_file(
+async fn download_from_candidates(
     client: &reqwest::Client,
-    url: &str,
+    candidates: &[Candidate],
     target_dir: &std::path::Path,
-    archive_type: &str,
     label: &str,
     sink: &dyn EventSink,
 ) -> Result<(), String> {
+    let mut last_err = String::new();
+    for (i, candidate) in candidates.iter().enumerate() {
+        let url = &candidate.url;
+        if candidate.sha256.is_some_and(is_placeholder_sha256) {
+            sink.log(&format!("[ffmpeg] Skipping {url}: checksum not pinned yet"));
+            continue;
+        }
+        match download_file(client, candidate, target_dir, label, sink).await {
+            Ok(()) => return Ok(()),
+            Err(e) => {
+                last_err = e;
+                if i + 1 < candidates.len() {
+                    sink.log(&format!(
+                        "[ffmpeg] Mirror {url} failed ({last_err}), trying next..."
+                    ));
+                }
+            }
+        }
+    }
+    Err(last_err)
+}
+
+/// True for the all-zero digest used before a release's real hash is known.
+#[cfg(feature = "downloader")]
+fn is_placeholder_sha256(expected: &str) -> bool {
+    !expected.is_empty() && expected.bytes().all(|b| b == b'0')
+}
+
+/// Stream a file through SHA-256 and return the lowercase hex digest.
+#[cfg(feature = "downloader")]
+fn sha256_file(path: &std::path::Path) -> std::io::Result<String> {
+    use sha2::{Digest, Sha256};
+    use std::io::Read;
+    let mut file = std::fs::File::open(path)?;
+    let mut hasher = Sha256::new();
+    let mut buf = [0u8; 64 * 1024];
+    loop {
+        let n = file.read(&mut buf)?;
+        if n == 0 {
+            break;
+        }
+        hasher.update(&buf[..n]);
+    }
+    Ok(format!("{:x}", hasher.finalize()))
+}
+
+/// Check a file against an expected hex SHA-256 (case-insensitive).
+#[cfg(feature = "downloader")]
+fn verify_sha256(path: &std::path::Path, expected: &str) -> Result<(), String> {
+    let actual = sha256_file(path).map_err(|e| format!("Failed to read download: {e}"))?;
+    if actual.eq_ignore_ascii_case(expected) {
+        Ok(())
+    } else {
+        Err(format!(
+            "Checksum mismatch: expected {expected}, got {actual}"
+        ))
+    }
+}
+
+/// Download a single archive, verify it when a digest is pinned, extract the
+/// relevant binaries, and clean up.
+#[cfg(feature = "downloader")]
+async fn download_file(
+    client: &reqwest::Client,
+    candidate: &Candidate,
+    target_dir: &std::path::Path,
+    label: &str,
+    sink: &dyn EventSink,
+) -> Result<(), String> {
+    let url = candidate.url.as_str();
     let tmp_path = target_dir.join(format!(
         "_histv_dl_{label}.{}",
-        archive_type.replace('.', "_")
+        candidate.archive_type.replace('.', "_")
     ));
 
     let response = client
@@ -478,6 +604,14 @@ async fn download_file(
         ));
     }
 
+    if let Some(expected) = candidate.sha256 {
+        sink.ffmpeg_download_progress(&format!("Verifying {label}"));
+        if let Err(e) = verify_sha256(&tmp_path, expected) {
+            let _ = std::fs::remove_file(&tmp_path);
+            return Err(e);
+        }
+    }
+
     sink.ffmpeg_download_progress(&format!("Extracting {label}"));
 
     // Extract the binary from the archive
@@ -493,7 +627,7 @@ async fn download_file(
 
     #[cfg(target_os = "linux")]
     {
-        extract_from_tar_xz(&tmp_path, target_dir)?;
+        extract_from_tar(&tmp_path, target_dir)?;
     }
 
     // Clean up the archive
@@ -538,8 +672,11 @@ $zip.Dispose()
     Ok(())
 }
 
+/// Extract `ffmpeg` and `ffprobe` from a tar archive (gzip or xz; GNU tar
+/// detects the compression). Handles both the flat histv layout (binaries at
+/// the archive root) and the BtbN layout (`<dir>/bin/`).
 #[cfg(all(feature = "downloader", target_os = "linux"))]
-fn extract_from_tar_xz(
+fn extract_from_tar(
     tar_path: &std::path::Path,
     target_dir: &std::path::Path,
 ) -> Result<(), String> {
@@ -569,35 +706,41 @@ fn extract_from_tar_xz(
         return Err(format!("Extraction failed: {stderr}"));
     }
 
-    // Find and move ffmpeg/ffprobe from the extracted tree
-    let mut found = false;
+    // Look at the archive root first, then at <top-level dir>/bin.
+    let mut search_dirs = vec![tmp_extract.path().to_path_buf()];
     if let Ok(entries) = std::fs::read_dir(tmp_extract.path()) {
         for entry in entries.flatten() {
             let bin_dir = entry.path().join("bin");
             if bin_dir.is_dir() {
-                for name in &["ffmpeg", "ffprobe"] {
-                    let src = bin_dir.join(name);
-                    if src.exists() {
-                        let dst = target_dir.join(name);
-                        if let Err(e) = std::fs::rename(&src, &dst) {
-                            // rename may fail across filesystems; fall back to copy
-                            if let Err(e2) = std::fs::copy(&src, &dst) {
-                                return Err(format!(
-                                    "Could not move {name} to target: rename={e}, copy={e2}"
-                                ));
-                            }
-                        }
-                        found = true;
-                    }
+                search_dirs.push(bin_dir);
+            }
+        }
+    }
+
+    let mut found = false;
+    for dir in &search_dirs {
+        for name in &["ffmpeg", "ffprobe"] {
+            let src = dir.join(name);
+            if !src.is_file() {
+                continue;
+            }
+            let dst = target_dir.join(name);
+            if let Err(e) = std::fs::rename(&src, &dst) {
+                // rename may fail across filesystems; fall back to copy
+                if let Err(e2) = std::fs::copy(&src, &dst) {
+                    return Err(format!(
+                        "Could not move {name} to target: rename={e}, copy={e2}"
+                    ));
                 }
             }
+            found = true;
         }
     }
 
     // TempDir auto-cleans on drop; no manual removal needed.
 
     if !found {
-        return Err("Extracted archive but could not find bin/ffmpeg or bin/ffprobe".to_string());
+        return Err("Extracted archive but could not find ffmpeg or ffprobe".to_string());
     }
 
     set_executable(target_dir);
@@ -1010,5 +1153,370 @@ mod tests {
         // Just verify it doesn't panic; the result depends on the
         // host environment (ffmpeg may or may not be installed).
         let _ = is_available().await;
+    }
+}
+
+#[cfg(all(test, feature = "downloader"))]
+mod download_tests {
+    use super::*;
+    use crate::test_helpers::{NoopSink, RecordingSink};
+
+    const HELLO_SHA256: &str = "2cf24dba5fb0a30e26e83b2ac5b9e29e1b161e5c1fa7425e73043362938b9824";
+    const ZEROS: &str = "0000000000000000000000000000000000000000000000000000000000000000";
+
+    fn write(dir: &Path, name: &str, bytes: &[u8]) -> PathBuf {
+        let p = dir.join(name);
+        std::fs::write(&p, bytes).unwrap();
+        p
+    }
+
+    #[test]
+    fn sha256_verify_accepts_matching_digest() {
+        let dir = tempfile::tempdir().unwrap();
+        let f = write(dir.path(), "a.bin", b"hello");
+        assert!(verify_sha256(&f, HELLO_SHA256).is_ok());
+        assert!(verify_sha256(&f, &HELLO_SHA256.to_uppercase()).is_ok());
+    }
+
+    #[test]
+    fn sha256_verify_reports_expected_and_actual_on_mismatch() {
+        let dir = tempfile::tempdir().unwrap();
+        let f = write(dir.path(), "a.bin", b"hello!");
+        let err = verify_sha256(&f, HELLO_SHA256).unwrap_err();
+        assert!(err.contains(HELLO_SHA256), "{err}");
+        assert!(err.contains(&sha256_file(&f).unwrap()), "{err}");
+    }
+
+    #[test]
+    fn sha256_verify_errors_on_missing_file() {
+        let dir = tempfile::tempdir().unwrap();
+        assert!(verify_sha256(&dir.path().join("nope"), HELLO_SHA256).is_err());
+    }
+
+    #[test]
+    fn placeholder_detection() {
+        assert!(is_placeholder_sha256(ZEROS));
+        assert!(!is_placeholder_sha256(HELLO_SHA256));
+        assert!(!is_placeholder_sha256(
+            "0000000000000000000000000000000000000000000000000000000000000001"
+        ));
+        assert!(!is_placeholder_sha256(""));
+    }
+
+    #[test]
+    fn histv_pins_are_well_formed() {
+        for pin in [
+            histv_release::SHA256_LINUX_X64,
+            histv_release::SHA256_WINDOWS_X64,
+            histv_release::SHA256_MACOS_ARM64,
+            histv_release::SHA256_MACOS_X64,
+        ] {
+            assert_eq!(pin.len(), 64);
+            assert!(pin
+                .bytes()
+                .all(|b| b.is_ascii_digit() || (b'a'..=b'f').contains(&b)));
+        }
+    }
+
+    #[test]
+    fn candidate_list_puts_verified_histv_release_first() {
+        let list = download_urls();
+        if list.is_empty() {
+            return; // platform without a download source
+        }
+        let first = &list[0];
+        assert!(first
+            .url
+            .contains("/releases/download/ffmpeg-n8.1.1-histv.1/histv-ffmpeg-"));
+        assert!(first.sha256.is_some());
+        assert!(list[1..].iter().all(|c| c.sha256.is_none()));
+    }
+
+    // ── Local HTTP server and archive fixtures (Linux only: uses tar) ──
+
+    #[cfg(target_os = "linux")]
+    mod linux {
+        use super::*;
+        use std::process::Command as StdCommand;
+        use tokio::io::{AsyncReadExt, AsyncWriteExt};
+
+        /// Incompressible filler so the archive clears the 500 kB size check.
+        fn filler(len: usize) -> Vec<u8> {
+            let mut x: u32 = 0x1234_5678;
+            (0..len)
+                .map(|_| {
+                    x = x.wrapping_mul(1_664_525).wrapping_add(1_013_904_223);
+                    (x >> 24) as u8
+                })
+                .collect()
+        }
+
+        fn tar(args: &[&str], cwd: &Path) {
+            let out = StdCommand::new("tar")
+                .args(args)
+                .current_dir(cwd)
+                .output()
+                .unwrap();
+            assert!(
+                out.status.success(),
+                "{}",
+                String::from_utf8_lossy(&out.stderr)
+            );
+        }
+
+        /// Flat archive: ffmpeg + ffprobe at the root, as the histv release ships.
+        fn make_flat_tar_gz(dir: &Path) -> PathBuf {
+            let src = dir.join("flat-src");
+            std::fs::create_dir_all(&src).unwrap();
+            write(&src, "ffmpeg", &filler(600_000));
+            write(&src, "ffprobe", b"probe");
+            write(&src, "SHA256SUMS", b"x");
+            write(&src, "LICENSE.txt", b"x");
+            write(&src, "BUILDINFO.txt", b"x");
+            let out = dir.join("flat.tar.gz");
+            tar(&["czf", out.to_str().unwrap(), "."], &src);
+            out
+        }
+
+        /// BtbN layout: <dir>/bin/{ffmpeg,ffprobe}, xz compressed.
+        fn make_btbn_tar_xz(dir: &Path) -> PathBuf {
+            let src = dir.join("btbn-src");
+            let bin = src.join("ffmpeg-master-latest-linux64-gpl/bin");
+            std::fs::create_dir_all(&bin).unwrap();
+            write(&bin, "ffmpeg", &filler(600_000));
+            write(&bin, "ffprobe", b"probe");
+            let out = dir.join("btbn.tar.xz");
+            tar(&["cJf", out.to_str().unwrap(), "."], &src);
+            out
+        }
+
+        #[test]
+        fn extracts_flat_tar_gz() {
+            let work = tempfile::tempdir().unwrap();
+            let archive = make_flat_tar_gz(work.path());
+            let target = tempfile::tempdir().unwrap();
+            extract_from_tar(&archive, target.path()).unwrap();
+            assert_eq!(
+                std::fs::metadata(target.path().join("ffmpeg"))
+                    .unwrap()
+                    .len(),
+                600_000
+            );
+            assert_eq!(
+                std::fs::read(target.path().join("ffprobe")).unwrap(),
+                b"probe"
+            );
+            assert!(!target.path().join("LICENSE.txt").exists());
+            use std::os::unix::fs::PermissionsExt;
+            let mode = std::fs::metadata(target.path().join("ffmpeg"))
+                .unwrap()
+                .permissions()
+                .mode();
+            assert_eq!(mode & 0o111, 0o111);
+        }
+
+        #[test]
+        fn extracts_btbn_layout_tar_xz() {
+            let work = tempfile::tempdir().unwrap();
+            let archive = make_btbn_tar_xz(work.path());
+            let target = tempfile::tempdir().unwrap();
+            extract_from_tar(&archive, target.path()).unwrap();
+            assert!(target.path().join("ffmpeg").is_file());
+            assert_eq!(
+                std::fs::read(target.path().join("ffprobe")).unwrap(),
+                b"probe"
+            );
+        }
+
+        #[test]
+        fn extract_errors_when_no_binaries_present() {
+            let work = tempfile::tempdir().unwrap();
+            let src = work.path().join("src");
+            std::fs::create_dir_all(&src).unwrap();
+            write(&src, "README", b"nothing here");
+            let archive = work.path().join("empty.tar.gz");
+            tar(&["czf", archive.to_str().unwrap(), "."], &src);
+            let target = tempfile::tempdir().unwrap();
+            assert!(extract_from_tar(&archive, target.path()).is_err());
+        }
+
+        /// Serve `routes` (path -> body) on 127.0.0.1; unknown paths get 404.
+        /// Returns the base URL and a handle that records requested paths.
+        async fn serve(
+            routes: Vec<(&'static str, Vec<u8>)>,
+        ) -> (String, std::sync::Arc<std::sync::Mutex<Vec<String>>>) {
+            let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+            let base = format!("http://{}", listener.local_addr().unwrap());
+            let hits = std::sync::Arc::new(std::sync::Mutex::new(Vec::new()));
+            let hits_task = hits.clone();
+            tokio::spawn(async move {
+                loop {
+                    let Ok((mut sock, _)) = listener.accept().await else {
+                        return;
+                    };
+                    let mut buf = vec![0u8; 4096];
+                    let n = sock.read(&mut buf).await.unwrap_or(0);
+                    let req = String::from_utf8_lossy(&buf[..n]).to_string();
+                    let path = req.split_whitespace().nth(1).unwrap_or("/").to_string();
+                    hits_task.lock().unwrap().push(path.clone());
+                    let body = routes
+                        .iter()
+                        .find(|(p, _)| *p == path)
+                        .map(|(_, b)| b.clone());
+                    let head = match &body {
+                        Some(b) => format!(
+                            "HTTP/1.1 200 OK\r\nContent-Length: {}\r\nConnection: close\r\n\r\n",
+                            b.len()
+                        ),
+                        None => "HTTP/1.1 404 Not Found\r\nContent-Length: 0\r\nConnection: close\r\n\r\n".to_string(),
+                    };
+                    let _ = sock.write_all(head.as_bytes()).await;
+                    if let Some(b) = body {
+                        let _ = sock.write_all(&b).await;
+                    }
+                    let _ = sock.shutdown().await;
+                }
+            });
+            (base, hits)
+        }
+
+        fn client() -> reqwest::Client {
+            reqwest::Client::builder().build().unwrap()
+        }
+
+        fn cand(base: &str, path: &str, sha: Option<&'static str>) -> Candidate {
+            Candidate {
+                url: format!("{base}{path}"),
+                archive_type: "tar.gz",
+                sha256: sha,
+            }
+        }
+
+        fn leftover_archives(dir: &Path) -> Vec<String> {
+            std::fs::read_dir(dir)
+                .unwrap()
+                .flatten()
+                .map(|e| e.file_name().to_string_lossy().to_string())
+                .filter(|n| n.starts_with("_histv_dl_"))
+                .collect()
+        }
+
+        #[tokio::test]
+        async fn download_file_verifies_and_extracts_on_match() {
+            let work = tempfile::tempdir().unwrap();
+            let archive = std::fs::read(make_flat_tar_gz(work.path())).unwrap();
+            let digest: &'static str = Box::leak(
+                sha256_file(&work.path().join("flat.tar.gz"))
+                    .unwrap()
+                    .into_boxed_str(),
+            );
+            let (base, _) = serve(vec![("/a.tar.gz", archive)]).await;
+            let target = tempfile::tempdir().unwrap();
+            download_file(
+                &client(),
+                &cand(&base, "/a.tar.gz", Some(digest)),
+                target.path(),
+                "ffmpeg",
+                &NoopSink,
+            )
+            .await
+            .unwrap();
+            assert!(target.path().join("ffmpeg").is_file());
+            assert!(leftover_archives(target.path()).is_empty());
+        }
+
+        #[tokio::test]
+        async fn download_file_rejects_mismatch_before_extracting() {
+            let work = tempfile::tempdir().unwrap();
+            let archive = std::fs::read(make_flat_tar_gz(work.path())).unwrap();
+            let actual = sha256_file(&work.path().join("flat.tar.gz")).unwrap();
+            let wrong = "1111111111111111111111111111111111111111111111111111111111111111";
+            let (base, _) = serve(vec![("/a.tar.gz", archive)]).await;
+            let target = tempfile::tempdir().unwrap();
+            let err = download_file(
+                &client(),
+                &cand(&base, "/a.tar.gz", Some(wrong)),
+                target.path(),
+                "ffmpeg",
+                &NoopSink,
+            )
+            .await
+            .unwrap_err();
+            assert!(err.contains(wrong) && err.contains(&actual), "{err}");
+            assert!(!target.path().join("ffmpeg").exists());
+            assert!(leftover_archives(target.path()).is_empty());
+        }
+
+        #[tokio::test]
+        async fn candidates_skip_placeholder_then_fall_back_past_mismatch_and_404() {
+            let work = tempfile::tempdir().unwrap();
+            let archive = std::fs::read(make_flat_tar_gz(work.path())).unwrap();
+            let wrong = "1111111111111111111111111111111111111111111111111111111111111111";
+            let (base, hits) = serve(vec![
+                ("/placeholder.tar.gz", archive.clone()),
+                ("/tampered.tar.gz", archive.clone()),
+                ("/fallback.tar.gz", archive),
+            ])
+            .await;
+            let list = vec![
+                cand(&base, "/placeholder.tar.gz", Some(ZEROS)),
+                cand(&base, "/tampered.tar.gz", Some(wrong)),
+                cand(&base, "/missing.tar.gz", None),
+                cand(&base, "/fallback.tar.gz", None),
+            ];
+            let target = tempfile::tempdir().unwrap();
+            let sink = RecordingSink::new();
+            download_from_candidates(&client(), &list, target.path(), "ffmpeg", &sink)
+                .await
+                .unwrap();
+            assert!(target.path().join("ffmpeg").is_file());
+            // The placeholder was never requested; the rest were tried in order.
+            assert_eq!(
+                *hits.lock().unwrap(),
+                vec!["/tampered.tar.gz", "/missing.tar.gz", "/fallback.tar.gz"]
+            );
+            let logs = sink.take_logs().join("\n");
+            assert!(
+                logs.contains("Skipping") && logs.contains("/placeholder.tar.gz"),
+                "{logs}"
+            );
+        }
+
+        #[tokio::test]
+        async fn candidates_stop_at_first_verified_success() {
+            let work = tempfile::tempdir().unwrap();
+            let archive = std::fs::read(make_flat_tar_gz(work.path())).unwrap();
+            let digest: &'static str = Box::leak(
+                sha256_file(&work.path().join("flat.tar.gz"))
+                    .unwrap()
+                    .into_boxed_str(),
+            );
+            let (base, hits) =
+                serve(vec![("/a.tar.gz", archive.clone()), ("/b.tar.gz", archive)]).await;
+            let list = vec![
+                cand(&base, "/a.tar.gz", Some(digest)),
+                cand(&base, "/b.tar.gz", None),
+            ];
+            let target = tempfile::tempdir().unwrap();
+            download_from_candidates(&client(), &list, target.path(), "ffmpeg", &NoopSink)
+                .await
+                .unwrap();
+            assert_eq!(*hits.lock().unwrap(), vec!["/a.tar.gz"]);
+        }
+
+        #[tokio::test]
+        async fn candidates_error_when_every_candidate_fails() {
+            let (base, _) = serve(vec![]).await;
+            let list = vec![
+                cand(&base, "/x.tar.gz", None),
+                cand(&base, "/y.tar.gz", Some(ZEROS)),
+            ];
+            let target = tempfile::tempdir().unwrap();
+            let err =
+                download_from_candidates(&client(), &list, target.path(), "ffmpeg", &NoopSink)
+                    .await
+                    .unwrap_err();
+            assert!(err.contains("404"), "{err}");
+        }
     }
 }
