@@ -907,6 +907,98 @@ pub fn hdr10plus_route(
     Ok(Some(Hdr10PlusRoute::Injector))
 }
 
+/// What the software fallback needs to decide HDR10+ again, once the
+/// hardware encoder has failed. Passed only when the dynamic metadata was
+/// extracted for the hardware encode.
+pub struct FallbackHdr10Plus<'a> {
+    pub can_process: bool,
+    pub family: &'a str,
+    pub dovi: Option<DoviRoute>,
+    pub caps: &'a FfmpegCaps,
+    pub profile: &'a str,
+}
+
+/// The software fallback encode: its video arguments and whether the
+/// extracted HDR10+ metadata is still to be injected afterwards.
+#[derive(Debug, PartialEq, Eq)]
+pub struct FallbackPlan {
+    pub video_args: Vec<String>,
+    /// Inject the extracted metadata after the encode (injector route only).
+    pub keep_injection: bool,
+    /// Log lines, in order.
+    pub notes: Vec<String>,
+}
+
+/// Video arguments for the software fallback encode, with HDR10+ decided
+/// again for `sw_encoder`.
+///
+/// The route chosen for the failed hardware encoder does not carry over: the
+/// injector needs a stream without B-frames, which the software arguments do
+/// not produce. libx265 codes the metadata itself (`dhdr10-info`), so the
+/// extracted metadata goes to `write_json`, which returns the JSON path; no
+/// injection follows. Where the metadata cannot be kept, the output is
+/// static HDR10 and no injection is attempted. `hdr10` is `None` when no
+/// metadata was extracted.
+pub fn fallback_sw_args(
+    decision: &EncodeDecision,
+    sw_encoder: &str,
+    qi: &str,
+    qp: &str,
+    hdr10: Option<&FallbackHdr10Plus>,
+    write_json: &mut dyn FnMut() -> Result<String, String>,
+) -> FallbackPlan {
+    let mut video_args: Vec<String> = vec!["-c:v".into(), sw_encoder.to_string()];
+    match decision {
+        EncodeDecision::Vbr {
+            target_bps,
+            peak_bps,
+        } => video_args.extend(vbr_flags(
+            sw_encoder,
+            &target_bps.to_string(),
+            &peak_bps.to_string(),
+        )),
+        _ => video_args.extend(cqp_flags(sw_encoder, qi, qp)),
+    }
+    let mut notes = Vec::new();
+    let mut keep_injection = false;
+    if let Some(h) = hdr10 {
+        match hdr10plus_route(
+            true,
+            h.can_process,
+            true,
+            sw_encoder,
+            h.family,
+            h.dovi,
+            h.caps,
+            h.profile,
+        ) {
+            Ok(Some(Hdr10PlusRoute::X265Native)) => match write_json() {
+                Ok(path) => {
+                    let param = format!("dhdr10-info={}", x265_param_path_escape(&path));
+                    notes.push(format!("  HDR10+: coded by {sw_encoder} ({param})"));
+                    add_x265_param(&mut video_args, &param);
+                }
+                Err(e) => notes.push(format!("  HDR10+: {e} - output has static HDR10 only")),
+            },
+            Ok(Some(Hdr10PlusRoute::Injector)) => {
+                notes.push(
+                    "  HDR10+: B-frames off so the metadata can be injected after the encode"
+                        .to_string(),
+                );
+                video_args.extend(["-bf".to_string(), "0".to_string()]);
+                keep_injection = true;
+            }
+            Ok(None) => {}
+            Err(reason) => notes.push(format!("  HDR10+: Static HDR10 only ({reason})")),
+        }
+    }
+    FallbackPlan {
+        video_args,
+        keep_injection,
+        notes,
+    }
+}
+
 /// Codec family of an encoder name ("hevc", "h264" or "av1").
 pub fn encoder_family(encoder: &str) -> &'static str {
     match encoder {
@@ -2724,7 +2816,7 @@ async fn encode_single_file(
         }
     };
     #[cfg(feature = "dovi")]
-    let extracted_hdr10plus = if let Some(route) = hdr10p_keep {
+    let mut extracted_hdr10plus = if let Some(route) = hdr10p_keep {
         sink.log("  HDR10+ detected - extracting dynamic metadata for preservation");
         if keeps_dovi {
             sink.log("  HDR10+ with Dolby Vision: experimental");
@@ -3343,25 +3435,56 @@ async fn encode_single_file(
                         let _ = std::fs::remove_file(&temp_output_file);
                     }
 
-                    // Rebuild with software encoder
-                    let mut sw_video_args: Vec<String>;
-                    match &decision {
-                        EncodeDecision::Vbr {
-                            target_bps,
-                            peak_bps,
-                        } => {
-                            sw_video_args = vec!["-c:v".into(), sw_fallback.clone()];
-                            sw_video_args.extend(vbr_flags(
-                                &sw_fallback,
-                                &target_bps.to_string(),
-                                &peak_bps.to_string(),
-                            ));
-                        }
-                        _ => {
-                            sw_video_args = vec!["-c:v".into(), sw_fallback.clone()];
-                            sw_video_args.extend(cqp_flags(&sw_fallback, qi_str, qp_str));
-                        }
+                    // Rebuild with software encoder; HDR10+ is decided again
+                    // for it (see `fallback_sw_args`).
+                    #[cfg(feature = "dovi")]
+                    let mut _fallback_json: Option<tempfile::TempPath> = None;
+                    #[cfg(feature = "dovi")]
+                    let ff_caps = ffmpeg_caps();
+                    #[cfg(feature = "dovi")]
+                    let fallback_hdr10 = extracted_hdr10plus.as_ref().map(|_| FallbackHdr10Plus {
+                        can_process: caps.can_process_hdr10plus,
+                        family: file_codec_family,
+                        dovi: dovi_route_kind,
+                        caps: &ff_caps,
+                        profile: &queue[idx].probe.hdr10plus_profile,
+                    });
+                    #[cfg(not(feature = "dovi"))]
+                    let fallback_hdr10: Option<FallbackHdr10Plus> = None;
+                    let plan = fallback_sw_args(
+                        &decision,
+                        &sw_fallback,
+                        qi_str,
+                        qp_str,
+                        fallback_hdr10.as_ref(),
+                        &mut || {
+                            #[cfg(feature = "dovi")]
+                            if let Some(ref meta) = extracted_hdr10plus {
+                                let p = tempfile::Builder::new()
+                                    .prefix("histv_hdr10p_")
+                                    .suffix(".json")
+                                    .tempfile()
+                                    .map(tempfile::NamedTempFile::into_temp_path)
+                                    .map_err(|e| format!("Could not create HDR10+ JSON: {e}"))?;
+                                hdr10plus_pipeline::write_x265_json(meta, &p)?;
+                                let path = p.to_string_lossy().into_owned();
+                                _fallback_json = Some(p);
+                                return Ok(path);
+                            }
+                            Err("no HDR10+ metadata".to_string())
+                        },
+                    );
+                    for note in &plan.notes {
+                        sink.log(note);
+                        write_log(log_writer, note);
                     }
+                    // Without injection the SEIs must not be added to the
+                    // fallback's output (it has B-frames).
+                    #[cfg(feature = "dovi")]
+                    if !plan.keep_injection {
+                        extracted_hdr10plus = None;
+                    }
+                    let sw_video_args = plan.video_args;
 
                     // Reuse audio args from the primary encode - inputs haven't changed
                     let sw_ref: Vec<&str> = sw_video_args.iter().map(|s| s.as_str()).collect();
@@ -8672,6 +8795,123 @@ mod tests {
             args.last().unwrap(),
             "dhdr10-info=C\\:\\\\out\\\\histv_hdr10p_1.json:hdr10-opt=1"
         );
+    }
+
+    /// The hardware encode ran without B-frames for the injector; the
+    /// software fallback has B-frames, so libx265 must code the metadata.
+    #[test]
+    fn fallback_after_hw_injector_codes_hdr10plus_with_x265() {
+        let decision = EncodeDecision::Cqp { qi: 22, qp: 22 };
+        let hdr10 = FallbackHdr10Plus {
+            can_process: true,
+            family: "hevc",
+            dovi: None,
+            caps: &CAPS_ALL,
+            profile: "B",
+        };
+        let mut json_calls = 0;
+        let plan = fallback_sw_args(&decision, "libx265", "22", "22", Some(&hdr10), &mut || {
+            json_calls += 1;
+            Ok("/tmp/histv_hdr10p_1.json".to_string())
+        });
+        assert_eq!(json_calls, 1);
+        assert!(!plan.keep_injection);
+        assert_eq!(plan.video_args[..2], strs(&["-c:v", "libx265"])[..]);
+        let i = plan
+            .video_args
+            .iter()
+            .position(|a| a == "-x265-params")
+            .unwrap();
+        assert!(plan.video_args[i + 1].contains("dhdr10-info=/tmp/histv_hdr10p_1.json"));
+        assert!(!plan.video_args.contains(&"-bf".to_string()));
+    }
+
+    #[test]
+    fn fallback_without_x265_hdr10plus_is_static_hdr10() {
+        let decision = EncodeDecision::Vbr {
+            target_bps: 4_000_000,
+            peak_bps: 6_000_000,
+        };
+        let hdr10 = FallbackHdr10Plus {
+            can_process: true,
+            family: "hevc",
+            dovi: None,
+            caps: &CAPS_NONE,
+            profile: "B",
+        };
+        let plan = fallback_sw_args(&decision, "libx265", "22", "22", Some(&hdr10), &mut || {
+            panic!("no JSON without x265 support")
+        });
+        assert!(!plan.keep_injection);
+        assert!(!plan.video_args.iter().any(|a| a.contains("dhdr10-info")));
+        assert_eq!(
+            plan.notes,
+            vec![format!(
+                "  HDR10+: Static HDR10 only ({})",
+                hdr10plus_loss::X265_NO_SUPPORT
+            )]
+        );
+    }
+
+    #[test]
+    fn fallback_json_failure_drops_injection() {
+        let decision = EncodeDecision::Cqp { qi: 22, qp: 22 };
+        let hdr10 = FallbackHdr10Plus {
+            can_process: true,
+            family: "hevc",
+            dovi: None,
+            caps: &CAPS_ALL,
+            profile: "B",
+        };
+        let plan = fallback_sw_args(&decision, "libx265", "22", "22", Some(&hdr10), &mut || {
+            Err("disk full".to_string())
+        });
+        assert!(!plan.keep_injection);
+        assert!(!plan.video_args.iter().any(|a| a.contains("dhdr10-info")));
+        assert_eq!(
+            plan.notes,
+            vec!["  HDR10+: disk full - output has static HDR10 only".to_string()]
+        );
+    }
+
+    /// An encoder that still routes to the injector gets B-frames off and
+    /// keeps the metadata.
+    #[test]
+    fn fallback_on_injector_route_keeps_injection_without_b_frames() {
+        let decision = EncodeDecision::Cqp { qi: 22, qp: 22 };
+        let hdr10 = FallbackHdr10Plus {
+            can_process: true,
+            family: "hevc",
+            dovi: None,
+            caps: &CAPS_ALL,
+            profile: "B",
+        };
+        let plan = fallback_sw_args(
+            &decision,
+            "hevc_vaapi",
+            "22",
+            "22",
+            Some(&hdr10),
+            &mut || panic!("injector route writes no JSON"),
+        );
+        assert!(plan.keep_injection);
+        assert_eq!(
+            plan.video_args[plan.video_args.len() - 2..],
+            strs(&["-bf", "0"])[..]
+        );
+    }
+
+    /// No extracted metadata: the arguments are the plain software ones.
+    #[test]
+    fn fallback_without_metadata_is_plain() {
+        let decision = EncodeDecision::Cqp { qi: 22, qp: 22 };
+        let plan = fallback_sw_args(&decision, "libx265", "22", "22", None, &mut || {
+            panic!("no JSON without metadata")
+        });
+        assert!(!plan.keep_injection);
+        assert!(plan.notes.is_empty());
+        assert_eq!(plan.video_args[..2], strs(&["-c:v", "libx265"])[..]);
+        assert!(!plan.video_args.contains(&"-bf".to_string()));
     }
 
     #[test]
