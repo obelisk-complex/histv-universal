@@ -3135,7 +3135,12 @@
         startCountdown(action, countdown);
       });
 
-      // allSettled: one failed registration must not abort start-up.
-      return Promise.allSettled(registrations);
+      // allSettled: one failed registration must not abort start-up, but it
+      // is logged so a missing listener is not silent.
+      return Promise.allSettled(registrations).then((results) => {
+        results.forEach((r) => {
+          if (r.status === 'rejected') console.error('Event listener registration failed:', r.reason);
+        });
+      });
     }
 

@@ -1203,14 +1203,17 @@ fn hdr_type_label(item: &QueueItem) -> &'static str {
     }
 }
 
-/// Truncate a filename to fit a given width, adding "..." if needed.
+/// Truncate a filename to fit a given width in characters, adding "..." if
+/// needed. Counts characters, not bytes, so a multi-byte name is never cut
+/// inside a character.
 pub(crate) fn truncate_filename(name: &str, max_width: usize) -> String {
-    if name.len() <= max_width {
+    if name.chars().count() <= max_width {
         name.to_string()
     } else if max_width > 3 {
-        format!("{}...", &name[..max_width - 3])
+        let kept: String = name.chars().take(max_width - 3).collect();
+        format!("{kept}...")
     } else {
-        name[..max_width].to_string()
+        name.chars().take(max_width).collect()
     }
 }
 
@@ -1390,6 +1393,19 @@ mod tests {
     #[test]
     fn test_truncate_width_4() {
         assert_eq!(truncate_filename("abcdef", 4), "a...");
+    }
+
+    #[test]
+    fn test_truncate_non_ascii_does_not_split_a_character() {
+        // 20 two-byte characters: a byte slice at 27 would land mid-character.
+        let name = "é".repeat(20);
+        assert_eq!(truncate_filename(&name, 30), name);
+        assert_eq!(
+            truncate_filename(&"é".repeat(40), 30),
+            format!("{}...", "é".repeat(27))
+        );
+        assert_eq!(truncate_filename("日本語のファイル名.mkv", 5), "日本...");
+        assert_eq!(truncate_filename("日本語", 2), "日本");
     }
 
     // ── hdr_type_label ─────────────────────────────────────────
