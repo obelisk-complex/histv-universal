@@ -644,6 +644,10 @@ pub struct FfmpegCaps {
     pub x265_hdr10plus: bool,
     /// The `hevc_metadata` BSF has `width` and `height` (absent in 6.1).
     pub hevc_metadata_size: bool,
+    /// ffmpeg predates `-fps_mode` (before 5.1), so `-vsync` is used. Only
+    /// set when the option is reported as unrecognised; a failed probe
+    /// leaves the modern spelling in place.
+    pub no_fps_mode: bool,
 }
 
 static FFMPEG_CAPS: std::sync::RwLock<FfmpegCaps> = std::sync::RwLock::new(FfmpegCaps {
@@ -651,7 +655,13 @@ static FFMPEG_CAPS: std::sync::RwLock<FfmpegCaps> = std::sync::RwLock::new(Ffmpe
     dovi_svtav1: false,
     x265_hdr10plus: false,
     hevc_metadata_size: false,
+    no_fps_mode: false,
 });
+
+/// Whether ffmpeg's stderr says `-fps_mode` is not an option (before 5.1).
+pub fn fps_mode_unrecognised(stderr: &str) -> bool {
+    stderr.contains("Unrecognized option 'fps_mode'")
+}
 
 /// The capabilities found by the last `detect_encoders` run.
 pub fn ffmpeg_caps() -> FfmpegCaps {
@@ -722,6 +732,24 @@ async fn probe_ffmpeg_caps(has_x265: bool, has_svtav1: bool) -> FfmpegCaps {
     if let Some((out, _)) = ffmpeg_stdout_stderr(&["-hide_banner", "-h", "bsf=hevc_metadata"]).await
     {
         caps.hevc_metadata_size = bsf_help_has_size(&out);
+    }
+    if let Some((_, err)) = ffmpeg_stdout_stderr(&[
+        "-hide_banner",
+        "-f",
+        "lavfi",
+        "-i",
+        "color=black:s=16x16:d=0.04",
+        "-frames:v",
+        "1",
+        "-fps_mode",
+        "passthrough",
+        "-f",
+        "null",
+        "-",
+    ])
+    .await
+    {
+        caps.no_fps_mode = fps_mode_unrecognised(&err);
     }
     if has_x265 {
         if let Some((out, _)) =
@@ -1173,6 +1201,9 @@ pub async fn detect_encoders(sink: &dyn EventSink) -> (Vec<EncoderInfo>, Vec<Str
         if caps.x265_hdr10plus { "yes" } else { "no" },
         if caps.hevc_metadata_size { "yes" } else { "no" },
     ));
+    if caps.no_fps_mode {
+        sink.log("[detect] ffmpeg predates -fps_mode - using -vsync passthrough");
+    }
     if let Ok(mut c) = FFMPEG_CAPS.write() {
         *c = caps;
     }
@@ -3039,6 +3070,7 @@ async fn encode_single_file(
             dovi_p5: dovi_in_output && item_dovi_profile == Some(5),
             keep_source_tag: is_copy_decision
                 && matches!(source_ext.as_str(), "mp4" | "m4v" | "mov"),
+            legacy_vsync: ffmpeg_caps().no_fps_mode,
         });
 
         let cmd_line = format!("ffmpeg {}", ffmpeg_args.join(" "));
@@ -3287,6 +3319,7 @@ async fn encode_single_file(
                         dovi_in_output: false,
                         dovi_p5: false,
                         keep_source_tag: false,
+                        legacy_vsync: ffmpeg_caps().no_fps_mode,
                     });
 
                     let sw_cmd = format!("ffmpeg {}", sw_args.join(" "));
@@ -4409,6 +4442,9 @@ struct FfmpegAssemblyParts<'a> {
     /// Forcing `hvc1` onto a copied `hev1` stream (parameter sets in-band)
     /// writes a file ffmpeg itself cannot open.
     keep_source_tag: bool,
+    /// ffmpeg predates `-fps_mode` (`FfmpegCaps::no_fps_mode`): spell the
+    /// frame-rate mode `-vsync`.
+    legacy_vsync: bool,
 }
 
 /// Colour metadata to embed in the ffmpeg output. Only needed for
@@ -4531,6 +4567,21 @@ fn assemble_ffmpeg_args_for(
         // Normal video: per-stream audio maps + subtitle passthrough
         args.extend_from_slice(parts.audio_map_args);
         args.extend(parts.video_args.iter().map(|s| s.to_string()));
+        // Never change the frame rate: ffmpeg 6.1 duplicated frames under its
+        // default mode (51 source frames became 59), which misaligns Dolby
+        // Vision RPUs and HDR10+ metadata with their pictures. A stream copy
+        // already keeps every packet. Image sources (GIF, APNG, MJPEG) stay
+        // on ffmpeg's default: they carry no per-frame metadata, and their
+        // timing is rounded frame delays. Animated WebP has its own encoder
+        // command (`webp_decode`) and does not come through here.
+        if encoder_name != Some("copy") {
+            let flag = if parts.legacy_vsync {
+                "-vsync"
+            } else {
+                "-fps_mode"
+            };
+            args.extend(vec![flag.into(), "passthrough".into()]);
+        }
         // Build the video filter chain. For VAAPI/QSV encoders the frames
         // must be uploaded to the hardware device; chain hwupload after any
         // tonemap filter so the tonemap runs on CPU and hwupload moves the
@@ -6073,6 +6124,7 @@ mod tests {
             dovi_in_output: false,
             dovi_p5: false,
             keep_source_tag: false,
+            legacy_vsync: false,
         });
         assert!(args.contains(&"-tag:v".to_string()));
         assert!(args.contains(&"hvc1".to_string()));
@@ -6099,6 +6151,7 @@ mod tests {
             dovi_in_output: false,
             dovi_p5: false,
             keep_source_tag: false,
+            legacy_vsync: false,
         });
         assert!(!args.contains(&"-tag:v".to_string()));
         assert!(!args.contains(&"hvc1".to_string()));
@@ -6126,6 +6179,7 @@ mod tests {
             dovi_in_output: false,
             dovi_p5: false,
             keep_source_tag: false,
+            legacy_vsync: false,
         });
         assert!(!args.contains(&"-tag:v".to_string()));
         assert!(!args.contains(&"hvc1".to_string()));
@@ -6152,6 +6206,7 @@ mod tests {
             dovi_in_output: false,
             dovi_p5: false,
             keep_source_tag: false,
+            legacy_vsync: false,
         });
         assert!(args.contains(&"-c:s".to_string()));
         assert!(args.contains(&"mov_text".to_string()));
@@ -6186,6 +6241,7 @@ mod tests {
             dovi_in_output: false,
             dovi_p5: false,
             keep_source_tag: false,
+            legacy_vsync: false,
         });
         assert!(args.contains(&"-c:s".to_string()));
         assert!(args.contains(&"copy".to_string()));
@@ -6216,6 +6272,7 @@ mod tests {
             dovi_in_output: false,
             dovi_p5: false,
             keep_source_tag: false,
+            legacy_vsync: false,
         });
         assert!(args.contains(&"-vf".to_string()));
         assert!(args.iter().any(|a| a.contains("tonemap=hable")));
@@ -6251,6 +6308,7 @@ mod tests {
             dovi_in_output: false,
             dovi_p5: false,
             keep_source_tag: false,
+            legacy_vsync: false,
         });
     }
 
@@ -7015,6 +7073,7 @@ mod tests {
             dovi_in_output: false,
             dovi_p5: false,
             keep_source_tag: false,
+            legacy_vsync: false,
         });
 
         // hw_device_init args must precede -i
@@ -7058,6 +7117,7 @@ mod tests {
             dovi_in_output: false,
             dovi_p5: false,
             keep_source_tag: false,
+            legacy_vsync: false,
         });
         assert!(
             args.iter().any(|a| a == "-init_hw_device"),
@@ -7102,6 +7162,7 @@ mod tests {
             dovi_in_output: false,
             dovi_p5: false,
             keep_source_tag: false,
+            legacy_vsync: false,
         });
 
         // -vaapi_device must precede -i
@@ -7145,6 +7206,7 @@ mod tests {
             dovi_in_output: false,
             dovi_p5: false,
             keep_source_tag: false,
+            legacy_vsync: false,
         });
 
         // VAAPI must always have -vaapi_device in args. If the render
@@ -7185,6 +7247,7 @@ mod tests {
             dovi_in_output: false,
             dovi_p5: false,
             keep_source_tag: false,
+            legacy_vsync: false,
         });
 
         // When tonemap is present, can't use hwaccel decode (tonemap is CPU)
@@ -7225,6 +7288,7 @@ mod tests {
             dovi_in_output: false,
             dovi_p5: false,
             keep_source_tag: false,
+            legacy_vsync: false,
         });
 
         assert!(!args.iter().any(|a| a == "-vaapi_device"));
@@ -7255,6 +7319,7 @@ mod tests {
             dovi_in_output: false,
             dovi_p5: false,
             keep_source_tag: false,
+            legacy_vsync: false,
         });
 
         assert!(!args.iter().any(|a| a == "-vaapi_device"));
@@ -7291,6 +7356,7 @@ mod tests {
             dovi_in_output: false,
             dovi_p5: false,
             keep_source_tag: false,
+            legacy_vsync: false,
         });
 
         let vf_pos = args.iter().position(|a| a == "-vf").unwrap();
@@ -7337,6 +7403,7 @@ mod tests {
             dovi_in_output: false,
             dovi_p5: false,
             keep_source_tag: false,
+            legacy_vsync: false,
         });
 
         let vf_pos = args.iter().position(|a| a == "-vf").unwrap();
@@ -7385,6 +7452,7 @@ mod tests {
             dovi_in_output: false,
             dovi_p5: false,
             keep_source_tag: false,
+            legacy_vsync: false,
         });
 
         // Must use hwaccel decode for 10-bit VAAPI
@@ -7450,6 +7518,7 @@ mod tests {
             dovi_in_output: false,
             dovi_p5: false,
             keep_source_tag: false,
+            legacy_vsync: false,
         });
 
         let vf_pos = args.iter().position(|a| a == "-vf").unwrap();
@@ -7488,6 +7557,7 @@ mod tests {
             dovi_in_output: false,
             dovi_p5: false,
             keep_source_tag: false,
+            legacy_vsync: false,
         });
 
         let vf_pos = args.iter().position(|a| a == "-vf").unwrap();
@@ -7530,6 +7600,7 @@ mod tests {
             dovi_in_output: false,
             dovi_p5: false,
             keep_source_tag: false,
+            legacy_vsync: false,
         });
 
         let vf_pos = args.iter().position(|a| a == "-vf").unwrap();
@@ -7576,6 +7647,7 @@ mod tests {
             dovi_in_output: false,
             dovi_p5: false,
             keep_source_tag: false,
+            legacy_vsync: false,
         });
 
         assert!(
@@ -7619,6 +7691,7 @@ mod tests {
             dovi_in_output: false,
             dovi_p5: false,
             keep_source_tag: false,
+            legacy_vsync: false,
         });
 
         assert!(
@@ -7663,6 +7736,7 @@ mod tests {
             dovi_in_output: false,
             dovi_p5: false,
             keep_source_tag: false,
+            legacy_vsync: false,
         });
 
         assert!(
@@ -7693,6 +7767,7 @@ mod tests {
             dovi_in_output: false,
             dovi_p5: false,
             keep_source_tag: false,
+            legacy_vsync: false,
         });
 
         assert!(args
@@ -7775,6 +7850,7 @@ mod tests {
             dovi_in_output: false,
             dovi_p5: false,
             keep_source_tag: false,
+            legacy_vsync: false,
         });
 
         assert!(
@@ -8270,7 +8346,8 @@ mod tests {
 
     #[test]
     fn assemble_vaapi_8bit_byte_identical() {
-        // Pinned from the pre-refactor assembly for hevc_vaapi 8-bit.
+        // Pinned from the pre-refactor assembly for hevc_vaapi 8-bit, plus
+        // the frame-rate mode.
         let args = assemble_ffmpeg_args_for(
             &FfmpegAssemblyParts {
                 input_path: "in.mkv",
@@ -8305,6 +8382,8 @@ mod tests {
                 "CQP",
                 "-qp",
                 "20",
+                "-fps_mode",
+                "passthrough",
                 "-vf",
                 "format=nv12,hwupload",
                 "-pix_fmt",
@@ -8408,12 +8487,14 @@ mod tests {
         dovi_svtav1: true,
         x265_hdr10plus: true,
         hevc_metadata_size: true,
+        no_fps_mode: false,
     };
     const CAPS_NONE: FfmpegCaps = FfmpegCaps {
         dovi_x265: false,
         dovi_svtav1: false,
         x265_hdr10plus: false,
         hevc_metadata_size: false,
+        no_fps_mode: false,
     };
 
     #[test]
@@ -8972,5 +9053,118 @@ mod tests {
         let args = assemble_ffmpeg_args_for(&parts, None, TargetOs::Linux);
         assert!(arg_after(&args, "-tag:v").is_none());
         assert_eq!(arg_after(&args, "-strict").as_deref(), Some("unofficial"));
+    }
+
+    // ── Frame-rate mode ─────────────────────────────────────────
+
+    fn fps_args(parts: &FfmpegAssemblyParts<'_>) -> Vec<String> {
+        assemble_ffmpeg_args_for(parts, None, TargetOs::Linux)
+    }
+
+    /// `-fps_mode passthrough` (or legacy `-vsync passthrough`) as an output
+    /// option: after the input, before the output path.
+    fn has_frame_sync(args: &[String], flag: &str) -> bool {
+        let input = args.iter().position(|a| a == "-i").unwrap();
+        args.windows(2)
+            .enumerate()
+            .any(|(i, w)| i > input && w[0] == flag && w[1] == "passthrough")
+    }
+
+    #[test]
+    fn fps_mode_passthrough_for_normal_video() {
+        for (enc, out) in [
+            ("libx265", "o.mp4"),
+            ("libx264", "o.mkv"),
+            ("libsvtav1", "o.mkv"),
+            ("hevc_nvenc", "o.mkv"),
+            ("hevc_vaapi", "o.mp4"),
+        ] {
+            let video = ["-c:v", enc];
+            let args = fps_args(&FfmpegAssemblyParts {
+                input_path: "in.mkv",
+                output_path: out,
+                video_args: &video,
+                pix_fmt: "yuv420p",
+                codec_family: "hevc",
+                ..Default::default()
+            });
+            assert!(has_frame_sync(&args, "-fps_mode"), "{enc}: {args:?}");
+            assert!(!args.contains(&"-vsync".to_string()), "{enc}");
+            assert_eq!(args.last().unwrap(), out);
+        }
+    }
+
+    #[test]
+    fn fps_mode_passthrough_for_dolby_vision_and_hdr10plus_routes() {
+        // Native Dolby Vision, MP4 and MKV.
+        let dv = ["-c:v", "libx265", "-dolbyvision", "1"];
+        for (out, in_out) in [("o.mp4", true), ("o.mkv", false)] {
+            let args = fps_args(&dv_parts(out, &dv, in_out, false));
+            assert!(has_frame_sync(&args, "-fps_mode"), "{out}");
+        }
+        // Native HDR10+ (dhdr10-info through -x265-params).
+        let hdr10p = ["-c:v", "libx265", "-x265-params", "dhdr10-info=/t/a.json"];
+        let args = fps_args(&dv_parts("o.mkv", &hdr10p, false, false));
+        assert!(has_frame_sync(&args, "-fps_mode"));
+        // RPU pipeline and HDR10+ injector: a hardware encode and a software one.
+        for enc in ["hevc_vaapi", "libx265"] {
+            let video = ["-c:v", enc];
+            let args = fps_args(&dv_parts("o.mp4", &video, false, false));
+            assert!(has_frame_sync(&args, "-fps_mode"), "{enc}");
+        }
+        // Both passes of a two-pass encode keep it.
+        let base = fps_args(&dv_parts("o.mp4", &dv, true, false));
+        for pass in [1u8, 2] {
+            let args = build_two_pass_args(&base, pass, "log", "mp4");
+            assert!(has_frame_sync(&args, "-fps_mode"), "pass {pass}");
+        }
+    }
+
+    #[test]
+    fn fps_mode_left_alone_for_image_sources_and_stream_copy() {
+        // GIF/APNG/MJPEG sources keep ffmpeg's default mode.
+        let video = ["-c:v", "libx265"];
+        let args = fps_args(&FfmpegAssemblyParts {
+            input_path: "in.gif",
+            output_path: "o.mp4",
+            video_args: &video,
+            pix_fmt: "yuv420p",
+            codec_family: "hevc",
+            is_image_source: true,
+            ..Default::default()
+        });
+        assert!(!args.contains(&"-fps_mode".to_string()), "{args:?}");
+        assert!(!args.contains(&"-vsync".to_string()), "{args:?}");
+        // A stream copy keeps every packet already.
+        let copy = ["-c:v", "copy"];
+        let args = fps_args(&dv_parts("o.mp4", &copy, true, false));
+        assert!(!args.contains(&"-fps_mode".to_string()), "{args:?}");
+    }
+
+    #[test]
+    fn fps_mode_falls_back_to_vsync_before_ffmpeg_5_1() {
+        let video = ["-c:v", "libx264"];
+        let args = fps_args(&FfmpegAssemblyParts {
+            input_path: "in.mkv",
+            output_path: "o.mp4",
+            video_args: &video,
+            pix_fmt: "yuv420p",
+            codec_family: "h264",
+            legacy_vsync: true,
+            ..Default::default()
+        });
+        assert!(has_frame_sync(&args, "-vsync"), "{args:?}");
+        assert!(!args.contains(&"-fps_mode".to_string()), "{args:?}");
+    }
+
+    #[test]
+    fn fps_mode_probe_reads_unrecognised_option() {
+        assert!(fps_mode_unrecognised(
+            "Unrecognized option 'fps_mode'.\nError splitting the argument list: Option not found\n"
+        ));
+        assert!(!fps_mode_unrecognised(
+            "frame=    1 fps=0.0 q=-0.0 Lsize=N/A\n"
+        ));
+        assert!(!fps_mode_unrecognised(""));
     }
 }
