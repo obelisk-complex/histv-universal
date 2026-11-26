@@ -399,4 +399,56 @@ describe('resolveEncoderFamilies', () => {
     assert.deepEqual(resolveEncoderFamilies([done, hevc], on), ['hevc']);
     assert.deepEqual(resolveEncoderFamilies([done], on), ['hevc']);
   });
+
+  it('compatibility mode gives H.264 whatever the queue holds', () => {
+    const compat = { compat: true, preserveAv1: false };
+    assert.deepEqual(resolveEncoderFamilies([], compat), ['h264']);
+    assert.deepEqual(resolveEncoderFamilies([{ videoCodec: 'hevc', status: 'Done' }], compat), ['h264']);
+    assert.deepEqual(resolveEncoderFamilies([hevc, av1], compat), ['h264']);
+  });
+});
+
+// ── app.js keeps the same rules as lib.js ──────────────────────
+//
+// index.html loads only app.js, so app.js carries inline copies of the
+// family helpers that lib.js exports for testing. Nothing else notices if
+// the two drift apart, so compare the function text here.
+
+describe('app.js inline copies match lib.js', () => {
+  const fs = require('node:fs');
+  const path = require('node:path');
+  const lib = fs.readFileSync(path.join(__dirname, 'lib.js'), 'utf8');
+  const app = fs.readFileSync(path.join(__dirname, 'app.js'), 'utf8');
+
+  // Function source from `function name(` to its closing brace at the same
+  // indent, with each line trimmed.
+  function extract(src, name) {
+    const m = new RegExp(`^( *)function ${name}\\(`, 'm').exec(src);
+    assert.ok(m, `${name} not found`);
+    const end = new RegExp(`^${m[1]}}$`, 'm').exec(src.slice(m.index));
+    assert.ok(end, `${name} has no closing brace`);
+    return src.slice(m.index, m.index + end.index + end[0].length)
+      .split('\n').map((l) => l.trim()).filter(Boolean).join('\n');
+  }
+
+  it('resolveFamilyForCodec is identical', () => {
+    assert.equal(extract(app, 'resolveFamilyForCodec'), extract(lib, 'resolveFamilyForCodec'));
+  });
+
+  it('resolveEncoderFamilies keeps the same rules', () => {
+    // app.js reads the page state, so only the shared rule lines are compared.
+    const shared = [
+      "if (opts.compat) return ['h264'];",
+      "if (active.length === 0) return ['hevc'];",
+      "['pending', 'probing', 'encoding'].includes((it.status || '').toLowerCase()));",
+      "const found = new Set(active.map(it => resolveFamilyForCodec(it.videoCodec, opts)));",
+      "return ['hevc', 'h264', 'av1'].filter(f => found.has(f));",
+    ];
+    const a = extract(app, 'resolveEncoderFamilies');
+    const l = extract(lib, 'resolveEncoderFamilies');
+    for (const line of shared) {
+      assert.ok(a.includes(line), `app.js is missing: ${line}`);
+      assert.ok(l.includes(line), `lib.js is missing: ${line}`);
+    }
+  });
 });
