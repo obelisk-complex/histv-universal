@@ -313,6 +313,7 @@ People with a pile of video files at different sizes and formats who want to shr
 │   │   ├── run-job-in-docker.sh  # Run a build-ffmpeg.yml job locally
 │   │   └── e2e/                # Hand-run end-to-end harness (see its README)
 │   ├── ui-harness/             # Headless Chromium checks for the style switch (see its README)
+│   ├── dv-compare/             # Did the Dolby Vision data and the picture survive a transcode? (see its README)
 │   └── generate-cargo-sources.py  # cargo-sources.json for the Flatpak
 ├── .github/workflows/
 │   ├── ci.yml                  # Tests, macOS/Windows compile checks, ffmpeg pin check, dependency audit
@@ -385,6 +386,7 @@ Everything on `3.0.0-dev` that is not in `main`, from the commits since the bran
 - `build-ffmpeg.yml` builds ffmpeg n8.1.3 from pinned sources (git commits and tarball SHA-256s) with Vulkan, D3D12, AMF, libvpl and x265 HDR10+, and publishes archives with `BUILDINFO.txt`, build attestations and `histv-ffmpeg-sources.tar` (0c9b880, 6298d53). `tools/ffmpeg/` holds the helper scripts; `verify.sh` gates the build, `check-pins.sh` keeps the tag and checksums in step across `ffmpeg.rs`, `build-platform.yml` and the Flatpak manifest (c5f57c9).
 - Release bundles and the Flatpak ship the HISTV ffmpeg (2ff9762). `ci.yml` skips the Linux test job on pull requests, runs the pin check as its own job and audits dependencies weekly; jobs have timeouts (5e73dad, 3d90b5a).
 - `tools/ffmpeg/e2e/` runs the real argument builder through `histv-cli` against synthetic sources. Last results for `ffmpeg-n8.1.3-histv.2`: 295 PASS, 0 FAIL, 10 XFAIL, 0 XPASS, 12 SKIP (f36a06a, fcc96b8; details in `tools/ffmpeg/e2e/README.md`).
+- `tools/dv-compare/` compares a Dolby Vision input with its output: container and stream fields, configuration box, one RPU per frame, every RPU parsed with `dolby_vision` 3.3.2 and paired in display order, extension blocks per level, packet md5 for stream copies, full decode, PSNR/SSIM; exit 0 passed, 1 differences, 2 nothing compared, 3 tool error (29b98f7, fc109b7). `run.sh selftest` damages a synthetic clip 14 ways and each must be caught by name (ed240e4). Run by hand; no workflow calls it.
 - Dependencies updated after `cargo audit` (9ad2d0e); `cargo-sources.json` regenerated for the Flatpak (b1ba3f5).
 
 </details>
