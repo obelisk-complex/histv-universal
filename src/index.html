@@ -4,9 +4,11 @@
   <meta charset="UTF-8" />
   <meta name="viewport" content="width=device-width, initial-scale=1.0" />
   <title>Honey, I Shrunk The Vids v2.7.0-dev.0</title>
-  <link rel="stylesheet" href="css/doublet-tokens.css" />
-  <link rel="stylesheet" href="css/doublet-components.css" />
-  <link rel="stylesheet" href="css/app.css" />
+  <link rel="stylesheet" id="doublet-tokens-css" href="css/doublet-tokens.css" />
+  <link rel="stylesheet" id="doublet-components-css" href="css/doublet-components.css" />
+  <!-- Writes <link id="ui-style-css"> (css/app.css or css/app-classic.css) for the
+       saved interface style, so the right stylesheet blocks first paint -->
+  <script src="js/ui-style.js"></script>
 </head>
 <body>
   <div id="app" class="dx-seam">
@@ -15,7 +17,7 @@
            right of the rail via row-reverse) ═══ -->
       <section id="left-panel">
         <div class="panel-header">
-          <span class="ws-title dx-label">Queue / Your files</span>
+          <span class="ws-title dx-label"><span class="doublet-only">Queue / </span>Your files</span>
           <span id="queue-summary" class="queue-summary"></span>
         </div>
 
@@ -72,7 +74,7 @@
       <aside id="right-panel">
         <div class="rail-scroll">
           <div class="rail-brand" aria-label="Honey, I Shrunk The Vids">Honey, I <span class="brand-accent dx-accent">Shrunk</span> The Vids</div>
-          <div class="rail-title dx-label">Quality / Profile</div>
+          <div class="rail-title dx-label">Quality<span class="doublet-only"> / Profile</span></div>
 
           <!-- Profile cards: one click = a consistent quality + format. -->
           <div id="profile-list" role="group" aria-label="Quality profile">
@@ -107,7 +109,7 @@
 
             <div class="status-text" id="encoder-summary">Detecting encoders</div>
 
-            <div class="section-header dx-label dx-section-label">Advanced / Video</div>
+            <div class="section-header dx-label dx-section-label"><span class="doublet-only">Advanced / </span>Video</div>
 
             <div class="form-row">
               <label for="num-bitrate" class="has-tooltip">Bitrate (Mbps)
@@ -159,7 +161,7 @@
               <input type="number" id="num-crf" min="0" max="51" value="20" />
             </div>
 
-            <div class="section-header dx-label dx-section-label">Advanced / Output</div>
+            <div class="section-header dx-label dx-section-label"><span class="doublet-only">Advanced / </span>Output</div>
 
             <div class="form-row has-tooltip">
               <label class="has-tooltip">Output location
@@ -173,7 +175,7 @@
               </div>
             </div>
 
-            <div class="section-header dx-label dx-section-label">Advanced / Behaviour</div>
+            <div class="section-header dx-label dx-section-label"><span class="doublet-only">Advanced / </span>Behaviour</div>
 
             <div class="checkbox-row has-tooltip">
               <input type="checkbox" id="chk-hdr" />
@@ -231,7 +233,7 @@
               <span class="tooltip-text">Skip local staging and read/write directly over the network. Fast on a wired LAN, slow or unreliable over Wi-Fi or WAN.</span>
             </div>
 
-            <div class="section-header dx-label dx-section-label">Advanced / Performance</div>
+            <div class="section-header dx-label dx-section-label"><span class="doublet-only">Advanced / </span>Performance</div>
 
             <div class="form-row">
               <label for="num-threads" class="has-tooltip">Threads
@@ -245,7 +247,7 @@
               </label>
             </div>
 
-            <div class="section-header dx-label dx-section-label">Advanced / After batch</div>
+            <div class="section-header dx-label dx-section-label"><span class="doublet-only">Advanced / </span>After batch</div>
 
             <div class="form-row">
               <label for="sel-post-action">Action</label>
@@ -291,6 +293,13 @@
         <div class="rail-footer settings-footer">
           <label for="sel-theme" class="dx-label">Theme</label>
           <select id="sel-theme"></select>
+        </div>
+        <div class="rail-footer settings-footer">
+          <label for="sel-ui-style" class="dx-label">Style</label>
+          <select id="sel-ui-style">
+            <option value="doublet">Doublet</option>
+            <option value="classic">Classic</option>
+          </select>
         </div>
       </aside><!-- /right-panel (rail) -->
     </main><!-- /main-area -->

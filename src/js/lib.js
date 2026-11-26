@@ -117,6 +117,25 @@ function resolveEncoderFamilies(items, opts) {
   return ['hevc', 'h264', 'av1'].filter(f => found.has(f));
 }
 
+// Interface style from a config value: 'classic', or 'doublet' for anything
+// else (missing, unknown, wrong type). Mirrors deserialize_ui_style in
+// src-tauri/src/config.rs.
+function normaliseUiStyle(value) {
+  return value === 'classic' ? 'classic' : 'doublet';
+}
+
+// Which interface style owns an inline custom property on <html>: 'doublet'
+// for the --dx-* tokens, 'classic' for the pre-Doublet palette and glass
+// tokens, null for names both styles accept from a theme (log-* and other
+// pass-through keys).
+function uiStyleOfProperty(prop) {
+  if (prop.startsWith('--dx-')) return 'doublet';
+  if (/^--(glass|row|progress|icon)-/.test(prop)) return 'classic';
+  const classicCore = ['--background', '--surface', '--text', '--primary', '--success', '--error',
+    '--surface-dim', '--surface-bright', '--text-muted', '--accent', '--text-on-primary'];
+  return classicCore.includes(prop) ? 'classic' : null;
+}
+
 module.exports = {
   formatBytes,
   formatDuration,
@@ -126,4 +145,6 @@ module.exports = {
   formatEstimatedSize,
   resolveFamilyForCodec,
   resolveEncoderFamilies,
+  normaliseUiStyle,
+  uiStyleOfProperty,
 };

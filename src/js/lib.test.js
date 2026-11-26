@@ -8,6 +8,8 @@ const {
   computeEstimatedSize,
   formatEstimatedSize,
   resolveEncoderFamilies,
+  normaliseUiStyle,
+  uiStyleOfProperty,
 } = require('./lib.js');
 
 // ── formatBytes ────────────────────────────────────────────────
@@ -251,7 +253,8 @@ const path = require('node:path');
 // app.js is a browser script, so pull the colour functions out of its source.
 function loadColourFns() {
   const src = fs.readFileSync(path.join(__dirname, 'app.js'), 'utf8');
-  const names = ['deriveDoubletTokens', 'hex6', 'contrastRatio', 'isLightColor', 'hexToRgb', 'rgbToHex',
+  const names = ['deriveDoubletTokens', 'deriveClassicTokens', 'hexToRgba', 'isValidCssColor',
+    'hex6', 'contrastRatio', 'isLightColor', 'hexToRgb', 'rgbToHex',
     'blendHex', 'shiftBrightness', 'relLuminance', 'bestTextOn', 'srgbToLinear', 'linearToSrgb',
     'hexToOklch', 'oklchToLinear', 'oklchToHex', 'liftLightness'];
   let code = '';
@@ -307,6 +310,147 @@ describe('deriveDoubletTokens', () => {
     assert.ok(l1 > 0.45 && c1 <= c0 * 1.02);
     assert.equal(fns.liftLightness('#ffffff', ['#000000'], 4.5, false), '#ffffff');
   });
+});
+
+// ── Interface style (Doublet / Classic) ────────────────────────
+
+describe('normaliseUiStyle', () => {
+  it('keeps the two known styles', () => {
+    assert.equal(normaliseUiStyle('classic'), 'classic');
+    assert.equal(normaliseUiStyle('doublet'), 'doublet');
+  });
+
+  it('reads anything else as doublet, like the Rust config', () => {
+    for (const v of [undefined, null, '', 'Classic', ' classic', 'neon', 42, {}]) {
+      assert.equal(normaliseUiStyle(v), 'doublet', String(v));
+    }
+  });
+});
+
+describe('uiStyleOfProperty', () => {
+  it('gives Doublet the --dx-* tokens', () => {
+    assert.equal(uiStyleOfProperty('--dx-cloth'), 'doublet');
+    assert.equal(uiStyleOfProperty('--dx-thread-line'), 'doublet');
+  });
+
+  it('gives Classic the pre-Doublet palette and glass tokens', () => {
+    for (const p of ['--background', '--surface', '--text', '--primary', '--success', '--error',
+      '--surface-dim', '--surface-bright', '--text-muted', '--accent', '--text-on-primary',
+      '--row-info', '--row-encoding', '--progress-fill', '--progress-bg', '--icon-cancelled',
+      '--glass-bg', '--glass-overlay-bg']) {
+      assert.equal(uiStyleOfProperty(p), 'classic', p);
+    }
+  });
+
+  it('leaves names both styles accept unowned', () => {
+    for (const p of ['--log-warn', '--log-cmd', '--rail-w', '--encode-progress', '--base-100', 'color']) {
+      assert.equal(uiStyleOfProperty(p), null, p);
+    }
+  });
+});
+
+describe('deriveClassicTokens', () => {
+  const fns = loadColourFns();
+  const dir = path.join(__dirname, '..', '..', 'src-tauri', 'themes');
+  const themes = fs.readdirSync(dir).filter(f => f.endsWith('.json'))
+    .map(f => JSON.parse(fs.readFileSync(path.join(dir, f), 'utf8')));
+
+  // What applyTheme set inline at e4d0ee2 (2.6.0) for these themes.
+  const pre3 = {
+    'Classic Dark': {
+      'background': '#1E1E1E', 'surface': '#373737', 'text': '#DCDCDC', 'primary': '#0078D7',
+      'success': '#4ade80', 'error': '#f87171', 'surface-dim': '#2b2b2b',
+      'surface-bright': '#4b4b4b', 'text-muted': 'rgba(220, 220, 220, 0.65)', 'accent': '#0078D7',
+      'row-info': '#1a2c3a', 'row-done': '#253b2d', 'row-encoding': '#414141',
+      'row-failed': '#3f2a2a', 'row-cancelled': '#403636', 'progress-fill': '#253b2d',
+      'progress-bg': '#414141', 'icon-done': '#4ade80', 'icon-failed': '#f87171',
+      'icon-cancelled': '#fb923c', 'log-result': '#4ade80', 'log-warn': '#fb923c',
+      'log-error': '#f87171', 'log-detect': '#a78bfa', 'log-file': '#7dd3fc',
+      'log-text': '#8BC88B', 'log-cmd': '#7a8090', 'text-on-primary': '#000000',
+      'glass-bg': 'rgba(40, 40, 40, 0.65)', 'glass-border': 'rgba(255, 255, 255, 0.06)',
+      'glass-input-bg': 'rgba(55, 55, 55, 0.5)', 'glass-th-bg': 'rgba(55, 55, 55, 0.9)',
+      'glass-hover': 'rgba(255, 255, 255, 0.08)', 'glass-toggle-bg': 'rgba(55, 55, 55, 0.4)',
+      'glass-log-bg': 'rgba(8, 8, 8, 0.9)', 'glass-strip-bg': 'rgba(40, 40, 40, 0.7)',
+      'glass-overlay-bg': 'rgba(40, 40, 40, 0.92)',
+    },
+    'Classic Light': {
+      'background': '#FFFFFF', 'surface': '#E0E0E0', 'text': '#1E1E1E', 'primary': '#0078D7',
+      'success': '#22c55e', 'error': '#ef4444', 'surface-dim': '#f0f0f0',
+      'surface-bright': '#cccccc', 'text-muted': 'rgba(30, 30, 30, 0.65)', 'accent': '#0078D7',
+      'row-info': '#d9ebf9', 'row-done': '#e4f8ec', 'row-encoding': '#d6d6d6',
+      'row-failed': '#fde9e9', 'row-cancelled': '#eae0e0', 'progress-fill': '#e4f8ec',
+      'progress-bg': '#d6d6d6', 'icon-done': '#22c55e', 'icon-failed': '#ef4444',
+      'icon-cancelled': '#fb923c', 'log-result': '#22c55e', 'log-warn': '#fb923c',
+      'log-error': '#ef4444', 'log-detect': '#a78bfa', 'log-file': '#7dd3fc',
+      'log-text': '#8BC88B', 'log-cmd': '#6b7280', 'text-on-primary': '#000000',
+      'glass-bg': 'rgba(255, 255, 255, 0.55)', 'glass-border': 'rgba(0, 0, 0, 0.08)',
+      'glass-input-bg': 'rgba(0, 0, 0, 0.04)', 'glass-th-bg': 'rgba(255, 255, 255, 0.8)',
+      'glass-hover': 'rgba(0, 0, 0, 0.04)', 'glass-toggle-bg': 'rgba(0, 0, 0, 0.04)',
+      'glass-log-bg': 'rgba(20, 20, 20, 0.95)', 'glass-strip-bg': 'rgba(255, 255, 255, 0.6)',
+      'glass-overlay-bg': 'rgba(255, 255, 255, 0.92)',
+    },
+    'Creditor': {
+      'background': '#26070F', 'surface': '#47101A', 'text': '#F5E9CF', 'primary': '#D9A21B',
+      'success': '#4FD98A', 'error': '#E5483F', 'surface-dim': '#370c15',
+      'surface-bright': '#342E30', 'text-muted': 'rgba(245, 233, 207, 0.65)', 'accent': '#D9A21B',
+      'row-info': '#411e11', 'row-done': '#2c2721', 'row-encoding': '#511a24',
+      'row-failed': '#431116', 'row-cancelled': '#4a161d', 'progress-fill': '#2c2721',
+      'progress-bg': '#511a24', 'icon-done': '#4FD98A', 'icon-failed': '#E5483F',
+      'icon-cancelled': '#E3B02A', 'log-result': '#4FD98A', 'log-warn': '#E3B02A',
+      'log-error': '#E5483F', 'log-detect': '#a78bfa', 'log-file': '#7dd3fc',
+      'log-text': '#8BC88B', 'log-cmd': '#7a8090', 'text-on-primary': '#000000',
+      'glass-bg': 'rgba(40, 40, 40, 0.65)', 'glass-border': 'rgba(255, 255, 255, 0.06)',
+      'glass-input-bg': 'rgba(55, 55, 55, 0.5)', 'glass-th-bg': 'rgba(55, 55, 55, 0.9)',
+      'glass-hover': 'rgba(255, 255, 255, 0.08)', 'glass-toggle-bg': 'rgba(55, 55, 55, 0.4)',
+      'glass-log-bg': 'rgba(8, 8, 8, 0.9)', 'glass-strip-bg': 'rgba(40, 40, 40, 0.7)',
+      'glass-overlay-bg': 'rgba(40, 40, 40, 0.92)',
+    },
+  };
+
+  for (const [name, expected] of Object.entries(pre3)) {
+    it(`${name}: matches the 2.6.0 derivation`, () => {
+      const theme = themes.find(t => t.name === name);
+      assert.deepEqual(fns.deriveClassicTokens(theme.colors), expected);
+    });
+  }
+
+  it('drops an invalid override instead of setting it', () => {
+    const t = fns.deriveClassicTokens({ background: '#1E1E1E', 'row-info': 'red; x', accent: 'url(a)' });
+    assert.equal(t['row-info'], undefined);
+    assert.equal(t['accent'], undefined);
+    assert.equal(t['background'], '#1E1E1E');
+  });
+
+  for (const theme of themes) {
+    it(`${theme.name}: sets no Doublet token`, () => {
+      for (const key of Object.keys(fns.deriveClassicTokens(theme.colors))) {
+        assert.notEqual(uiStyleOfProperty(`--${key}`), 'doublet', key);
+      }
+    });
+  }
+});
+
+describe('Doublet pairings under Classic', () => {
+  // app.js gives each pairing its six seed colours so Classic can derive from
+  // them; they must stay equal to the pairing blocks in doublet-tokens.css.
+  const app = fs.readFileSync(path.join(__dirname, 'app.js'), 'utf8');
+  const css = fs.readFileSync(path.join(__dirname, '..', 'css', 'doublet-tokens.css'), 'utf8');
+  const literal = /const DOUBLET_THEMES = (\[[\s\S]*?\n\s*\]);/.exec(app);
+  assert.ok(literal, 'DOUBLET_THEMES not found in app.js');
+  const pairings = new Function(`return ${literal[1]};`)();
+  const seedToken = { background: 'cloth', surface: 'surface', text: 'text', primary: 'thread', success: 'success', error: 'error' };
+
+  for (const p of pairings) {
+    it(`${p.name} seeds match doublet-tokens.css`, () => {
+      const block = new RegExp(`/\\* ${p.pairing} \\*/\\s*:root[^{]*\\{([^}]*)\\}`).exec(css);
+      assert.ok(block, `no ${p.pairing} block`);
+      for (const [key, token] of Object.entries(seedToken)) {
+        const m = new RegExp(`--dx-${token}:\\s*(#[0-9A-Fa-f]{6});`).exec(block[1]);
+        assert.ok(m, `${p.pairing} has no --dx-${token}`);
+        assert.equal(p.colors[key].toUpperCase(), m[1].toUpperCase(), `${p.pairing} ${key}`);
+      }
+    });
+  }
 });
 
 describe('computeEstimatedSize target family', () => {
@@ -433,6 +577,14 @@ describe('app.js inline copies match lib.js', () => {
 
   it('resolveFamilyForCodec is identical', () => {
     assert.equal(extract(app, 'resolveFamilyForCodec'), extract(lib, 'resolveFamilyForCodec'));
+  });
+
+  it('normaliseUiStyle is identical', () => {
+    assert.equal(extract(app, 'normaliseUiStyle'), extract(lib, 'normaliseUiStyle'));
+  });
+
+  it('uiStyleOfProperty is identical', () => {
+    assert.equal(extract(app, 'uiStyleOfProperty'), extract(lib, 'uiStyleOfProperty'));
   });
 
   it('resolveEncoderFamilies keeps the same rules', () => {
