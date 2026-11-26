@@ -1,0 +1,14 @@
+[package]
+name = "dvc-rpu"
+version = "0.1.0"
+edition = "2021"
+description = "Dolby Vision RPU dumper and test-RPU generator for tools/dv-compare"
+publish = false
+
+[dependencies]
+# The version HISTV pins in src-tauri/Cargo.toml, so the tool parses RPUs the way the app does.
+dolby_vision = "=3.3.2"
+anyhow = "1"
+
+# Not part of src-tauri's workspace: this crate builds on its own.
+[workspace]
