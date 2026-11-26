@@ -92,6 +92,23 @@ function formatEstimatedSize(item, settings) {
   return est.approx ? '~' + formatted : formatted;
 }
 
+// Codec families the backend will encode to for the files still to be
+// processed (mirrors resolve_file_settings in encoder.rs). Preserve AV1 only
+// applies to AV1 sources; every other source is converted to HEVC.
+// Returns ['hevc'] for an empty queue, ['h264'] in compatibility mode, and
+// ['hevc', 'av1'] when AV1 and non-AV1 files are mixed.
+function resolveEncoderFamilies(items, opts) {
+  if (opts.compat) return ['h264'];
+  const active = (items || []).filter(it =>
+    ['pending', 'probing', 'encoding'].includes((it.status || '').toLowerCase()));
+  if (!opts.preserveAv1) return ['hevc'];
+  const isAv1 = it => (it.videoCodec || '').toLowerCase() === 'av1';
+  const hasAv1 = active.some(isAv1);
+  const hasOther = active.some(it => !isAv1(it));
+  if (!hasAv1) return ['hevc'];
+  return hasOther ? ['hevc', 'av1'] : ['av1'];
+}
+
 module.exports = {
   formatBytes,
   formatDuration,
@@ -99,4 +116,5 @@ module.exports = {
   computeTargetBitrateLabel,
   computeEstimatedSize,
   formatEstimatedSize,
+  resolveEncoderFamilies,
 };

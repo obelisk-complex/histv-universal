@@ -1166,6 +1166,7 @@
       if (batchRunning && currentEncodingIndex >= 0 && currentEncodingIndex < queueData.length) {
         queueData[currentEncodingIndex].status = 'Encoding';
       }
+      refreshEncoderDisplay();
     }
 
     // ── Add files via backend ──
@@ -1217,9 +1218,9 @@
       const anyAv1 = queueData.some(item => (item.videoCodec || '').toLowerCase() === 'av1');
       if (anyAv1 && !chkPreserveAv1.checked && !chkCompat.checked) {
         chkPreserveAv1.checked = true;
-        updateEncoderSummary();
         scheduleConfigSave();
       }
+      refreshEncoderDisplay();
     }
 	
     // ── Queue buttons ──
@@ -1249,6 +1250,7 @@
           queueData = [];
           selectedRows.clear();
           renderQueue();
+          refreshEncoderDisplay();
         } catch (e) {
           console.error('Clear all error:', e);
         }
@@ -1815,28 +1817,39 @@
       }
     }
 
-    // Resolve the active encoder for the current settings. Used by both
-    // the encoder summary display and the RC mode visibility logic.
-    function resolveActiveEncoder() {
-      let family = 'hevc';
-      if (chkCompat.checked) family = 'h264';
-      else if (chkPreserveAv1.checked) family = 'av1';
+    // Codec families the backend will encode to (mirrors resolveEncoderFamilies
+    // in lib.js, which carries the unit tests).
+    function resolveEncoderFamilies() {
+      if (chkCompat.checked) return ['h264'];
+      if (!chkPreserveAv1.checked) return ['hevc'];
+      const active = queueData.filter(it =>
+        ['pending', 'probing', 'encoding'].includes((it.status || '').toLowerCase()));
+      const isAv1 = it => (it.videoCodec || '').toLowerCase() === 'av1';
+      const hasAv1 = active.some(isAv1);
+      const hasOther = active.some(it => !isAv1(it));
+      if (!hasAv1) return ['hevc'];
+      return hasOther ? ['hevc', 'av1'] : ['av1'];
+    }
 
-      const swFallback = family === 'h264' ? 'libx264' : family === 'av1' ? 'libsvtav1' : 'libx265';
-      let encoder;
-      if (chkPrecision.checked) {
-        encoder = swFallback;
-      } else {
-        const candidates = videoEncoders.filter(e => e.codecFamily === family);
-        const match = candidates.find(e => e.isHardware) || candidates[0];
-        encoder = match ? match.name : swFallback;
-      }
-      return { family, encoder };
+    // Resolve the active encoder(s) for the current settings and queue. Used
+    // by both the encoder summary display and the RC mode visibility logic.
+    function resolveActiveEncoders() {
+      return resolveEncoderFamilies().map(family => {
+        const swFallback = family === 'h264' ? 'libx264' : family === 'av1' ? 'libsvtav1' : 'libx265';
+        let encoder;
+        if (chkPrecision.checked) {
+          encoder = swFallback;
+        } else {
+          const candidates = videoEncoders.filter(e => e.codecFamily === family);
+          const match = candidates.find(e => e.isHardware) || candidates[0];
+          encoder = match ? match.name : swFallback;
+        }
+        return { family, encoder };
+      });
     }
 
     function updateRcModeVisibility() {
-      const { encoder } = resolveActiveEncoder();
-      if (isSoftwareEncoder(encoder)) {
+      if (resolveActiveEncoders().some(({ encoder }) => isSoftwareEncoder(encoder))) {
         rowRcMode.style.display = 'flex';
       } else {
         if (!chkPrecision.checked) {
@@ -1844,6 +1857,19 @@
           setRateControlMode('QP');
         }
       }
+    }
+
+    // Re-evaluate the encoder display after the queue changed, but only when
+    // the set of target families differs from the last one shown.
+    let lastEncoderFamiliesKey = '';
+    function refreshEncoderDisplay() {
+      if (!encoderDetectionDone) return;
+      const key = resolveEncoderFamilies().join(',');
+      if (key === lastEncoderFamiliesKey) return;
+      lastEncoderFamiliesKey = key;
+      updateEncoderSummary();
+      updateRcModeVisibility();
+      scheduleRefreshTargetBitrates();
     }
 
     /// When precision mode is toggled, force software encoder + CRF, or
@@ -1879,10 +1905,13 @@
     // ═══════════════════════════════════════════════════════════════
     // ── Encoder summary line (§2.4.0) ──
     function updateEncoderSummary() {
-      const { family, encoder } = resolveActiveEncoder();
-      const isHw = !encoder.startsWith('lib');
-      const familyLabel = family === 'h264' ? 'H.264' : family === 'av1' ? 'AV1' : 'HEVC';
-      encoderSummary.textContent = `Encoder: ${encoder} (${isHw ? 'HW' : 'SW'}), ${familyLabel}`;
+      lastEncoderFamiliesKey = resolveEncoderFamilies().join(',');
+      const parts = resolveActiveEncoders().map(({ family, encoder }) => {
+        const isHw = !encoder.startsWith('lib');
+        const familyLabel = family === 'h264' ? 'H.264' : family === 'av1' ? 'AV1' : 'HEVC';
+        return `${encoder} (${isHw ? 'HW' : 'SW'}), ${familyLabel}`;
+      });
+      encoderSummary.textContent = `Encoder: ${parts.join('; ')}`;
     }
 
     // ═══════════════════════════════════════════════════════════════
@@ -2234,6 +2263,7 @@
           queueData = [];
           selectedRows.clear();
           renderQueue();
+          refreshEncoderDisplay();
         } catch (e) {
           console.error('Clear all error:', e);
         }

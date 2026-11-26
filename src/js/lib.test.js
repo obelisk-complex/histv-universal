@@ -7,6 +7,7 @@ const {
   computeTargetBitrateLabel,
   computeEstimatedSize,
   formatEstimatedSize,
+  resolveEncoderFamilies,
 } = require('./lib.js');
 
 // ── formatBytes ────────────────────────────────────────────────
@@ -281,5 +282,48 @@ describe('deriveDoubletTokens', () => {
     assert.ok(hueGap(h0, h1) <= 3);
     assert.ok(l1 > 0.45 && c1 <= c0 * 1.02);
     assert.equal(fns.liftLightness('#ffffff', ['#000000'], 4.5, false), '#ffffff');
+  });
+});
+
+// ── resolveEncoderFamilies ─────────────────────────────────────
+
+describe('resolveEncoderFamilies', () => {
+  const av1 = { videoCodec: 'av1', status: 'Pending' };
+  const hevc = { videoCodec: 'hevc', status: 'Pending' };
+  const vp9 = { videoCodec: 'vp9', status: 'Pending' };
+  const on = { compat: false, preserveAv1: true };
+
+  it('is HEVC for an empty queue even with Preserve AV1 ticked', () => {
+    assert.deepEqual(resolveEncoderFamilies([], on), ['hevc']);
+  });
+
+  it('is HEVC when Preserve AV1 is ticked but no file is AV1', () => {
+    assert.deepEqual(resolveEncoderFamilies([hevc, vp9], on), ['hevc']);
+  });
+
+  it('is AV1 when every file is AV1', () => {
+    assert.deepEqual(resolveEncoderFamilies([av1, av1], on), ['av1']);
+  });
+
+  it('lists HEVC and AV1 for a mixed queue', () => {
+    assert.deepEqual(resolveEncoderFamilies([av1, hevc], on), ['hevc', 'av1']);
+  });
+
+  it('treats unprobed files as non-AV1', () => {
+    assert.deepEqual(resolveEncoderFamilies([av1, { status: 'Pending' }], on), ['hevc', 'av1']);
+  });
+
+  it('is HEVC for AV1 files when Preserve AV1 is off', () => {
+    assert.deepEqual(resolveEncoderFamilies([av1], { compat: false, preserveAv1: false }), ['hevc']);
+  });
+
+  it('is H.264 in compatibility mode', () => {
+    assert.deepEqual(resolveEncoderFamilies([av1], { compat: true, preserveAv1: true }), ['h264']);
+  });
+
+  it('ignores files that are already finished', () => {
+    const done = { videoCodec: 'av1', status: 'Done' };
+    assert.deepEqual(resolveEncoderFamilies([done, hevc], on), ['hevc']);
+    assert.deepEqual(resolveEncoderFamilies([done], on), ['hevc']);
   });
 });
