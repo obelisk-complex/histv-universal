@@ -18,7 +18,7 @@ Release 3.0 ships the Doublet UI refresh. Settings gets a switch so users who pr
 | Rust field | `ui_style: String` in `AppConfig` |
 | Settings control | `<select id="sel-ui-style">`, options `doublet` and `classic`, next to `#sel-theme` |
 | Active-style marker | `document.documentElement.dataset.uiStyle` (`data-ui-style`) |
-| Stylesheet link | `<link id="ui-style-css">`, href `css/app.css` (doublet) or `css/app-classic.css` (classic). Not static markup: `js/ui-style.js` writes it with `document.write` during `<head>` parsing, from the cache below, and swaps its href on a live switch |
+| Stylesheet link | `<link id="ui-style-css">`, href `css/app.css` (doublet) or `css/app-classic.css` (classic). Not static markup: `js/ui-style.js` writes it with `document.write` during `<head>` parsing, from the cache below. A live switch loads the new sheet in a second link first and replaces the old link with it once loaded |
 | Doublet extra stylesheets | `<link id="doublet-tokens-css">` (`css/doublet-tokens.css`) and `<link id="doublet-components-css">` (`css/doublet-components.css`), static in `index.html`; `.disabled` is true while classic is active |
 | First-paint cache | `localStorage['histv-ui-style']`: `"doublet"` or `"classic"`, written on every style change and after `get_config`; the config stays authoritative |
 
@@ -54,3 +54,10 @@ Release 3.0 ships the Doublet UI refresh. Settings gets a switch so users who pr
 
 - Classic keeps the corrected rail and splitter code (the 2.6.0 code had inverted drag, a gap on reopen, a half off-screen collapsed toggle and a rail stuck shut in narrow windows); only the old widths and look come from the classic CSS.
 - The first-paint link is written by `js/ui-style.js` during head parsing, not static markup: changing a link's `href` from script painted the wrong style first.
+- A live switch keeps the old style until every new stylesheet has loaded (staged links with `media="not all"`), then swaps the sheets, the marker and the theme in one step. If a sheet fails, the old style stays, `#sel-ui-style` goes back to it, and the log and status line say `Style: Classic did not load (css/app-classic.css)`. Checked by `tools/ui-harness/run.sh switch`.
+
+## Known limitations (low severity, not fixed for 3.0)
+
+- **A user theme named like a new built-in is duplicated.** A user file whose `name` is "Classic Dark" or "Classic Light" stops the built-in being listed, but `write_builtin_if_missing` checks only the file name, so `classic-dark.json` is still written and the next launch lists two themes of that name; which one wins depends on `read_dir` order. Same pattern as the earlier built-ins (Creditor, Monokai). Fix: skip writing a built-in whose name was already read from the folder.
+- **A style change made less than 600 ms before quitting can be lost.** The cache is written at once, the config only after the save debounce, with no flush on close. The next launch paints the new style from the cache, then the config switches it back. Shared with every setting; the visible switch back is new.
+- **A broken bundle at first paint has no fallback.** If the cached style's stylesheet fails to load during head parsing (`app-classic.css` missing), the page renders without it. A live switch does recover (see above); first paint does not.
