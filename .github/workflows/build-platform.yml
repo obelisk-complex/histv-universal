@@ -40,7 +40,7 @@ env:
   RUST_VERSION: "1.93.1"
   TAURI_CLI_VERSION: "=2.10.1"
   # histv's own static ffmpeg, built from source by build-ffmpeg.yml and
-  # published as an immutable release. The same tag and digests are pinned in
+  # published as a versioned release. The same tag and digests are pinned in
   # src-tauri/src/ffmpeg.rs and com.histv.encoder.yml; tools/ffmpeg/check-pins.sh
   # (run by ci.yml) fails when they drift apart.
   FFMPEG_HISTV_TAG: "ffmpeg-n8.1.3-histv.2"
@@ -54,6 +54,7 @@ env:
 jobs:
   build:
     runs-on: ${{ inputs.os }}
+    timeout-minutes: 60
 
     steps:
       - name: Checkout
@@ -136,6 +137,11 @@ jobs:
             windows) PLATFORM=windows ;;
             macos-*) PLATFORM=macos ;;
           esac
+          if [ "${{ inputs.label }}" = macos-x64 ]; then
+            # The x86_64 binary runs through Rosetta on the arm64 runner;
+            # install it when it is not there yet.
+            arch -x86_64 /usr/bin/true 2>/dev/null || softwareupdate --install-rosetta --agree-to-license
+          fi
           bash tools/ffmpeg/verify.sh ffmpeg-bin "$PLATFORM"
 
       - name: Install Rust ${{ env.RUST_VERSION }}
