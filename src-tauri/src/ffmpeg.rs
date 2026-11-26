@@ -533,6 +533,18 @@ fn verify_sha256(path: &std::path::Path, expected: &str) -> Result<(), String> {
     }
 }
 
+/// Removes the downloaded archive when dropped, so every exit path of
+/// `download_file` (success, failed check, failed extraction) cleans up.
+#[cfg(feature = "downloader")]
+struct RemoveOnDrop(std::path::PathBuf);
+
+#[cfg(feature = "downloader")]
+impl Drop for RemoveOnDrop {
+    fn drop(&mut self) {
+        let _ = std::fs::remove_file(&self.0);
+    }
+}
+
 /// Download a single archive, verify it when a digest is pinned, extract the
 /// relevant binaries, and clean up.
 #[cfg(feature = "downloader")]
@@ -548,6 +560,7 @@ async fn download_file(
         "_histv_dl_{label}.{}",
         candidate.archive_type.replace('.', "_")
     ));
+    let _archive_guard = RemoveOnDrop(tmp_path.clone());
 
     let response = client
         .get(url)
@@ -600,7 +613,6 @@ async fn download_file(
     // Verify download size
     let file_size = std::fs::metadata(&tmp_path).map(|m| m.len()).unwrap_or(0);
     if file_size < 500_000 {
-        let _ = std::fs::remove_file(&tmp_path);
         return Err(format!(
             "{label} download appears incomplete. Check your internet connection."
         ));
@@ -608,10 +620,7 @@ async fn download_file(
 
     if let Some(expected) = candidate.sha256 {
         sink.ffmpeg_download_progress(&format!("Verifying {label}"));
-        if let Err(e) = verify_sha256(&tmp_path, expected) {
-            let _ = std::fs::remove_file(&tmp_path);
-            return Err(e);
-        }
+        verify_sha256(&tmp_path, expected)?;
     }
 
     sink.ffmpeg_download_progress(&format!("Extracting {label}"));
@@ -631,9 +640,6 @@ async fn download_file(
     {
         extract_from_tar(&tmp_path, target_dir)?;
     }
-
-    // Clean up the archive
-    let _ = std::fs::remove_file(&tmp_path);
 
     Ok(())
 }
@@ -1514,6 +1520,25 @@ mod download_tests {
             assert!(err.contains(wrong) && err.contains(&actual), "{err}");
             assert!(!target.path().join("ffmpeg").exists());
             assert!(leftover_archives(target.path()).is_empty());
+        }
+
+        #[tokio::test]
+        async fn download_file_removes_archive_when_extraction_fails() {
+            // Large enough to pass the size check, but not a tar archive.
+            let (base, _) = serve(vec![("/a.tar.gz", vec![0xA5u8; 700_000])]).await;
+            let target = tempfile::tempdir().unwrap();
+            let err = download_file(
+                &client(),
+                &cand(&base, "/a.tar.gz", None),
+                target.path(),
+                "ffmpeg",
+                &NoopSink,
+            )
+            .await
+            .unwrap_err();
+            assert!(err.contains("Extraction failed"), "{err}");
+            assert!(!target.path().join("ffmpeg").exists());
+            assert_eq!(leftover_archives(target.path()), Vec::<String>::new());
         }
 
         #[tokio::test]
