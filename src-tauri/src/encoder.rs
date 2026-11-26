@@ -1896,8 +1896,8 @@ pub struct PreflightWarning {
     pub missing_tool: Option<String>,
 }
 
-/// Why a Dolby Vision source is written as HDR10, worded for
-/// "HDR10 fallback (..)". Shared by the GUI pre-flight, the CLI dry run and
+/// Why a Dolby Vision source is written as HDR10 (worded for
+/// "HDR10 fallback (..)") or as SDR ("SDR conversion (..)"). Shared by the GUI pre-flight, the CLI dry run and
 /// the encode log.
 pub mod dovi_loss {
     pub const NO_MP4BOX: &str = "MP4Box not found";
@@ -1907,6 +1907,11 @@ pub mod dovi_loss {
     pub const P5_NO_MP4BOX: &str = "profile 5 has no HDR10 layer, so colours are likely wrong; install MP4Box or use HISTV's ffmpeg";
     pub const P5_NO_NATIVE: &str =
         "profile 5 has no HDR10 layer, so colours are likely wrong; use HISTV's ffmpeg";
+    /// Converted to SDR (Compatibility mode, or Preserve HDR off): there is
+    /// no base layer to tonemap, so the picture probably keeps the raw
+    /// base layer's green and purple cast (UNVERIFIED: inferred from one
+    /// output file, not a reference render).
+    pub const P5_SDR: &str = "profile 5 has no HDR10 layer, so SDR colours will probably be wrong";
 }
 
 /// Why a Dolby Vision source will lose DV, if it will: the reason (an
@@ -1950,10 +1955,56 @@ fn dovi_hdr10_log_line(
     }
 }
 
+/// Whether the output keeps HDR, as the user's settings decide it.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct OutputRange {
+    /// Compatibility mode: H.264/MP4 SDR.
+    pub compat: bool,
+    /// HDR preservation is on (the "Preserve HDR" setting, no `--no-hdr`).
+    pub preserve_hdr: bool,
+}
+
+impl OutputRange {
+    /// Whether HDR sources are converted to SDR.
+    pub fn is_sdr(self) -> bool {
+        self.compat || !self.preserve_hdr
+    }
+}
+
+/// Why SDR output of a Dolby Vision source probably has wrong colours, with
+/// what to change; `None` when it does not apply. Only profile 5 has no HDR10
+/// base layer to tonemap (profiles 7 and 8 keep one, which converts fine).
+/// `cli` names the command-line flags instead of the GUI settings.
+pub fn dovi_sdr_issue(profile: u8, out: OutputRange, cli: bool) -> Option<String> {
+    if profile != 5 || !out.is_sdr() {
+        return None;
+    }
+    let fix = match (out.compat, out.preserve_hdr, cli) {
+        (true, true, false) => "turn off Compatibility mode",
+        (false, false, false) => "turn on Preserve HDR",
+        (_, _, false) => "turn off Compatibility mode and turn on Preserve HDR",
+        (true, true, true) => "drop --compat",
+        (false, false, true) => "drop --no-hdr",
+        (_, _, true) => "drop --compat and --no-hdr",
+    };
+    Some(format!("{}; {fix}", dovi_loss::P5_SDR))
+}
+
+/// The encode-time log line for a profile 5 source converted to SDR. A
+/// stream copy converts nothing and keeps Dolby Vision.
+fn dovi_sdr_log_line(profile: u8, out: OutputRange, is_copy: bool) -> Option<String> {
+    if is_copy {
+        return None;
+    }
+    dovi_sdr_issue(profile, out, false)
+        .map(|issue| format!("  Dolby Vision cannot be kept - output is SDR ({issue})"))
+}
+
 /// Scan the queue and report files that will be degraded due to missing tools.
 pub fn preflight_scan(
     queue: &[QueueItem],
     detected_encoders: &[EncoderInfo],
+    out: OutputRange,
 ) -> Vec<PreflightWarning> {
     let caps = crate::dovi_tools::capabilities();
     let ff_caps = ffmpeg_caps();
@@ -1965,7 +2016,17 @@ pub fn preflight_scan(
         }
 
         if let Some(profile) = item.probe.dovi_profile {
-            if let Some((reason, tool)) = dovi_preflight_issue(
+            // Converted to SDR, profile 5 has no HDR10 layer to tonemap; the
+            // HDR10 fallback does not apply to it then.
+            if let Some(reason) = dovi_sdr_issue(profile, out, false) {
+                warnings.push(PreflightWarning {
+                    file_name: item.file_name.clone(),
+                    source_type: format!("Dolby Vision Profile {}", profile),
+                    best_possible: "Full DV preservation".to_string(),
+                    actual_outcome: format!("SDR conversion ({reason})"),
+                    missing_tool: None,
+                });
+            } else if let Some((reason, tool)) = dovi_preflight_issue(
                 profile,
                 &ff_caps,
                 caps.can_process_dovi,
@@ -2867,6 +2928,22 @@ async fn encode_single_file(
     } else {
         decision
     };
+
+    // Profile 5 has no HDR10 layer, so converting it to SDR (tonemap or not)
+    // probably leaves the base layer's colour cast in the file.
+    if let Some(line) = item_dovi_profile.and_then(|profile| {
+        dovi_sdr_log_line(
+            profile,
+            OutputRange {
+                compat: settings.compatibility_mode,
+                preserve_hdr,
+            },
+            matches!(decision, EncodeDecision::Copy),
+        )
+    }) {
+        sink.log(&line);
+        write_log(log_writer, &line);
+    }
 
     // ── Pre-encode: DV/HDR10+ metadata extraction ────────────
     // Only extract when actually re-encoding (not copy). Extraction is
@@ -9547,6 +9624,130 @@ mod tests {
             ),
             Err(hdr10plus_loss::DOVI_KEPT)
         );
+    }
+
+    const HDR_ON: OutputRange = OutputRange {
+        compat: false,
+        preserve_hdr: true,
+    };
+    const COMPAT: OutputRange = OutputRange {
+        compat: true,
+        preserve_hdr: true,
+    };
+    const HDR_OFF: OutputRange = OutputRange {
+        compat: false,
+        preserve_hdr: false,
+    };
+    const COMPAT_HDR_OFF: OutputRange = OutputRange {
+        compat: true,
+        preserve_hdr: false,
+    };
+
+    fn dv_item(name: &str, profile: Option<u8>) -> QueueItem {
+        let mut probe = crate::test_helpers::synthetic_probe("hevc", 20.0, 60.0, true);
+        probe.dovi_profile = profile;
+        crate::test_helpers::make_queue_item(
+            &format!("/nonexistent/{name}.mp4"),
+            QueueItemStatus::Pending,
+            probe,
+        )
+    }
+
+    #[test]
+    fn sdr_issue_names_the_setting_to_change() {
+        let fact = "profile 5 has no HDR10 layer, so SDR colours will probably be wrong";
+        assert_eq!(
+            dovi_sdr_issue(5, COMPAT, false).as_deref(),
+            Some(format!("{fact}; turn off Compatibility mode").as_str())
+        );
+        assert_eq!(
+            dovi_sdr_issue(5, HDR_OFF, false).as_deref(),
+            Some(format!("{fact}; turn on Preserve HDR").as_str())
+        );
+        assert_eq!(
+            dovi_sdr_issue(5, COMPAT_HDR_OFF, false).as_deref(),
+            Some(format!("{fact}; turn off Compatibility mode and turn on Preserve HDR").as_str())
+        );
+        assert_eq!(
+            dovi_sdr_issue(5, COMPAT, true).as_deref(),
+            Some(format!("{fact}; drop --compat").as_str())
+        );
+        assert_eq!(
+            dovi_sdr_issue(5, HDR_OFF, true).as_deref(),
+            Some(format!("{fact}; drop --no-hdr").as_str())
+        );
+        assert_eq!(
+            dovi_sdr_issue(5, COMPAT_HDR_OFF, true).as_deref(),
+            Some(format!("{fact}; drop --compat and --no-hdr").as_str())
+        );
+    }
+
+    #[test]
+    fn sdr_issue_only_for_profile5_converted_to_sdr() {
+        // HDR kept: nothing to say here.
+        assert_eq!(dovi_sdr_issue(5, HDR_ON, false), None);
+        // Profiles with an HDR10 (or SDR/HLG) base layer tonemap fine.
+        for profile in [7, 8, 10] {
+            for out in [COMPAT, HDR_OFF, COMPAT_HDR_OFF] {
+                assert_eq!(dovi_sdr_issue(profile, out, false), None);
+                assert_eq!(dovi_sdr_issue(profile, out, true), None);
+            }
+        }
+    }
+
+    #[test]
+    fn sdr_log_line_for_profile5_only() {
+        assert_eq!(
+            dovi_sdr_log_line(5, COMPAT, false).as_deref(),
+            Some("  Dolby Vision cannot be kept - output is SDR (profile 5 has no HDR10 layer, so SDR colours will probably be wrong; turn off Compatibility mode)")
+        );
+        assert_eq!(dovi_sdr_log_line(5, HDR_ON, false), None);
+        assert_eq!(dovi_sdr_log_line(8, COMPAT, false), None);
+        assert_eq!(dovi_sdr_log_line(7, HDR_OFF, false), None);
+        // A stream copy keeps Dolby Vision.
+        assert_eq!(dovi_sdr_log_line(5, HDR_OFF, true), None);
+    }
+
+    #[test]
+    fn preflight_scan_warns_on_profile5_converted_to_sdr() {
+        let queue = [dv_item("p5", Some(5))];
+        let w = preflight_scan(&queue, &[], COMPAT);
+        let sdr: Vec<_> = w
+            .iter()
+            .filter(|w| w.actual_outcome.starts_with("SDR conversion"))
+            .collect();
+        assert_eq!(sdr.len(), 1);
+        assert_eq!(sdr[0].file_name, "p5.mp4");
+        assert_eq!(sdr[0].source_type, "Dolby Vision Profile 5");
+        assert_eq!(
+            sdr[0].actual_outcome,
+            "SDR conversion (profile 5 has no HDR10 layer, so SDR colours will probably be wrong; turn off Compatibility mode)"
+        );
+        assert_eq!(sdr[0].missing_tool, None);
+        // The HDR10-fallback warning would contradict it.
+        assert!(!w
+            .iter()
+            .any(|w| w.actual_outcome.starts_with("HDR10 fallback")));
+    }
+
+    #[test]
+    fn preflight_scan_is_quiet_for_other_profiles_and_sources_under_sdr() {
+        let queue = [
+            dv_item("p8", Some(8)),
+            dv_item("p7", Some(7)),
+            dv_item("plain", None),
+        ];
+        for out in [COMPAT, HDR_OFF] {
+            let w = preflight_scan(&queue, &[], out);
+            assert!(!w
+                .iter()
+                .any(|w| w.actual_outcome.starts_with("SDR conversion")));
+        }
+        // HDR kept: profile 5 gets no SDR warning either.
+        let w = preflight_scan(&[dv_item("p5", Some(5))], &[], HDR_ON);
+        assert!(!w
+            .iter()
+            .any(|w| w.actual_outcome.starts_with("SDR conversion")));
     }
 
     #[test]

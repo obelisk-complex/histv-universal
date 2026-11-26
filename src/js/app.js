@@ -2563,7 +2563,7 @@
       // Pre-flight DV/HDR10+ check
       if (!skipPreflight) {
         try {
-          const warnings = await invoke('preflight_check');
+          const warnings = await invoke('preflight_check', { compatibilityMode: chkCompat.checked, preserveHdr: chkHdr.checked });
           if (warnings && warnings.length > 0) {
             const action = await showPreflightModal(warnings);
             if (action === 'cancel') return;
@@ -2573,7 +2573,7 @@
                 await invoke('download_mp4box');
                 appendLog('[preflight] MP4Box installed - starting encode');
                 // Re-run preflight; if clear, fall through to start
-                const recheck = await invoke('preflight_check');
+                const recheck = await invoke('preflight_check', { compatibilityMode: chkCompat.checked, preserveHdr: chkHdr.checked });
                 if (recheck && recheck.length > 0) {
                   appendLog('[preflight] Warning: some files still affected after download');
                 }
@@ -2837,7 +2837,7 @@
         const tbody = $('#preflight-table-body');
         tbody.innerHTML = '';
         const hasMissing = warnings.some(w => w.missingTool);
-        $('#modal-preflight-title').textContent = `Missing tools: ${warnings.length} ${warnings.length === 1 ? 'file' : 'files'}`;
+        $('#modal-preflight-title').textContent = `${hasMissing ? 'Missing tools' : 'Files to check'}: ${warnings.length} ${warnings.length === 1 ? 'file' : 'files'}`;
 
         for (const w of warnings) {
           const tr = document.createElement('tr');

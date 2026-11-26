@@ -567,20 +567,23 @@ fn print_dry_run_plan(
     {
         let caps = histv_lib::dovi_tools::capabilities();
         let ff_caps = encoder::ffmpeg_caps();
-        let mut dv_lost: Vec<&str> = probed_items
+        let dv_items: Vec<(u8, bool)> = probed_items
             .iter()
-            .filter_map(|item| item.probe.dovi_profile)
-            .filter_map(|profile| {
-                encoder::dovi_preflight_issue(
-                    profile,
-                    &ff_caps,
-                    caps.can_process_dovi,
-                    caps.can_package_dovi_mp4,
-                )
+            .zip(decisions.iter())
+            .filter_map(|(item, d)| {
+                Some((item.probe.dovi_profile?, matches!(d, EncodeDecision::Copy)))
             })
-            .map(|(reason, _)| reason)
             .collect();
-        dv_lost.sort_unstable();
+        let dv_lines = dovi_warning_lines(
+            &dv_items,
+            &ff_caps,
+            caps.can_process_dovi,
+            caps.can_package_dovi_mp4,
+            encoder::OutputRange {
+                compat: args.compat,
+                preserve_hdr: !args.no_hdr,
+            },
+        );
         // A copied video stream keeps its HDR10+ metadata.
         let mut hdr10plus_lost: Vec<&str> = probed_items
             .iter()
@@ -592,14 +595,8 @@ fn print_dry_run_plan(
 
         let yellow = if is_tty { "\x1b[33m" } else { "" };
 
-        for (reason, n) in dv_lost.chunk_by(|a, b| a == b).map(|g| (g[0], g.len())) {
-            eprintln!(
-                "  {yellow}{}WARNING:{reset} {} Dolby Vision file{} will fall back to HDR10 ({})",
-                bold,
-                n,
-                if n == 1 { "" } else { "s" },
-                reason,
-            );
+        for line in &dv_lines {
+            eprintln!("  {yellow}{}WARNING:{reset} {}", bold, line);
         }
         for (reason, n) in hdr10plus_lost
             .chunk_by(|a, b| a == b)
@@ -1023,6 +1020,45 @@ fn run_batch(
 }
 
 // ── Helper functions ───────────────────────────────────────────
+
+/// The Dolby Vision warnings of the dry-run plan, one line per distinct
+/// outcome. `items` holds each Dolby Vision file's profile and whether its
+/// video stream is copied (a copy keeps Dolby Vision whatever the settings).
+fn dovi_warning_lines(
+    items: &[(u8, bool)],
+    ff_caps: &encoder::FfmpegCaps,
+    rust_dovi: bool,
+    mp4box_dvp: bool,
+    out: encoder::OutputRange,
+) -> Vec<String> {
+    use std::collections::BTreeMap;
+    let mut outcomes: BTreeMap<String, usize> = BTreeMap::new();
+    for &(profile, is_copy) in items {
+        let outcome = if let Some(issue) = encoder::dovi_sdr_issue(profile, out, true) {
+            // A copy keeps Dolby Vision, so nothing is converted.
+            if is_copy {
+                continue;
+            }
+            format!("will be converted to SDR ({issue})")
+        } else if let Some((reason, _)) =
+            encoder::dovi_preflight_issue(profile, ff_caps, rust_dovi, mp4box_dvp)
+        {
+            format!("will fall back to HDR10 ({reason})")
+        } else {
+            continue;
+        };
+        *outcomes.entry(outcome).or_default() += 1;
+    }
+    outcomes
+        .into_iter()
+        .map(|(outcome, n)| {
+            format!(
+                "{n} Dolby Vision file{} {outcome}",
+                if n == 1 { "" } else { "s" }
+            )
+        })
+        .collect()
+}
 
 /// The encoder auto mode would pick for the batch's main codec family, for
 /// the dry-run plan and the start-up summary.
@@ -1685,5 +1721,82 @@ mod tests {
         assert_eq!(batch_video_encoder(&args), "auto");
         let forced = cli::CliArgs::parse_from(["histv-cli", "-e", "hevc_vulkan", "a.mkv"]);
         assert_eq!(batch_video_encoder(&forced), "hevc_vulkan");
+    }
+    // ── dovi_warning_lines ─────────────────────────────────────
+
+    fn range(compat: bool, preserve_hdr: bool) -> encoder::OutputRange {
+        encoder::OutputRange {
+            compat,
+            preserve_hdr,
+        }
+    }
+
+    #[test]
+    fn dry_run_warns_once_per_reason_for_profile5_converted_to_sdr() {
+        let caps = encoder::FfmpegCaps::default();
+        let lines = dovi_warning_lines(
+            &[(5, false), (5, false), (8, false)],
+            &caps,
+            true,
+            true,
+            range(true, true),
+        );
+        assert_eq!(
+            lines,
+            vec![
+                "2 Dolby Vision files will be converted to SDR (profile 5 has no HDR10 layer, so SDR colours will probably be wrong; drop --compat)"
+            ]
+        );
+    }
+
+    #[test]
+    fn dry_run_names_no_hdr_and_both_flags() {
+        let caps = encoder::FfmpegCaps::default();
+        let one = |out| dovi_warning_lines(&[(5, false)], &caps, true, true, out);
+        assert!(one(range(false, false))[0].ends_with("; drop --no-hdr)"));
+        assert!(one(range(true, false))[0].ends_with("; drop --compat and --no-hdr)"));
+        assert!(one(range(true, false))[0].starts_with("1 Dolby Vision file will"));
+    }
+
+    #[test]
+    fn dry_run_has_no_sdr_warning_for_other_profiles_copies_or_kept_hdr() {
+        let caps = encoder::FfmpegCaps::default();
+        let sdr = |items: &[(u8, bool)], out| {
+            dovi_warning_lines(items, &caps, true, true, out)
+                .iter()
+                .any(|l| l.contains("converted to SDR"))
+        };
+        assert!(!sdr(
+            &[(8, false), (7, false), (10, false)],
+            range(true, true)
+        ));
+        assert!(!sdr(&[(5, true)], range(false, false)));
+        assert!(!sdr(&[(5, false)], range(false, true)));
+    }
+
+    #[test]
+    fn dry_run_keeps_the_hdr10_fallback_lines() {
+        // No native Dolby Vision, HDR kept: profile 5 and 8 fall back.
+        let caps = encoder::FfmpegCaps::default();
+        let lines = dovi_warning_lines(
+            &[(5, false), (8, false)],
+            &caps,
+            false,
+            false,
+            range(false, true),
+        );
+        assert_eq!(lines.len(), 2);
+        assert!(lines
+            .iter()
+            .all(|l| l.contains("will fall back to HDR10 (")));
+        assert!(lines
+            .iter()
+            .any(|l| l.contains("profile 5 has no HDR10 layer")));
+        // Profile 8 under Compatibility mode keeps the line it had.
+        let p8 = dovi_warning_lines(&[(8, false)], &caps, false, false, range(true, true));
+        assert_eq!(
+            p8,
+            vec!["1 Dolby Vision file will fall back to HDR10 (this ffmpeg has no native Dolby Vision coding)"]
+        );
     }
 }
