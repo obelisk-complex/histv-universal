@@ -62,6 +62,82 @@ jobs:
           ref: ${{ inputs.ref }}
           fetch-depth: 1 # build needs only the tip commit, not full history
 
+      # ── Fetch and verify ffmpeg for the -full bundles ──────────
+      # Done first so a bad pin or an unrunnable binary fails before the long app build.
+
+      - name: Download ffmpeg
+        shell: bash
+        run: |
+          set -e
+          mkdir -p ffmpeg-bin
+          LABEL="${{ inputs.label }}"
+
+          case "$LABEL" in
+            linux)
+              ASSET="histv-ffmpeg-linux-x64.tar.gz"
+              SHA256="$FFMPEG_HISTV_SHA256_LINUX_X64"
+              ;;
+            windows)
+              ASSET="histv-ffmpeg-windows-x64.zip"
+              SHA256="$FFMPEG_HISTV_SHA256_WINDOWS_X64"
+              ;;
+            macos-arm64)
+              ASSET="histv-ffmpeg-macos-arm64.zip"
+              SHA256="$FFMPEG_HISTV_SHA256_MACOS_ARM64"
+              ;;
+            macos-x64)
+              ASSET="histv-ffmpeg-macos-x64.zip"
+              SHA256="$FFMPEG_HISTV_SHA256_MACOS_X64"
+              ;;
+            *)
+              echo "ERROR: no ffmpeg asset for label '$LABEL'"
+              exit 1
+              ;;
+          esac
+
+          URL="https://github.com/obelisk-complex/histv-universal/releases/download/${FFMPEG_HISTV_TAG}/${ASSET}"
+          echo "Downloading ffmpeg from $URL"
+          curl -fSL --retry 3 -o "$ASSET" "$URL"
+
+          # Verify before extracting anything.
+          if command -v sha256sum >/dev/null 2>&1; then
+            echo "${SHA256}  ${ASSET}" | sha256sum -c -
+          else
+            echo "${SHA256}  ${ASSET}" | shasum -a 256 -c -
+          fi
+
+          # The archives are flat: ffmpeg, ffprobe, SHA256SUMS, LICENSE.txt, BUILDINFO.txt.
+          case "$ASSET" in
+            *.tar.gz) tar -xzf "$ASSET" -C ffmpeg-bin ;;
+            *.zip)
+              if [ "$LABEL" = windows ]; then
+                7z x "$ASSET" -offmpeg-bin -y
+              else
+                unzip -q "$ASSET" -d ffmpeg-bin
+              fi
+              ;;
+          esac
+
+          if [ "$LABEL" = windows ]; then EXE=".exe"; else EXE=""; fi
+          for f in "ffmpeg$EXE" "ffprobe$EXE" LICENSE.txt BUILDINFO.txt; do
+            [ -f "ffmpeg-bin/$f" ] || { echo "ERROR: $f missing from $ASSET"; exit 1; }
+          done
+          chmod +x "ffmpeg-bin/ffmpeg$EXE" "ffmpeg-bin/ffprobe$EXE"
+
+          echo "--- ffmpeg-bin contents ---"
+          ls -lh ffmpeg-bin/
+
+      - name: Verify ffmpeg build
+        shell: bash
+        run: |
+          set -e
+          case "${{ inputs.label }}" in
+            linux) PLATFORM=linux ;;
+            windows) PLATFORM=windows ;;
+            macos-*) PLATFORM=macos ;;
+          esac
+          bash tools/ffmpeg/verify.sh ffmpeg-bin "$PLATFORM"
+
       - name: Install Rust ${{ env.RUST_VERSION }}
         uses: dtolnay/rust-toolchain@3c5f7ea28cd621ae0bf5283f0e981fb97b8a7af9 # action commit 2026-03-27; Rust version pinned via RUST_VERSION
         with:
@@ -162,81 +238,6 @@ jobs:
           fi
 
           ls -lh artefacts/
-
-      # ── Download ffmpeg for -full variant builds ───────────────
-
-      - name: Download ffmpeg
-        shell: bash
-        run: |
-          set -e
-          mkdir -p ffmpeg-bin
-          LABEL="${{ inputs.label }}"
-
-          case "$LABEL" in
-            linux)
-              ASSET="histv-ffmpeg-linux-x64.tar.gz"
-              SHA256="$FFMPEG_HISTV_SHA256_LINUX_X64"
-              ;;
-            windows)
-              ASSET="histv-ffmpeg-windows-x64.zip"
-              SHA256="$FFMPEG_HISTV_SHA256_WINDOWS_X64"
-              ;;
-            macos-arm64)
-              ASSET="histv-ffmpeg-macos-arm64.zip"
-              SHA256="$FFMPEG_HISTV_SHA256_MACOS_ARM64"
-              ;;
-            macos-x64)
-              ASSET="histv-ffmpeg-macos-x64.zip"
-              SHA256="$FFMPEG_HISTV_SHA256_MACOS_X64"
-              ;;
-            *)
-              echo "ERROR: no ffmpeg asset for label '$LABEL'"
-              exit 1
-              ;;
-          esac
-
-          URL="https://github.com/obelisk-complex/histv-universal/releases/download/${FFMPEG_HISTV_TAG}/${ASSET}"
-          echo "Downloading ffmpeg from $URL"
-          curl -fSL --retry 3 -o "$ASSET" "$URL"
-
-          # Verify before extracting anything.
-          if command -v sha256sum >/dev/null 2>&1; then
-            echo "${SHA256}  ${ASSET}" | sha256sum -c -
-          else
-            echo "${SHA256}  ${ASSET}" | shasum -a 256 -c -
-          fi
-
-          # The archives are flat: ffmpeg, ffprobe, SHA256SUMS, LICENSE.txt, BUILDINFO.txt.
-          case "$ASSET" in
-            *.tar.gz) tar -xzf "$ASSET" -C ffmpeg-bin ;;
-            *.zip)
-              if [ "$LABEL" = windows ]; then
-                7z x "$ASSET" -offmpeg-bin -y
-              else
-                unzip -q "$ASSET" -d ffmpeg-bin
-              fi
-              ;;
-          esac
-
-          if [ "$LABEL" = windows ]; then EXE=".exe"; else EXE=""; fi
-          for f in "ffmpeg$EXE" "ffprobe$EXE" LICENSE.txt BUILDINFO.txt; do
-            [ -f "ffmpeg-bin/$f" ] || { echo "ERROR: $f missing from $ASSET"; exit 1; }
-          done
-          chmod +x "ffmpeg-bin/ffmpeg$EXE" "ffmpeg-bin/ffprobe$EXE"
-
-          echo "--- ffmpeg-bin contents ---"
-          ls -lh ffmpeg-bin/
-
-      - name: Verify ffmpeg build
-        shell: bash
-        run: |
-          set -e
-          case "${{ inputs.label }}" in
-            linux) PLATFORM=linux ;;
-            windows) PLATFORM=windows ;;
-            macos-*) PLATFORM=macos ;;
-          esac
-          bash tools/ffmpeg/verify.sh ffmpeg-bin "$PLATFORM"
 
       # ── Build -full variant bundles ────────────────────────────
 
