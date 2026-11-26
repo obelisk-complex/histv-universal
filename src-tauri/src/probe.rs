@@ -547,8 +547,52 @@ async fn packet_scan_duration(file_path: &str, sink: &dyn EventSink) -> f64 {
     let dur = parse_numeric(&raw2).unwrap_or(0.0);
     if dur > 0.0 {
         sink.log(&format!("[probe] Duration from packet count: {:.2}s", dur));
+        return dur;
+    }
+
+    // Approach 3: read every video packet and take the end of the last one.
+    // APNG has no duration field anywhere and cannot be seeked, so the seek
+    // in approach 1 lands on the first packet (pts 0). The files this reaches
+    // are small, and the output is two numbers per frame.
+    let raw3 = run_ffprobe(&[
+        "-v",
+        "error",
+        "-select_streams",
+        "v:0",
+        "-show_entries",
+        "packet=pts_time,duration_time",
+        "-of",
+        "csv=p=0",
+        file_path,
+    ])
+    .await
+    .unwrap_or_default();
+
+    let dur = packet_span_end(&raw3).unwrap_or(0.0);
+    if dur > 0.0 {
+        sink.log(&format!("[probe] Duration from packet span: {:.2}s", dur));
     }
     dur
+}
+
+/// End time of the last packet in `pts_time,duration_time` CSV lines: the
+/// largest `pts + duration`. A missing duration counts as zero, so a stream
+/// without packet durations still yields its last PTS.
+fn packet_span_end(csv: &str) -> Option<f64> {
+    csv.lines()
+        .filter_map(|line| {
+            let mut fields = line.split(',');
+            let pts: f64 = fields.next()?.trim().parse().ok()?;
+            let dur: f64 = fields
+                .next()
+                .and_then(|d| d.trim().parse().ok())
+                .unwrap_or(0.0);
+            Some(pts + dur)
+        })
+        .fold(None, |max: Option<f64>, end| {
+            Some(max.map_or(end, |m| m.max(end)))
+        })
+        .filter(|end| *end > 0.0)
 }
 
 /// Tier 4 bitrate fallback: sum all video packet sizes and divide by duration.
@@ -629,6 +673,36 @@ async fn packet_count_bitrate(file_path: &str, sink: &dyn EventSink) -> f64 {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn packet_span_end_apng_ten_frames() {
+        // ffprobe output for a 10 fps, 1 s APNG (time base 1/100000): no
+        // format or stream duration exists, only per-packet times.
+        let csv: String = (0..10)
+            .map(|i| format!("{:.6},0.100000\n", i as f64 * 0.1))
+            .collect();
+        let end = packet_span_end(&csv).unwrap();
+        assert!((end - 1.0).abs() < 1e-9, "got {end}");
+    }
+
+    #[test]
+    fn packet_span_end_uses_largest_end_not_last_line() {
+        let end = packet_span_end("0.0,0.5\n0.5,0.1\n0.2,0.1\n").unwrap();
+        assert!((end - 0.6).abs() < 1e-9, "got {end}");
+    }
+
+    #[test]
+    fn packet_span_end_missing_duration_falls_back_to_pts() {
+        let end = packet_span_end("0.000000,\n1.500000,N/A\n2.000000\n").unwrap();
+        assert!((end - 2.0).abs() < 1e-9, "got {end}");
+    }
+
+    #[test]
+    fn packet_span_end_rejects_empty_and_zero() {
+        assert_eq!(packet_span_end(""), None);
+        assert_eq!(packet_span_end("0.000000,0.000000\n"), None);
+        assert_eq!(packet_span_end("N/A,N/A\n"), None);
+    }
 
     #[test]
     fn rotation_from_display_matrix() {
