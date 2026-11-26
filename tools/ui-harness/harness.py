@@ -77,6 +77,11 @@ def main():
     q.add_argument("--baseline-style", default="native", choices=["native", "doublet", "classic"])
     q.add_argument("--candidate-style", default="classic", choices=["native", "doublet", "classic"])
     q.add_argument("--tol", type=float, default=1.0, help="allowed difference per x, y, w, h in px (default 1)")
+    q.add_argument("--colour-tol", type=int, default=2, metavar="N",
+                   help="allowed difference per colour channel, 0-255 (default 2; alpha 0.02)")
+    q.add_argument("--map", action="append", metavar="OLD=NEW",
+                   help="theme pair whose colours are compared; repeatable, replaces the defaults "
+                        "(Default Dark=Classic Dark, Default Light=Classic Light)")
     q.add_argument("--states", nargs="*", choices=list(STATES))
     q.set_defaults(fn=cmd_parity)
     t = sub.add_parser("toggle", help="live style switches against fresh loads")
