@@ -8,7 +8,7 @@ Release 3.0 ships the Doublet UI refresh. Settings gets a switch so users who pr
 2. **Scope:** classic restores layout, styling and the glass effects. Wording stays as on `main`: the plain-language copy pass fixes wording and is not a style.
 3. **Palettes:** the style switch never changes the user's chosen theme. The old Default Dark and Default Light return as two extra built-in themes, "Classic Dark" and "Classic Light" (values from `e4d0ee2:src-tauri/themes/default-dark.json` and `default-light.json`), selectable under either style.
 4. **Live switch:** changing the setting applies at once, without a reload, and persists.
-5. **Mechanism:** shared markup. A `<link id="ui-style-css">` swaps the stylesheet; `applyTheme` derives the token set of the active style and removes the other style's inline custom properties; `<html data-ui-style="...">` records the active style. No second copy of `index.html` or `app.js`.
+5. **Mechanism:** shared markup. A `<link id="ui-style-css">`, written by `js/ui-style.js`, swaps the stylesheet; `applyTheme` derives the token set of the active style and removes the other style's inline custom properties; `<html data-ui-style="...">` records the active style. No second copy of `index.html` or `app.js`.
 
 ## Contract (fixed, so the app and the test harness can be built separately)
 
@@ -18,8 +18,9 @@ Release 3.0 ships the Doublet UI refresh. Settings gets a switch so users who pr
 | Rust field | `ui_style: String` in `AppConfig` |
 | Settings control | `<select id="sel-ui-style">`, options `doublet` and `classic`, next to `#sel-theme` |
 | Active-style marker | `document.documentElement.dataset.uiStyle` (`data-ui-style`) |
-| Stylesheet link | `<link id="ui-style-css">`, href `css/app.css` (doublet) or `css/app-classic.css` (classic) |
-| Doublet extra stylesheets | `css/doublet-tokens.css`, `css/doublet-components.css`; disabled while classic is active |
+| Stylesheet link | `<link id="ui-style-css">`, href `css/app.css` (doublet) or `css/app-classic.css` (classic). Not static markup: `js/ui-style.js` writes it with `document.write` during `<head>` parsing, from the cache below, and swaps its href on a live switch |
+| Doublet extra stylesheets | `<link id="doublet-tokens-css">` (`css/doublet-tokens.css`) and `<link id="doublet-components-css">` (`css/doublet-components.css`), static in `index.html`; `.disabled` is true while classic is active |
+| First-paint cache | `localStorage['histv-ui-style']`: `"doublet"` or `"classic"`, written on every style change and after `get_config`; the config stays authoritative |
 
 ## Facts for the implementer
 
