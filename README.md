@@ -220,7 +220,7 @@ On Linux, a VAAPI encoder is replaced by libx265 for Dolby Vision because AMD 10
 
 When HDR10+ cannot be kept, the log says "Static HDR10 only" with the reason, and the pre-flight check (GUI) and dry run (CLI) warn before encoding starts. If a hardware encode fails and the software fallback runs, the route is decided again for libx265.
 
-Known limitation: a Dolby Vision profile 5 file converted with neither MP4Box nor an ffmpeg that can write Dolby Vision is encoded as plain HDR10. Profile 5 has no HDR10 base layer, so the result does not play back with correct colours. The pre-flight check, the CLI dry run and the encode log now say so for these files. Install MP4Box or use HISTV's own ffmpeg build to avoid it.
+Known limitation: a Dolby Vision profile 5 file converted with neither MP4Box nor an ffmpeg that can write Dolby Vision is encoded as plain HDR10. Profile 5 has no HDR10 base layer, so the result probably does not play back with correct colours. The pre-flight check, the CLI dry run and the encode log now say so for these files. Install MP4Box or use HISTV's own ffmpeg build to avoid it.
 
 The bitstream is read from disk in a stream, so memory use grows with the number of frames (a few hundred bytes of metadata each), not with file size. If a DV/HDR10+ pipeline step fails, the app falls back to the next best option and logs why.
 
