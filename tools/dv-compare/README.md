@@ -40,7 +40,7 @@ A check that cannot run because the files disagree (different frame counts, a fi
 
 ## Self-test
 
-`run.sh selftest` builds a 2 s synthetic 10-bit clip with B-frames, generates RPUs with `dvc-rpu gen`, joins them with MP4Box, and runs 14 controls. No real video is read. Two undamaged copies must exit 0; each damaged copy must exit 1 and name the check that catches it:
+`run.sh selftest` builds a 2 s synthetic 10-bit clip with B-frames, generates RPUs with `dvc-rpu gen`, joins them with MP4Box, and runs 16 controls (14 where libx265 has no `-dolbyvision` option). No real video is read. Two undamaged copies must exit 0; each damaged copy must exit 1 and name the check that catches it:
 
 | Damage | Check that must name it |
 |---|---|
@@ -55,7 +55,16 @@ A check that cannot run because the files disagree (different frame counts, a fi
 | file truncated to 70 percent | `container` |
 | re-encode at crf 48 | `quality` |
 
-Also: a re-encode with another GOP whose RPUs were re-attached by display order passes (this is what proves the pairing); no Dolby Vision in either file exits 2; a missing input exits 3. Last run: 14 of 14. Replacing the `rpu_present` comparison with `bad = False` makes the removed-RPU control fail, so the controls can fail.
+Also: a re-encode with another GOP whose RPUs were re-attached by display order passes (this is what proves the pairing); no Dolby Vision in either file exits 2; a missing input exits 3. Replacing the `rpu_present` comparison with `bad = False` makes the removed-RPU control fail, so the controls can fail.
+
+Two more controls cover a source that stores parameter sets after an RPU (`fixtures.trailing_parameter_sets`: a profile 5 clip whose sample before each later keyframe ends with VPS, SPS and PPS). ffmpeg re-encodes it with native Dolby Vision coding (`-c:v libx265 -dolbyvision 1`):
+
+| Re-encode | Expected |
+|---|---|
+| with HISTV's input filter (`-bsf:v:0 hevc_mp4toannexb,extract_extradata=remove=1`) | `rpu_present`, `rpu_frames`, `ext_blocks` all `PASS` |
+| without it | `ext_blocks` `DIFFERENT` |
+
+The second control is the reason the filter exists. If it starts to fail, ffmpeg's hevc decoder has begun to read an RPU that is not the last NAL unit of its packet, and the filter can go. Last run: 16 of 16 with ffmpeg n8.1.3; 14 of 14 and 2 skipped with ffmpeg 6.1.1.
 
 ## Worked example: profile 5, 4K, software libx265
 
@@ -75,7 +84,9 @@ What the numbers mean:
 - HISTV did not rewrite the RPUs. A software libx265 profile 5 job takes the `Native{libx265}` route (`src-tauri/src/encoder.rs:1155-1160`, rule `matches!(profile, 5 | 8 | 10) && caps.dovi_x265`; the arguments are `-dolbyvision 1` plus VBV from `dovi_native_args`, `encoder.rs:1246`, called at `encoder.rs:3121`), so the app passes the RPUs to ffmpeg and touches none. ffmpeg appears to write each RPU afresh: raw bytes are identical on 0 of 6314 frames, and the `dovi_rpu` bitstream filter rewrites 297 of 303 RPUs of the excerpt below.
 - The 104 differing frames each carry the RPU of the next display frame: output frame 189 has the L4 block of input frame 190 (anchor_power 182, not 179). At 2925 this includes the next scene's mapping and `scene_refresh_flag`, one frame early. Every one of them is inside a pair that the input stores in reverse order (the later frame decoded first); 104 of the 1273 such pairs with different neighbouring RPUs are affected.
 - Reproduced with the pinned ffmpeg n8.1.3 (libavcodec 62.28.103, the encoder tag of the output): the first 12.5 s of the source, `-c:v libx265 -b:v 4000k -maxrate 16000k -bufsize 32000k -dolbyvision 1`, gives the same three frames (189, 237, 285) with the same values. It does not change with `bframes=0`, `frame-threads=1` or a single decoder thread, so it is not x265's own reordering. A parse-and-regenerate round trip of the same RPUs in packet order (`-c copy -bsf:v dovi_rpu=compression=none`) leaves every block identical, so parsing and writing are not at fault. A synthetic profile 8.1 source with B-frames and a different L1 on every frame also survives intact.
-- UNVERIFIED: which step hands a frame its neighbour's RPU (the hevc decoder's side data, the frame queue, or the libx265 wrapper); why only some reversed pairs; and whether the one-frame-early mapping at 2925 is visible on a screen. Nothing in this tool or a decoder was changed to find out.
+- Cause: ffmpeg's hevc decoder reads an RPU only when it is the last NAL unit of its packet (`libavcodec/hevc/hevcdec.c:3753` at n8.1.3; the `dovi_rpu` bitstream filter has the same rule, `libavcodec/bsf/dovi_rpu.c:83`, which is why it rewrites 297 of 303). In this file the sample before each keyframe ends `slice, SEI, RPU, VPS, SPS, PPS`: 131 of 6314 samples, one per 48-frame GOP. The decoder skips that RPU and attaches the one it parsed last, which belongs to the frame decoded just before. Here that is always the next display frame, and on 104 of the 131 the two RPUs differ. Read from a raw `.hevc` copy, where ffmpeg's parser puts the parameter sets in the next packet, the same encode keeps every RPU. The profile 8 test files (8.1 at 1080p, 8.4 at 4K) are stored the same way, and a 12.5 s excerpt of the 8.1 one shows the same shift (3 frames, the first at 189).
+- Fix in HISTV (6f1790d): native Dolby Vision encodes of an HEVC source give ffmpeg `-bsf:v:0 hevc_mp4toannexb,extract_extradata=remove=1` as an input option, which takes the parameter sets out of the packet and hands them to the decoder as new extradata. Decoded pictures are unchanged (same md5 from MP4, MKV and MPEG-TS copies of a clip). The same file encoded again with the fix (`--skip quality`): `rpu_frames` identical on 6314 of 6314 frames, `ext_blocks` identical on all 6314, `decode` 6314 frames and no errors, `timestamps` PASS; `container` still differs in the tag (`dvhe -> dvh1`) and the three colour tags.
+- UNVERIFIED: whether the one-frame-early mapping at 2925 was visible on a screen; playback of the fixed output in a Dolby Vision player.
 
 ## Files
 
