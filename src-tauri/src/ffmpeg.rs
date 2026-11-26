@@ -942,6 +942,20 @@ fn exe_dir_is_system_dir(dir: &Path) -> bool {
     SYSTEM_EXE_DIRS.iter().any(|d| Path::new(d) == dir)
 }
 
+/// `name` inside `exe_dir`, when that file exists and `exe_dir` is not a
+/// system directory according to `is_system_dir`.
+fn sibling_binary(
+    exe_dir: &Path,
+    name: &str,
+    is_system_dir: impl Fn(&Path) -> bool,
+) -> Option<PathBuf> {
+    if is_system_dir(exe_dir) {
+        return None;
+    }
+    let candidate = exe_dir.join(name);
+    candidate.exists().then_some(candidate)
+}
+
 /// Resolve a binary name to a full path. Checks multiple locations
 /// in priority order, falling back to a bare name for PATH lookup.
 fn resolve_binary(resource_dir: Option<&Path>, name: &str) -> PathBuf {
@@ -957,13 +971,11 @@ fn resolve_binary(resource_dir: Option<&Path>, name: &str) -> PathBuf {
     //    directory (distro package in /usr/bin): the ffmpeg there is the
     //    OS's, and step 3 must get the chance to supply the pinned fork.
     if let Ok(exe) = std::env::current_exe() {
-        if let Some(dir) = exe.parent() {
-            if !exe_dir_is_system_dir(dir) {
-                let candidate = dir.join(name);
-                if candidate.exists() {
-                    return candidate;
-                }
-            }
+        if let Some(candidate) = exe
+            .parent()
+            .and_then(|dir| sibling_binary(dir, name, exe_dir_is_system_dir))
+        {
+            return candidate;
         }
     }
 
@@ -1107,6 +1119,33 @@ mod tests {
 
         let result = resolve_binary(Some(tmp.path()), "ffmpeg");
         assert_eq!(result, fake_ffmpeg);
+    }
+
+    #[test]
+    fn test_sibling_binary_found_in_non_system_dir() {
+        let tmp = tempfile::tempdir().unwrap();
+        let fake_ffmpeg = tmp.path().join("ffmpeg");
+        fs::write(&fake_ffmpeg, b"fake").unwrap();
+
+        let result = sibling_binary(tmp.path(), "ffmpeg", |_| false);
+        assert_eq!(result, Some(fake_ffmpeg));
+    }
+
+    #[test]
+    fn test_sibling_binary_skipped_in_system_dir() {
+        let tmp = tempfile::tempdir().unwrap();
+        fs::write(tmp.path().join("ffmpeg"), b"fake").unwrap();
+
+        let result = sibling_binary(tmp.path(), "ffmpeg", |dir| dir == tmp.path());
+        assert_eq!(result, None);
+    }
+
+    #[test]
+    fn test_sibling_binary_missing_file() {
+        let tmp = tempfile::tempdir().unwrap();
+
+        let result = sibling_binary(tmp.path(), "ffmpeg", |_| false);
+        assert_eq!(result, None);
     }
 
     #[test]
