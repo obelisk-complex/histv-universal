@@ -486,9 +486,18 @@ async fn download_from_candidates(
             Err(e) => {
                 last_err = e;
                 if i + 1 < candidates.len() {
-                    sink.log(&format!(
-                        "[ffmpeg] Mirror {url} failed ({last_err}), trying next..."
-                    ));
+                    // The message comes from `verify_sha256`. A mismatch is a
+                    // different signal from a network failure, so say so.
+                    if last_err.starts_with("Checksum mismatch") {
+                        sink.log(&format!(
+                            "[ffmpeg] WARNING: {url} did not match its pinned checksum ({last_err}). \
+                             Trying the next source, which is not checksum-verified."
+                        ));
+                    } else {
+                        sink.log(&format!(
+                            "[ffmpeg] Mirror {url} failed ({last_err}), trying next..."
+                        ));
+                    }
                 }
             }
         }
@@ -1611,6 +1620,25 @@ mod download_tests {
             let logs = sink.take_logs().join("\n");
             assert!(
                 logs.contains("Skipping") && logs.contains("/placeholder.tar.gz"),
+                "{logs}"
+            );
+            // A checksum mismatch is reported as such, not as a network failure.
+            let mismatch_line = logs
+                .lines()
+                .find(|l| l.contains("/tampered.tar.gz"))
+                .unwrap_or_default();
+            assert!(
+                mismatch_line.contains("did not match its pinned checksum")
+                    && mismatch_line.contains("not checksum-verified"),
+                "{logs}"
+            );
+            // A plain failure keeps the generic wording.
+            let missing_line = logs
+                .lines()
+                .find(|l| l.contains("/missing.tar.gz"))
+                .unwrap_or_default();
+            assert!(
+                missing_line.contains("trying next") && !missing_line.contains("did not match"),
                 "{logs}"
             );
         }
