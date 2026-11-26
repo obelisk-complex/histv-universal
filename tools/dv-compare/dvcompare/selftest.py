@@ -12,6 +12,9 @@ from . import cli, fixtures, media
 
 FRAMES = 48
 L1_FRAME = 7  # display frame whose L1 block the "one value changed" control alters
+# The input filter HISTV gives ffmpeg for a native Dolby Vision encode (DOVI_INPUT_BSF in src-tauri/src/encoder.rs;
+# a unit test there reads this line).
+HISTV_INPUT_BSF = "hevc_mp4toannexb,extract_extradata=remove=1"
 
 
 def _ffmpeg(tools, src, dest, *args):
@@ -55,6 +58,77 @@ def _truncate(src, dest):
     data = Path(src).read_bytes()
     Path(dest).write_bytes(data[: int(len(data) * 0.7)])
     return dest
+
+
+def _native_dv(tools):
+    """Whether this ffmpeg's libx265 codes Dolby Vision RPUs itself (`-dolbyvision`)."""
+    p = media.run([tools.ffmpeg, "-hide_banner", "-h", "encoder=libx265"], check=False)
+    return any(line.strip().startswith(b"-dolbyvision") for line in p.stdout.splitlines())
+
+
+def _native_reencode(tools, src, dest, input_bsf=None):
+    """Re-encode `src` the way HISTV's native Dolby Vision route does: decode, libx265 writes the RPUs."""
+    media.run(
+        [
+            tools.ffmpeg,
+            "-nostdin",
+            "-v",
+            "error",
+            "-y",
+            *(["-bsf:v:0", input_bsf] if input_bsf else []),
+            "-i",
+            src,
+            "-map",
+            "0:v:0",
+            "-c:v",
+            "libx265",
+            "-crf",
+            "14",
+            "-maxrate",
+            "8000000",
+            "-bufsize",
+            "16000000",
+            "-dolbyvision",
+            "1",
+            "-x265-params",
+            "log-level=error",
+            "-fps_mode",
+            "passthrough",
+            "-tag:v",
+            "dvh1",
+            "-strict",
+            "unofficial",
+            dest,
+        ]
+    )
+    return dest
+
+
+def _trailing_rows(tools, w, base, work):
+    """Controls for a source that stores parameter sets after an RPU. ffmpeg's hevc decoder reads an RPU only when
+    it is the last NAL unit of its packet, so such a frame is given the RPU of the frame decoded before it."""
+    names = (
+        "parameter sets after the RPU, native re-encode with HISTV's input filter",
+        "parameter sets after the RPU, native re-encode without the filter",
+    )
+    if not _native_dv(tools):
+        return [(None, n, "this ffmpeg's libx265 has no -dolbyvision option") for n in names]
+    rpu = ("rpu_present", "rpu_frames", "ext_blocks")
+    rows = []
+    try:
+        p5 = fixtures.rpus(tools, w("p5.rpu"), FRAMES, profile="5")
+        inband = fixtures.dv_mp4(tools, base, p5, w("inband.mp4"), dvp="5", inband=True)
+        fixtures.trailing_parameter_sets(inband, w("trailing.mp4"))
+        for name, bsf, want in ((names[0], HISTV_INPUT_BSF, C.PASS), (names[1], None, C.DIFFERENT)):
+            out = _native_reencode(tools, w("trailing.mp4"), w(f"t{len(rows)}.mp4"), bsf)
+            results, _ = cli.compare(tools, w("trailing.mp4"), out, C.Opts(), scratch=work)
+            got = {r.name: r.status for r in results}
+            want_map = {n: C.PASS for n in rpu} | {"ext_blocks": want}
+            ok = all(got.get(n) == s for n, s in want_map.items())
+            rows.append((ok, name, f"ext_blocks {want}", ", ".join(f"{n} {got.get(n)}" for n in rpu)))
+    except media.ToolError as e:
+        rows += [(False, n, "to run", f"tool error: {e}") for n in names[len(rows) :]]
+    return rows
 
 
 def run(tools, keep=False):
@@ -172,7 +246,20 @@ def run(tools, keep=False):
         for ok, name, want_exit, want_check, detail in rows:
             expect = f"exit {want_exit}" + (f" naming {want_check}" if want_check else "")
             print(f"{'PASS' if ok else 'FAIL'}  {name}: expected {expect}; got {detail}")
-        print(f"selftest: {len(rows) - len(failures)} of {len(rows)} controls behaved")
+        total, skipped = len(rows), 0
+        for ok, name, *rest in _trailing_rows(tools, w, base, work):
+            if ok is None:
+                skipped += 1
+                print(f"SKIP  {name}: {rest[0]}")
+                continue
+            total += 1
+            print(f"{'PASS' if ok else 'FAIL'}  {name}: expected {rest[0]}; got {rest[1]}")
+            if not ok:
+                failures.append(name)
+        print(
+            f"selftest: {total - len(failures)} of {total} controls behaved"
+            + (f", {skipped} skipped" if skipped else "")
+        )
         return 0 if not failures else 1
     finally:
         if keep:
