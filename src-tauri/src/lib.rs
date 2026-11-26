@@ -573,10 +573,16 @@ mod gui_commands {
     #[tauri::command]
     pub async fn preflight_check(
         state: tauri::State<'_, Arc<AppState>>,
+        compatibility_mode: Option<bool>,
+        preserve_hdr: Option<bool>,
     ) -> Result<Vec<encoder::PreflightWarning>, String> {
         let q = state.queue.read().await;
         let encoders = state.detected_video_encoders.read().await;
-        Ok(encoder::preflight_scan(&q, &encoders))
+        let out = encoder::OutputRange {
+            compat: compatibility_mode.unwrap_or(false),
+            preserve_hdr: preserve_hdr.unwrap_or(true),
+        };
+        Ok(encoder::preflight_scan(&q, &encoders, out))
     }
 
     #[tauri::command]
