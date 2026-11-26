@@ -8,6 +8,7 @@ import core
 from core import EXIT_DIFF, EXIT_HARNESS, EXIT_NOTHING, EXIT_OK, CellFailure, HarnessError, Report, Session, Site, slug
 from cells import render_cell
 from parity import cmd_parity
+from toggle import cmd_toggle
 from states import STATES, STYLES, THEMES
 
 
@@ -74,6 +75,13 @@ def main():
     q.add_argument("--tol", type=float, default=1.0, help="allowed difference per x, y, w, h in px (default 1)")
     q.add_argument("--states", nargs="*", choices=list(STATES))
     q.set_defaults(fn=cmd_parity)
+    t = sub.add_parser("toggle", help="live style switches against fresh loads")
+    t.add_argument("ref", nargs="?", default="@worktree", help="git ref, @worktree (default) or dir:PATH")
+    t.add_argument("--themes", nargs="*")
+    t.add_argument("--states", nargs="*", choices=list(STATES))
+    t.add_argument("--cycles", type=int, default=3, help="doublet -> classic -> doublet rounds (default 3)")
+    t.add_argument("--max-lines", type=int, default=12, help="differences printed per failing switch")
+    t.set_defaults(fn=cmd_toggle)
     a = p.parse_args()
     try:
         return a.fn(a)

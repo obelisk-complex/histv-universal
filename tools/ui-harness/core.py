@@ -25,11 +25,21 @@ NARROW = (800, 900)
 
 # Zero-length transitions and animations: geometry and computed styles are read
 # at their end state instead of mid-flight. Not used by the first-paint check.
-KILL_MOTION = (
+KILL_MOTION_CSS = (
     "*,*::before,*::after{transition-duration:0s!important;transition-delay:0s!important;"
     "animation-duration:0s!important;animation-delay:0s!important;"
     "animation-iteration-count:1!important;scroll-behavior:auto!important}"
 )
+
+
+# Installed before any page script runs, so that no transition starts before the rule applies.
+KILL_MOTION = (
+    "(() => { const css = %s; const put = () => { if (!document.head) return false;"
+    " const st = document.createElement('style'); st.id = 'uih-kill-motion'; st.textContent = css;"
+    " document.head.appendChild(st); return true; };"
+    " if (put()) return; const mo = new MutationObserver(() => { if (put()) mo.disconnect(); });"
+    " mo.observe(document, { childList: true, subtree: true }); })();"
+) % json.dumps(KILL_MOTION_CSS)
 
 
 class HarnessError(Exception):
@@ -221,13 +231,13 @@ def open_page(session, site, tree, theme, ui_style=None, viewport=VIEWPORT, dela
             errors.append(f"external request blocked: {route.request.url}")
             route.abort()
     page.route("**/*", gate)
+    if kill_motion:
+        page.add_init_script(KILL_MOTION)
     if seed_js:
         page.add_init_script(seed_js)
     page.add_init_script("window.__MOCK_FIXTURES__ = " + json.dumps(fx) + ";")
     page.add_init_script(path=str(HERE / "mock-tauri.js"))
     page.goto(site.url, wait_until="load")
-    if kill_motion:
-        page.add_style_tag(content=KILL_MOTION)
     loaded = Loaded(ctx if own else None, page, errors)
     if wait:
         wait_ready(page)
