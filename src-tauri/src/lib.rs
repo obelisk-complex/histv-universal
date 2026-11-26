@@ -562,7 +562,8 @@ mod gui_commands {
         state: tauri::State<'_, Arc<AppState>>,
     ) -> Result<Vec<encoder::PreflightWarning>, String> {
         let q = state.queue.read().await;
-        Ok(encoder::preflight_scan(&q))
+        let encoders = state.detected_video_encoders.read().await;
+        Ok(encoder::preflight_scan(&q, &encoders))
     }
 
     #[tauri::command]

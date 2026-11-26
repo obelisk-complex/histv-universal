@@ -385,8 +385,42 @@ const PARSE_PREFIX: usize = 4096;
 /// slice headers and POC, streaming one NAL at a time.
 #[cfg(feature = "dovi")]
 pub fn display_order(path: &Path) -> io::Result<Vec<usize>> {
-    let file = std::fs::File::open(path)?;
-    let mut reader = NalReader::new(file);
+    display_order_from(std::fs::File::open(path)?)
+}
+
+/// [`display_order`] run off the async executor, with parser panics turned
+/// into errors. `hevc_parser` asserts on malformed slice headers, and a
+/// damaged user file must not take down the batch.
+#[cfg(feature = "dovi")]
+pub async fn display_order_guarded(path: &Path) -> io::Result<Vec<usize>> {
+    let path = path.to_path_buf();
+    tokio::task::spawn_blocking(move || display_order_contained(|| display_order(&path)))
+        .await
+        .map_err(|e| io::Error::other(format!("picture order task failed: {e}")))?
+}
+
+/// Run a display-order parse, converting a panic into an error.
+#[cfg(feature = "dovi")]
+fn display_order_contained<F>(parse: F) -> io::Result<Vec<usize>>
+where
+    F: FnOnce() -> io::Result<Vec<usize>>,
+{
+    std::panic::catch_unwind(std::panic::AssertUnwindSafe(parse)).unwrap_or_else(|p| {
+        let msg = p
+            .downcast_ref::<&str>()
+            .map(|s| s.to_string())
+            .or_else(|| p.downcast_ref::<String>().cloned())
+            .unwrap_or_default();
+        Err(io::Error::new(
+            io::ErrorKind::InvalidData,
+            format!("damaged bitstream, picture order parser panicked: {msg}"),
+        ))
+    })
+}
+
+#[cfg(feature = "dovi")]
+fn display_order_from<R: Read>(input: R) -> io::Result<Vec<usize>> {
+    let mut reader = NalReader::new(input);
     let mut parser = hevc_parser::HevcParser::default();
     let mut buf: Vec<u8> = Vec::with_capacity(PARSE_PREFIX + 3);
 
@@ -534,6 +568,37 @@ mod tests {
             display_order(&fixture("gop_bframes.h265")).unwrap(),
             vec![0, 4, 2, 1, 3, 8, 6, 5, 7, 11, 10, 9]
         );
+    }
+
+    /// Bit-flipped variants of a real stream: parser panics stay contained.
+    /// The seed is fixed, so the run is deterministic; at least one variant
+    /// must panic the raw parser, or the test proves nothing.
+    #[cfg(feature = "dovi")]
+    #[test]
+    fn display_order_contains_parser_panics() {
+        let clean = std::fs::read(fixture("gop_bframes.h265")).unwrap();
+        let mut seed: u64 = 0x5eed_1234_abcd_0001;
+        let mut next = || {
+            seed = seed
+                .wrapping_mul(6364136223846793005)
+                .wrapping_add(1442695040888963407);
+            (seed >> 33) as usize
+        };
+        let mut contained = 0;
+        for _ in 0..3000 {
+            let mut data = clean.clone();
+            for _ in 0..1 + next() % 4 {
+                let i = next() % data.len();
+                data[i] ^= 1 << (next() % 8);
+            }
+            let r = display_order_contained(|| display_order_from(std::io::Cursor::new(&data)));
+            if let Err(e) = r {
+                if e.to_string().contains("panicked") {
+                    contained += 1;
+                }
+            }
+        }
+        assert!(contained > 0, "no variant panicked the parser");
     }
 
     #[test]

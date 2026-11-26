@@ -584,10 +584,14 @@ fn print_dry_run_plan(
                 None => {}
             }
         }
-        let hdr10plus_count = probed_items
+        // A copied video stream keeps its HDR10+ metadata.
+        let mut hdr10plus_lost: Vec<&str> = probed_items
             .iter()
-            .filter(|item| item.probe.has_hdr10plus)
-            .count();
+            .zip(decisions.iter())
+            .filter(|(_, d)| !matches!(d, EncodeDecision::Copy))
+            .filter_map(|(item, _)| encoder::hdr10plus_preflight_issue(&item.probe, video_encoder))
+            .collect();
+        hdr10plus_lost.sort_unstable();
 
         let yellow = if is_tty { "\x1b[33m" } else { "" };
 
@@ -603,10 +607,16 @@ fn print_dry_run_plan(
                 bold, dv_no_native, if dv_no_native == 1 { "" } else { "s" },
             );
         }
-        if hdr10plus_count > 0 && !caps.can_process_hdr10plus {
+        for (reason, n) in hdr10plus_lost
+            .chunk_by(|a, b| a == b)
+            .map(|g| (g[0], g.len()))
+        {
             eprintln!(
-                "  {yellow}{}WARNING:{reset} {} HDR10+ file{} will lose dynamic metadata (hdr10plus support not available)",
-                bold, hdr10plus_count, if hdr10plus_count == 1 { "" } else { "s" },
+                "  {yellow}{}WARNING:{reset} {} HDR10+ file{} will lose dynamic metadata ({})",
+                bold,
+                n,
+                if n == 1 { "" } else { "s" },
+                reason,
             );
         }
     }

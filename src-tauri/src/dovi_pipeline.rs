@@ -28,6 +28,8 @@ pub struct ExtractedRpus {
     pub source_profile: u8,
     /// Whether profile conversion to 8.1 was applied.
     pub converted_to_81: bool,
+    /// Base-layer compatibility id of the source (8.1 PQ, 8.2 SDR, 8.4 HLG).
+    pub source_compat: Option<u8>,
 }
 
 /// Result of the full DV pipeline (inject + MP4Box packaging).
@@ -66,7 +68,7 @@ pub async fn extract_rpus(
 
     // RPUs sit in decode order; the encoder reorders pictures its own way,
     // so they are matched to pictures by display position.
-    let source_order = hevc_utils::display_order(&raw_hevc);
+    let source_order = hevc_utils::display_order_guarded(&raw_hevc).await;
 
     // TempDir dropped here — large demuxed file cleaned up automatically
     drop(temp_dir);
@@ -147,6 +149,7 @@ pub async fn extract_rpus(
         rpus: rpu_payloads,
         source_profile: dovi_profile,
         converted_to_81: conversion_applied,
+        source_compat: dovi_bl_compat_id,
     })
 }
 
@@ -196,7 +199,7 @@ pub async fn inject_and_package(
 
     // The encoded picture order maps each output picture to the RPU of the
     // same display position.
-    let output_order = match hevc_utils::display_order(&encoded_hevc) {
+    let output_order = match hevc_utils::display_order_guarded(&encoded_hevc).await {
         Ok(o) if o.len() == rpus.rpus.len() => Some(o),
         Ok(o) => {
             sink.log(&format!(
@@ -319,7 +322,11 @@ pub async fn inject_and_package(
     // Step 4: Package with MP4Box
     sink.log("  DV: Packaging with MP4Box (DV container flags)...");
 
-    let (dv_profile_num, dv_compat) = dv_profile_mapping(rpus.source_profile, rpus.converted_to_81);
+    let (dv_profile_num, dv_compat) = dv_profile_mapping(
+        rpus.source_profile,
+        rpus.source_compat,
+        rpus.converted_to_81,
+    );
     let dv_profile_str = dv_profile_string(dv_profile_num, dv_compat);
     let mp4box_args = mp4box_args(
         &injected_hevc,
@@ -412,10 +419,11 @@ pub fn mp4box_args(
     let mut args: Vec<String> = vec![
         "-add".into(),
         format!(
-            "{}#video:hdlr=vide:lang=und:group=1:dvp={}.{}:colr=nclc,9,16,9",
+            "{}#video:hdlr=vide:lang=und:group=1:dvp={}.{}:colr=nclc,{}",
             injected_hevc.display(),
             profile,
             compat,
+            dv_colr(compat),
         ),
     ];
     for id in extra_track_ids {
@@ -439,16 +447,38 @@ pub fn needs_profile_conversion(dovi_profile: u8, dovi_bl_compat_id: Option<u8>)
 }
 
 /// Map source profile + conversion state to (profile_num, compat_id) for MP4Box.
-pub fn dv_profile_mapping(source_profile: u8, converted_to_81: bool) -> (u8, u8) {
+///
+/// Profile 8 keeps its base-layer compatibility id (1 HDR10, 2 SDR, 4 HLG);
+/// labelling an HLG 8.4 stream as 8.1 tells players the base layer is PQ.
+pub fn dv_profile_mapping(
+    source_profile: u8,
+    source_compat: Option<u8>,
+    converted_to_81: bool,
+) -> (u8, u8) {
     if converted_to_81 {
         (8, 1)
     } else {
         match source_profile {
             5 => (5, 0),
             7 => (7, 6),
-            8 => (8, 1),
+            8 => (
+                8,
+                source_compat
+                    .filter(|c| matches!(c, 1 | 2 | 4))
+                    .unwrap_or(1),
+            ),
             _ => (8, 1),
         }
+    }
+}
+
+/// CICP primaries, transfer and matrix for MP4Box `colr=nclc,..`, from the
+/// DV compatibility id: HLG for 8.4, BT.709 for 8.2, BT.2020/PQ otherwise.
+pub fn dv_colr(compat: u8) -> &'static str {
+    match compat {
+        4 => "9,18,9",
+        2 => "1,1,1",
+        _ => "9,16,9",
     }
 }
 
@@ -503,30 +533,35 @@ mod tests {
 
     #[test]
     fn test_mapping_converted_to_81() {
-        assert_eq!(dv_profile_mapping(5, true), (8, 1));
-        assert_eq!(dv_profile_mapping(7, true), (8, 1));
-        assert_eq!(dv_profile_mapping(8, true), (8, 1));
+        assert_eq!(dv_profile_mapping(5, None, true), (8, 1));
+        assert_eq!(dv_profile_mapping(7, Some(0), true), (8, 1));
+        assert_eq!(dv_profile_mapping(8, Some(4), true), (8, 1));
     }
 
     #[test]
     fn test_mapping_profile5_not_converted() {
-        assert_eq!(dv_profile_mapping(5, false), (5, 0));
+        assert_eq!(dv_profile_mapping(5, None, false), (5, 0));
     }
 
     #[test]
     fn test_mapping_profile7_not_converted() {
-        assert_eq!(dv_profile_mapping(7, false), (7, 6));
+        assert_eq!(dv_profile_mapping(7, Some(6), false), (7, 6));
     }
 
     #[test]
     fn test_mapping_profile8_not_converted() {
-        assert_eq!(dv_profile_mapping(8, false), (8, 1));
+        assert_eq!(dv_profile_mapping(8, Some(1), false), (8, 1));
+        assert_eq!(dv_profile_mapping(8, None, false), (8, 1));
+        // 8.2 (SDR) and 8.4 (HLG) keep their compatibility id.
+        assert_eq!(dv_profile_mapping(8, Some(2), false), (8, 2));
+        assert_eq!(dv_profile_mapping(8, Some(4), false), (8, 4));
+        assert_eq!(dv_profile_mapping(8, Some(6), false), (8, 1));
     }
 
     #[test]
     fn test_mapping_unknown_profile_fallback() {
-        assert_eq!(dv_profile_mapping(10, false), (8, 1));
-        assert_eq!(dv_profile_mapping(0, false), (8, 1));
+        assert_eq!(dv_profile_mapping(10, None, false), (8, 1));
+        assert_eq!(dv_profile_mapping(0, None, false), (8, 1));
     }
 
     // ── dv_profile_string ──────────────────────────────────────
@@ -583,6 +618,16 @@ mod tests {
             "/t/injected.h265#video:hdlr=vide:lang=und:group=1:dvp=8.1:colr=nclc,9,16,9"
         );
         assert!(!args[1].contains("bitdepth"));
+        // HLG (8.4) is signalled as HLG, not PQ.
+        let hlg = mp4box_args(
+            Path::new("/t/i.h265"),
+            Path::new("/o/e.mp4"),
+            &[],
+            8,
+            4,
+            Path::new("/o/f.mp4"),
+        );
+        assert!(hlg[1].ends_with(":dvp=8.4:colr=nclc,9,18,9"));
         for pair in [["-brand", "mp42isom"], ["-ab", "dby1"], ["-enable", "1"]] {
             assert!(args.windows(2).any(|w| w[0] == pair[0] && w[1] == pair[1]));
         }

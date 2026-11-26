@@ -71,7 +71,7 @@ pub async fn extract_hdr10plus(
 
     // SEIs sit in decode order; they are matched to pictures by display
     // position because the encoder reorders pictures its own way.
-    let source_order = hevc_utils::display_order(&raw_hevc);
+    let source_order = hevc_utils::display_order_guarded(&raw_hevc).await;
 
     drop(temp_dir); // clean up large demuxed file
 
@@ -200,7 +200,8 @@ pub async fn inject_hdr10plus(
     // the packets and MP4 silently plays them in decode order. So only
     // streams whose decode order is their display order are injected; for
     // those, output picture N takes display-order metadata N.
-    let output_order = hevc_utils::display_order(&encoded_hevc)
+    let output_order = hevc_utils::display_order_guarded(&encoded_hevc)
+        .await
         .map_err(|e| format!("Could not read the encoded picture order: {e}"))?;
     if !is_display_ordered(&output_order) {
         return Err(

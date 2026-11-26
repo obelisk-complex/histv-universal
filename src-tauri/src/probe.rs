@@ -19,6 +19,10 @@ pub struct ProbeResult {
     pub dovi_profile: Option<u8>,
     pub dovi_bl_compat_id: Option<u8>,
     pub has_hdr10plus: bool,
+    /// HDR10+ profile of the first frame: "A", "B", "N/A" (neither), or
+    /// empty when unknown.
+    #[serde(default)]
+    pub hdr10plus_profile: String,
     pub video_fps: f64,
     pub subtitle_stream_count: u32,
 }
@@ -100,6 +104,7 @@ pub async fn probe_file(file_path: &str, sink: &dyn EventSink) -> Result<ProbeRe
                 dovi_profile: None,
                 dovi_bl_compat_id: None,
                 has_hdr10plus: false,
+                hdr10plus_profile: String::new(),
                 video_fps: if duration > 0.0 {
                     info.frame_count as f64 / duration
                 } else {
@@ -146,6 +151,7 @@ pub async fn probe_file(file_path: &str, sink: &dyn EventSink) -> Result<ProbeRe
     let mut dovi_profile: Option<u8> = None;
     let mut dovi_bl_compat_id: Option<u8> = None;
     let mut has_hdr10plus = false;
+    let mut hdr10plus_profile = String::new();
     let mut video_fps: f64 = 0.0;
     let mut subtitle_stream_count: u32 = 0;
 
@@ -368,7 +374,8 @@ pub async fn probe_file(file_path: &str, sink: &dyn EventSink) -> Result<ProbeRe
     // HDR10+ is per-frame side data, which -show_streams never reports.
     // Read the first frame of PQ HEVC sources to find it.
     if !has_hdr10plus && video_codec == "hevc" && color_transfer == "smpte2084" {
-        let frame_json = run_ffprobe(&[
+        let mut cmd = ffmpeg::ffprobe_command();
+        cmd.args([
             "-v",
             "error",
             "-select_streams",
@@ -376,14 +383,23 @@ pub async fn probe_file(file_path: &str, sink: &dyn EventSink) -> Result<ProbeRe
             "-read_intervals",
             "%+#1",
             "-show_entries",
-            "frame=pict_type:frame_side_data=side_data_type",
+            "frame=pict_type:frame_side_data",
             "-of",
             "json",
             file_path,
         ])
-        .await
-        .unwrap_or_default();
-        has_hdr10plus = frames_json_has_hdr10plus(&frame_json);
+        .stdout(std::process::Stdio::piped())
+        .stderr(std::process::Stdio::null());
+        // Decodes one frame; the limit guards against a stuck decoder.
+        let frame_json =
+            crate::encoder::output_with_timeout(cmd, std::time::Duration::from_secs(30))
+                .await
+                .map(|o| String::from_utf8_lossy(&o.stdout).into_owned())
+                .unwrap_or_default();
+        if let Some(profile) = frames_json_hdr10plus_profile(&frame_json) {
+            has_hdr10plus = true;
+            hdr10plus_profile = profile.to_string();
+        }
     }
 
     let video_bitrate_mbps = video_bitrate_bps / 1_000_000.0;
@@ -401,25 +417,48 @@ pub async fn probe_file(file_path: &str, sink: &dyn EventSink) -> Result<ProbeRe
         dovi_profile,
         dovi_bl_compat_id,
         has_hdr10plus,
+        hdr10plus_profile,
         video_fps,
         subtitle_stream_count,
     })
 }
 
-/// Whether ffprobe `-show_entries frame_side_data=side_data_type -of json` output has
-/// HDR10+ (SMPTE ST 2094-40) side data on any frame.
-pub fn frames_json_has_hdr10plus(json: &str) -> bool {
+/// HDR10+ profile of the first frame carrying HDR10+ (SMPTE ST 2094-40)
+/// side data in ffprobe `-show_entries frame_side_data -of json` output, or
+/// `None` when no frame has any. Mirrors the hdr10plus crate: "A" has no
+/// target display luminance and no tone mapping, "B" has both a target and
+/// a Bezier curve, anything else is "N/A".
+pub fn frames_json_hdr10plus_profile(json: &str) -> Option<&'static str> {
     let v: serde_json::Value = serde_json::from_str(json).unwrap_or(serde_json::Value::Null);
-    v["frames"].as_array().is_some_and(|frames| {
-        frames.iter().any(|f| {
-            f["side_data_list"].as_array().is_some_and(|sds| {
-                sds.iter().any(|sd| {
-                    sd["side_data_type"]
-                        .as_str()
-                        .is_some_and(|t| t.contains("SMPTE2094-40") || t.contains("HDR10+"))
-                })
-            })
+    let sd = v["frames"].as_array()?.iter().find_map(|f| {
+        f["side_data_list"].as_array()?.iter().find(|sd| {
+            sd["side_data_type"]
+                .as_str()
+                .is_some_and(|t| t.contains("SMPTE2094-40") || t.contains("HDR10+"))
         })
+    })?;
+    // ffprobe prints rationals as "400/1"; a missing field reads as zero.
+    let num = |k: &str| match &sd[k] {
+        serde_json::Value::Number(n) => n.as_f64().unwrap_or(0.0),
+        serde_json::Value::String(s) => {
+            let mut it = s.split('/');
+            let n: f64 = it.next().and_then(|x| x.parse().ok()).unwrap_or(0.0);
+            let d: f64 = it.next().and_then(|x| x.parse().ok()).unwrap_or(1.0);
+            if d == 0.0 {
+                0.0
+            } else {
+                n / d
+            }
+        }
+        _ => 0.0,
+    };
+    let target = num("targeted_system_display_maximum_luminance");
+    let tone_mapping = !sd["knee_point_x"].is_null();
+    let anchors = num("num_bezier_curve_anchors");
+    Some(match (tone_mapping, target > 0.0) {
+        (false, false) => "A",
+        (true, true) if anchors > 0.0 => "B",
+        _ => "N/A",
     })
 }
 
@@ -558,14 +597,31 @@ mod tests {
     use super::*;
 
     #[test]
-    fn frames_json_detects_hdr10plus() {
-        let yes = r#"{"frames":[{"side_data_list":[{"side_data_type":"Mastering display metadata"},{"side_data_type":"HDR Dynamic Metadata SMPTE2094-40 (HDR10+)","application_version":1}]}]}"#;
-        let no =
+    fn frames_json_detects_hdr10plus_profile() {
+        let frame = |sd: &str| {
+            format!(
+                r#"{{"frames":[{{"side_data_list":[{{"side_data_type":"Mastering display metadata"}},{sd}]}}]}}"#
+            )
+        };
+        let t = r#""side_data_type":"HDR Dynamic Metadata SMPTE2094-40 (HDR10+)""#;
+        // The supplied sample: a target luminance but no tone mapping.
+        let na = frame(&format!(
+            r#"{{{t},"targeted_system_display_maximum_luminance":"400/1"}}"#
+        ));
+        assert_eq!(frames_json_hdr10plus_profile(&na), Some("N/A"));
+        let b = frame(&format!(
+            r#"{{{t},"targeted_system_display_maximum_luminance":"400/1","knee_point_x":"10/4095","num_bezier_curve_anchors":9}}"#
+        ));
+        assert_eq!(frames_json_hdr10plus_profile(&b), Some("B"));
+        let a = frame(&format!(
+            r#"{{{t},"targeted_system_display_maximum_luminance":"0/1"}}"#
+        ));
+        assert_eq!(frames_json_hdr10plus_profile(&a), Some("A"));
+        let none =
             r#"{"frames":[{"side_data_list":[{"side_data_type":"Mastering display metadata"}]}]}"#;
-        assert!(frames_json_has_hdr10plus(yes));
-        assert!(!frames_json_has_hdr10plus(no));
-        assert!(!frames_json_has_hdr10plus(r#"{"frames":[{}]}"#));
-        assert!(!frames_json_has_hdr10plus(""));
+        assert_eq!(frames_json_hdr10plus_profile(none), None);
+        assert_eq!(frames_json_hdr10plus_profile(r#"{"frames":[{}]}"#), None);
+        assert_eq!(frames_json_hdr10plus_profile(""), None);
     }
 
     // ── parse_duration_tag ────────────────────────────────────────
