@@ -2,7 +2,7 @@
 
 [![Quillx](https://raw.githubusercontent.com/qainsights/quillx/main/badges/quillx-4.svg)](https://github.com/qainsights/quillx) Architecture, integration decisions, and review are mine. Claude generated the implementation under close direction. Output reviewed line by line (but that doesn't mean I caught everything).
 
-> **Branch status.** This is `3.0.0-dev`, the long-lived integration branch for HISTV 3.0. `main` stays on the stable 2.x line. 3.0 is promoted to `main` only as an official release, after extensive testing on Linux and at least some testing on Windows and macOS. Stable builds are on the [Releases page](https://github.com/obelisk-complex/histv-universal/releases); this branch is built from source (see "Building from source" under Download).
+> **Branch status.** This is `3.0.0-dev`, the long-lived integration branch for HISTV 3.0. `main` stays on the stable 2.x line. 3.0 is promoted to `main` only as an official release, after extensive testing on Linux and at least some testing on Windows and macOS. Stable builds are on the [Releases page](https://github.com/obelisk-complex/histv-universal/releases); this branch is built from source (see "Building from source" under Download). The Doublet and Classic style switch has been checked in headless Chromium only; checks on the real WebKitGTK and WebView2 engines are part of the pre-3.0 testing.
 
 A cross-platform batch video encoder that shrinks your video files to a target quality level. No need to babysit the queue or tweak settings per file - just pick a target bitrate, add your files, and hit start.
 
@@ -37,6 +37,9 @@ Available as a desktop app and a headless CLI for servers (see [CLI-README.md](C
 
 Changes on this branch that the 2.x line on `main` does not have.
 
+- **Choose your look: Doublet or Classic.** Doublet is the new interface. Classic keeps the layout and styling from before the Doublet refresh, for anyone who prefers it. Pick one with Style, next to Theme: it applies at once, without a restart, and is remembered. Switching style does not change your theme, and labels and messages read the same in both (Classic only shortens some headings). If the other style's stylesheets fail to load, the current style stays and the log says so.
+- **Classic Dark and Classic Light themes.** Two extra built-in themes hold the colours Default Dark and Default Light had before Doublet. They work under either style.
+- **Dolby Vision profile 5 files that would come out wrong now say so.** With neither MP4Box nor an ffmpeg that can write Dolby Vision, profile 5 is written as plain HDR10, which probably gives wrong colours. The pre-flight check, the CLI dry run and the encode log name the way out: install MP4Box, or use HISTV's own ffmpeg.
 - **More GPUs can encode.** Vulkan encoders (HEVC and H.264, on Linux and Windows) and Direct3D 12 encoders (Windows) are used when the vendor encoders (VAAPI, NVENC, QSV, AMF) are not available. Each is checked with a test encode at start-up. On Linux machines with two GPUs, HISTV uses the lowest render node, and the Intel one for QSV.
 - **The CLI uses your GPU too.** Auto mode now picks the same hardware encoder as the GUI, per file and per codec family. It used to stay on software.
 - **Dolby Vision needs fewer extra tools.** ffmpeg writes the Dolby Vision data itself for profile 5 and 8 sources, so audio of any codec, subtitles and MKV output all survive, and MP4Box is only needed for profile 7, when a hardware encoder is kept, or when your ffmpeg cannot write Dolby Vision itself (HISTV's own build can). Profile 5 stays profile 5 on that route. A profile 7 source is now written as profile 8.1, because the output has no enhancement layer. See [Dolby Vision and HDR10+](#dolby-vision-and-hdr10).
@@ -83,7 +86,7 @@ Changes on this branch that the 2.x line on `main` does not have.
 - **Notifications** - system notification when the batch finishes.
 - **Auto-clear** - optionally clears finished items from the queue.
 - **Flatpak support** - available as a Flatpak bundle for Linux with host filesystem access so ffmpeg subprocesses can reach your files directly.
-- **Themes** - twelve built-in themes: four Doublet pairings (Doublet, Doublet Dusk, Doublet Ember, Doublet Filigree), Default Dark, Default Light, and six more palettes (Jessica Dark, Solarised Dark, Nord, Vempire, Creditor, Monokai). Create your own with just 6 colour values - the app derives everything else automatically. See [THEMES.md](THEMES.md).
+- **Themes** - fourteen built-in themes: four Doublet pairings (Doublet, Doublet Dusk, Doublet Ember, Doublet Filigree), Default Dark, Default Light, Classic Dark, Classic Light, and six more palettes (Jessica Dark, Solarised Dark, Nord, Vempire, Creditor, Monokai). Create your own with just 6 colour values - the app derives everything else automatically. See [THEMES.md](THEMES.md).
 - **ffmpeg downloader** - offers to download ffmpeg for you if it's not installed. It fetches HISTV's own ffmpeg build first and checks it against a pinned SHA-256 before using it. If that download fails, it falls back to third-party static builds, which are not checksum-verified. A downloaded copy is used ahead of an ffmpeg in a system folder such as `/usr/bin`.
 - **Remembers settings** - everything is saved to config.json in the same folder as the .exe, and restored on next launch.
 - **CLI version** - same engine as a command-line tool for servers and scripts. Shows a persistent queue table during encoding matching the GUI's columns. See [CLI-README.md](CLI-README.md).
@@ -259,10 +262,12 @@ People with a pile of video files at different sizes and formats who want to shr
 │   ├── index.html
 │   ├── js/
 │   │   ├── app.js
+│   │   ├── ui-style.js         # Doublet / Classic style: first paint and live switch
 │   │   ├── lib.js              # Pure helpers shared with app.js
 │   │   └── lib.test.js         # Unit tests for lib.js
 │   └── css/
-│       ├── app.css
+│       ├── app.css             # Doublet style
+│       ├── app-classic.css     # Classic style
 │       ├── doublet-tokens.css  # Vendored Doublet design tokens
 │       └── doublet-components.css  # Vendored Doublet components
 ├── src-tauri/
@@ -271,7 +276,7 @@ People with a pile of video files at different sizes and formats who want to shr
 │   ├── build.rs
 │   ├── capabilities/           # Tauri permissions
 │   ├── icons/
-│   ├── themes/                 # Built-in theme JSON files (8)
+│   ├── themes/                 # Built-in theme JSON files (10)
 │   ├── tests/                  # Integration tests and fixtures
 │   └── src/
 │       ├── main.rs             # GUI entry point
@@ -307,6 +312,7 @@ People with a pile of video files at different sizes and formats who want to shr
 │   │   ├── check-pins.sh       # Keep the ffmpeg tag and sha256 pins in step
 │   │   ├── run-job-in-docker.sh  # Run a build-ffmpeg.yml job locally
 │   │   └── e2e/                # Hand-run end-to-end harness (see its README)
+│   ├── ui-harness/             # Headless Chromium checks for the style switch (see its README)
 │   └── generate-cargo-sources.py  # cargo-sources.json for the Flatpak
 ├── .github/workflows/
 │   ├── ci.yml                  # Tests, macOS/Windows compile checks, ffmpeg pin check, dependency audit
@@ -369,6 +375,11 @@ Everything on `3.0.0-dev` that is not in `main`, from the commits since the bran
 - `resolveEncoderFamilies` and `resolveFamilyForCodec` in `app.js` mirror `lib.js`, and `lib.test.js` compares the two copies (422292f, 0e7ebec, c93d96e).
 - `probe.rs` reads HDR10+ from the first frame's side data of PQ HEVC sources, and APNG duration from the packet span (6d95b71, 104958b). `webp_decode.rs` builds device arguments through `hw_device_args`.
 - `truncate_filename` in `cli_main.rs` counts characters, not bytes (44cff31).
+
+**Interface style** (`src/js/ui-style.js`, `src/css/app-classic.css`, `tools/ui-harness/`)
+- `ui-style.js` writes `<link id="ui-style-css">` with `document.write` while `<head>` parses, from `localStorage['histv-ui-style']`, so the saved style is in the first painted frame; `app.js` applies the `uiStyle` config value once it loads. A live switch loads the new stylesheets in extra links with `media="not all"`, then swaps them, the `data-ui-style` marker and the theme derivation (`deriveDoubletTokens` or `deriveClassicTokens`) in one step; a failed load keeps the old style (a5ecc05, 9f8f202). `uiStyle` is a `config.rs` field that reads anything but `"classic"` as `"doublet"` (d37341d); `app-classic.css` is the pre-Doublet stylesheet (4689cb8); Classic Dark and Classic Light are built-in themes (a7ebf61).
+- `tools/ui-harness/` drives the front end in headless Chromium (Playwright) against a mocked Tauri bridge (f94a01c), never a display. `run.sh matrix` renders style x theme x state (d919111); `parity` compares element boxes and, on mapped theme pairs, colours of Classic against the pre-Doublet commit `e4d0ee2` (b8449ba); `toggle` compares live switches with fresh loads (763e3f9); `paint` checks the persisted style in the first painted frame and `selftest` runs the negative controls that must fail (23054a4); `switch` watches every frame of a switch with slow or failing stylesheets (61fc0fe). Run by hand; no workflow calls it.
+- Dolby Vision profile 5 warning: the reasons live in `encoder::dovi_loss`, shared by the pre-flight, the CLI dry run and the encode log (dc3c729).
 
 **Build, CI and tests**
 - `build-ffmpeg.yml` builds ffmpeg n8.1.3 from pinned sources (git commits and tarball SHA-256s) with Vulkan, D3D12, AMF, libvpl and x265 HDR10+, and publishes archives with `BUILDINFO.txt`, build attestations and `histv-ffmpeg-sources.tar` (0c9b880, 6298d53). `tools/ffmpeg/` holds the helper scripts; `verify.sh` gates the build, `check-pins.sh` keeps the tag and checksums in step across `ffmpeg.rs`, `build-platform.yml` and the Flatpak manifest (c5f57c9).
