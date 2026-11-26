@@ -1241,6 +1241,30 @@ fn rpu_pipeline_available() -> bool {
     c.can_process_dovi && c.can_package_dovi_mp4
 }
 
+/// Input bitstream filters for a native Dolby Vision encode of an HEVC
+/// source (`dovi_input_bsf`).
+///
+/// ffmpeg's hevc decoder reads an RPU only when it is the last NAL unit of
+/// its packet (`libavcodec/hevc/hevcdec.c:3753` at n8.1.3). Some Dolby
+/// Vision files store the next keyframe's VPS, SPS and PPS after the RPU of
+/// the sample before it; that frame's RPU is then skipped and the frame is
+/// given the RPU of the frame decoded before it. `extract_extradata=remove=1`
+/// takes the parameter sets out of each packet and hands them to the decoder
+/// as new extradata, so the RPU is last again; it needs Annex B packets,
+/// hence `hevc_mp4toannexb` (a no-op on Annex B input).
+pub const DOVI_INPUT_BSF: &str = "hevc_mp4toannexb,extract_extradata=remove=1";
+
+/// The input filter for this job's video stream, if it needs one: a native
+/// Dolby Vision encode (not a stream copy) of an HEVC source. Profile 10
+/// sources are AV1 and are left alone.
+pub fn dovi_input_bsf(
+    native_route: bool,
+    stream_copy: bool,
+    source_video_codec: &str,
+) -> Option<&'static str> {
+    (native_route && !stream_copy && source_video_codec == "hevc").then_some(DOVI_INPUT_BSF)
+}
+
 /// Extra video arguments for native DV coding, appended after the
 /// rate-control flags in `existing`.
 ///
@@ -3310,6 +3334,7 @@ async fn encode_single_file(
             keep_source_tag: is_copy_decision
                 && matches!(source_ext.as_str(), "mp4" | "m4v" | "mov"),
             legacy_vsync: ffmpeg_caps().no_fps_mode,
+            input_video_bsf: dovi_input_bsf(is_dovi_native, is_copy_decision, &item_video_codec),
         });
 
         let cmd_line = format!("ffmpeg {}", ffmpeg_args.join(" "));
@@ -3590,6 +3615,7 @@ async fn encode_single_file(
                         dovi_p5: false,
                         keep_source_tag: false,
                         legacy_vsync: ffmpeg_caps().no_fps_mode,
+                        input_video_bsf: None,
                     });
 
                     let sw_cmd = format!("ffmpeg {}", sw_args.join(" "));
@@ -4731,6 +4757,9 @@ struct FfmpegAssemblyParts<'a> {
     /// ffmpeg predates `-fps_mode` (`FfmpegCaps::no_fps_mode`): spell the
     /// frame-rate mode `-vsync`.
     legacy_vsync: bool,
+    /// Bitstream filters applied to the mapped video stream before it is
+    /// decoded (`dovi_input_bsf`).
+    input_video_bsf: Option<&'a str>,
 }
 
 /// Colour metadata to embed in the ffmpeg output. Only needed for
@@ -4821,6 +4850,11 @@ fn assemble_ffmpeg_args_for(
 
     // Hardware device init must come before -i
     args.extend(hw_device_init);
+
+    // An input option: it must come before -i.
+    if let Some(bsf) = parts.input_video_bsf {
+        args.extend(vec!["-bsf:v:0".into(), bsf.into()]);
+    }
 
     args.extend(vec![
         "-i".into(),
@@ -6411,6 +6445,7 @@ mod tests {
             dovi_p5: false,
             keep_source_tag: false,
             legacy_vsync: false,
+            input_video_bsf: None,
         });
         assert!(args.contains(&"-tag:v".to_string()));
         assert!(args.contains(&"hvc1".to_string()));
@@ -6438,6 +6473,7 @@ mod tests {
             dovi_p5: false,
             keep_source_tag: false,
             legacy_vsync: false,
+            input_video_bsf: None,
         });
         assert!(!args.contains(&"-tag:v".to_string()));
         assert!(!args.contains(&"hvc1".to_string()));
@@ -6466,6 +6502,7 @@ mod tests {
             dovi_p5: false,
             keep_source_tag: false,
             legacy_vsync: false,
+            input_video_bsf: None,
         });
         assert!(!args.contains(&"-tag:v".to_string()));
         assert!(!args.contains(&"hvc1".to_string()));
@@ -6493,6 +6530,7 @@ mod tests {
             dovi_p5: false,
             keep_source_tag: false,
             legacy_vsync: false,
+            input_video_bsf: None,
         });
         assert!(args.contains(&"-c:s".to_string()));
         assert!(args.contains(&"mov_text".to_string()));
@@ -6528,6 +6566,7 @@ mod tests {
             dovi_p5: false,
             keep_source_tag: false,
             legacy_vsync: false,
+            input_video_bsf: None,
         });
         assert!(args.contains(&"-c:s".to_string()));
         assert!(args.contains(&"copy".to_string()));
@@ -6559,6 +6598,7 @@ mod tests {
             dovi_p5: false,
             keep_source_tag: false,
             legacy_vsync: false,
+            input_video_bsf: None,
         });
         assert!(args.contains(&"-vf".to_string()));
         assert!(args.iter().any(|a| a.contains("tonemap=hable")));
@@ -6595,6 +6635,7 @@ mod tests {
             dovi_p5: false,
             keep_source_tag: false,
             legacy_vsync: false,
+            input_video_bsf: None,
         });
     }
 
@@ -7360,6 +7401,7 @@ mod tests {
             dovi_p5: false,
             keep_source_tag: false,
             legacy_vsync: false,
+            input_video_bsf: None,
         });
 
         // hw_device_init args must precede -i
@@ -7404,6 +7446,7 @@ mod tests {
             dovi_p5: false,
             keep_source_tag: false,
             legacy_vsync: false,
+            input_video_bsf: None,
         });
         assert!(
             args.iter().any(|a| a == "-init_hw_device"),
@@ -7449,6 +7492,7 @@ mod tests {
             dovi_p5: false,
             keep_source_tag: false,
             legacy_vsync: false,
+            input_video_bsf: None,
         });
 
         // -vaapi_device must precede -i
@@ -7493,6 +7537,7 @@ mod tests {
             dovi_p5: false,
             keep_source_tag: false,
             legacy_vsync: false,
+            input_video_bsf: None,
         });
 
         // VAAPI must always have -vaapi_device in args. If the render
@@ -7534,6 +7579,7 @@ mod tests {
             dovi_p5: false,
             keep_source_tag: false,
             legacy_vsync: false,
+            input_video_bsf: None,
         });
 
         // When tonemap is present, can't use hwaccel decode (tonemap is CPU)
@@ -7575,6 +7621,7 @@ mod tests {
             dovi_p5: false,
             keep_source_tag: false,
             legacy_vsync: false,
+            input_video_bsf: None,
         });
 
         assert!(!args.iter().any(|a| a == "-vaapi_device"));
@@ -7606,6 +7653,7 @@ mod tests {
             dovi_p5: false,
             keep_source_tag: false,
             legacy_vsync: false,
+            input_video_bsf: None,
         });
 
         assert!(!args.iter().any(|a| a == "-vaapi_device"));
@@ -7643,6 +7691,7 @@ mod tests {
             dovi_p5: false,
             keep_source_tag: false,
             legacy_vsync: false,
+            input_video_bsf: None,
         });
 
         let vf_pos = args.iter().position(|a| a == "-vf").unwrap();
@@ -7690,6 +7739,7 @@ mod tests {
             dovi_p5: false,
             keep_source_tag: false,
             legacy_vsync: false,
+            input_video_bsf: None,
         });
 
         let vf_pos = args.iter().position(|a| a == "-vf").unwrap();
@@ -7739,6 +7789,7 @@ mod tests {
             dovi_p5: false,
             keep_source_tag: false,
             legacy_vsync: false,
+            input_video_bsf: None,
         });
 
         // Must use hwaccel decode for 10-bit VAAPI
@@ -7805,6 +7856,7 @@ mod tests {
             dovi_p5: false,
             keep_source_tag: false,
             legacy_vsync: false,
+            input_video_bsf: None,
         });
 
         let vf_pos = args.iter().position(|a| a == "-vf").unwrap();
@@ -7844,6 +7896,7 @@ mod tests {
             dovi_p5: false,
             keep_source_tag: false,
             legacy_vsync: false,
+            input_video_bsf: None,
         });
 
         let vf_pos = args.iter().position(|a| a == "-vf").unwrap();
@@ -7887,6 +7940,7 @@ mod tests {
             dovi_p5: false,
             keep_source_tag: false,
             legacy_vsync: false,
+            input_video_bsf: None,
         });
 
         let vf_pos = args.iter().position(|a| a == "-vf").unwrap();
@@ -7934,6 +7988,7 @@ mod tests {
             dovi_p5: false,
             keep_source_tag: false,
             legacy_vsync: false,
+            input_video_bsf: None,
         });
 
         assert!(
@@ -7978,6 +8033,7 @@ mod tests {
             dovi_p5: false,
             keep_source_tag: false,
             legacy_vsync: false,
+            input_video_bsf: None,
         });
 
         assert!(
@@ -8023,6 +8079,7 @@ mod tests {
             dovi_p5: false,
             keep_source_tag: false,
             legacy_vsync: false,
+            input_video_bsf: None,
         });
 
         assert!(
@@ -8054,6 +8111,7 @@ mod tests {
             dovi_p5: false,
             keep_source_tag: false,
             legacy_vsync: false,
+            input_video_bsf: None,
         });
 
         assert!(args
@@ -8137,6 +8195,7 @@ mod tests {
             dovi_p5: false,
             keep_source_tag: false,
             legacy_vsync: false,
+            input_video_bsf: None,
         });
 
         assert!(
@@ -9746,6 +9805,46 @@ mod tests {
         let args = assemble_ffmpeg_args_for(&parts, None, TargetOs::Linux);
         assert!(arg_after(&args, "-tag:v").is_none());
         assert_eq!(arg_after(&args, "-strict").as_deref(), Some("unofficial"));
+    }
+
+    // ── Native DV: input filter for RPUs followed by parameter sets ──
+
+    #[test]
+    fn native_dv_input_filter_only_for_encoded_hevc_sources() {
+        assert_eq!(dovi_input_bsf(true, false, "hevc"), Some(DOVI_INPUT_BSF));
+        // A stream copy keeps every packet as it is.
+        assert_eq!(dovi_input_bsf(true, true, "hevc"), None);
+        // RPU pipeline, HDR10 fallback and non-DV sources decode as before.
+        assert_eq!(dovi_input_bsf(false, false, "hevc"), None);
+        // Profile 10 is AV1: the HEVC filters would reject the stream.
+        assert_eq!(dovi_input_bsf(true, false, "av1"), None);
+    }
+
+    #[test]
+    fn input_video_bsf_is_an_input_option_on_the_mapped_stream() {
+        let video = ["-c:v", "libx265", "-dolbyvision", "1"];
+        let mut parts = dv_parts("out.mp4", &video, true, true);
+        let without = assemble_ffmpeg_args_for(&parts, None, TargetOs::Linux);
+        assert!(!without.iter().any(|a| a.starts_with("-bsf")));
+
+        parts.input_video_bsf = Some(DOVI_INPUT_BSF);
+        let args = assemble_ffmpeg_args_for(&parts, None, TargetOs::Linux);
+        let bsf = args.iter().position(|a| a == "-bsf:v:0").unwrap();
+        let input = args.iter().position(|a| a == "-i").unwrap();
+        assert!(bsf < input, "an output -bsf would not reach the decoder");
+        assert_eq!(args[bsf + 1], DOVI_INPUT_BSF);
+        assert_eq!(arg_after(&args, "-map").as_deref(), Some("0:v:0"));
+        // Nothing else changes.
+        let mut rest = args.clone();
+        rest.drain(bsf..bsf + 2);
+        assert_eq!(rest, without);
+    }
+
+    /// The dv-compare self-test re-encodes its fixture with this filter.
+    #[test]
+    fn dv_compare_selftest_uses_the_same_input_filter() {
+        let selftest = include_str!("../../tools/dv-compare/dvcompare/selftest.py");
+        assert!(selftest.contains(&format!("\"{DOVI_INPUT_BSF}\"")));
     }
 
     // ── Frame-rate mode ─────────────────────────────────────────
