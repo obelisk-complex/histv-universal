@@ -60,6 +60,8 @@ def cmd_matrix(a):
 
 def main():
     p = argparse.ArgumentParser(prog="run.sh")
+    p.add_argument("--repo", metavar="PATH",
+                   help="resolve git refs and @worktree in this repository or worktree (default: the one holding this harness)")
     sub = p.add_subparsers(dest="cmd", required=True)
     m = sub.add_parser("matrix", help="render the state matrix of one ref")
     m.add_argument("ref", help="git ref, @worktree, or dir:PATH")
@@ -97,6 +99,8 @@ def main():
     c = sub.add_parser("selftest", help="negative controls: each command must fail where it should")
     c.set_defaults(fn=cmd_selftest)
     a = p.parse_args()
+    if a.repo:
+        core.REPO = core.Path(a.repo).resolve()
     try:
         return a.fn(a)
     except HarnessError as e:

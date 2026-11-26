@@ -12,6 +12,8 @@ CLASSIC_ALIAS = {"Default Dark": "Classic Dark", "Default Light": "Classic Light
 THEMES = ["Default Dark", "Default Light", "Nord", "Jessica Dark"]
 EXPLAINED = Path(__file__).resolve().parent / "parity-explained.json"
 BOX = ("x", "y", "w", "h")
+# Ids the contract adds on top of the old markup; they have no counterpart to compare with.
+CONTRACT_IDS = {"sel-ui-style", "ui-style-css", "doublet-tokens-css", "doublet-components-css"}
 
 
 def load_explained():
@@ -33,7 +35,7 @@ def compare(base, cand, tol):
     """-> list of (id, prop, baseline value, candidate value) for one cell pair."""
     out = []
     be, ce = base["elements"], cand["elements"]
-    for i in sorted(set(be) | set(ce)):
+    for i in sorted((set(be) | set(ce)) - CONTRACT_IDS):
         if i not in ce:
             out.append((i, "present", "yes", "no"))
             continue
@@ -110,6 +112,14 @@ def cmd_parity(a):
     (out / f"{slug(base.label)}__{slug(cand.label)}.json").write_text(json.dumps(
         {"baseline": a.baseline, "candidate": a.candidate, "tol": a.tol, "compared": compared,
          "differences": detail, "skipped": rep.skips, "failed": rep.failures}, indent=1))
+    by_id = {}
+    for d in detail:
+        if not d["explained"]:
+            by_id.setdefault(d["id"], set()).add(d["cell"].split(" / ")[0])
+    if by_id:
+        print("\nunexplained differences by id (id: states):")
+        for i, st in sorted(by_id.items(), key=lambda kv: (-len(kv[1]), kv[0])):
+            print(f"  #{i}: {', '.join(sorted(st))}")
     print(f"\nparity: {compared} cells compared, {diffs} unexplained differences, {accepted} explained, "
           f"{len(rep.failures)} cells failed, {len(rep.skips)} skip notes")
     if compared == 0:

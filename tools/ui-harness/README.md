@@ -81,7 +81,7 @@ Needs Python 3 with Playwright (`pip install playwright`; tested with 1.62) and 
 
 Output goes to `$UI_HARNESS_OUT` (default `${TMPDIR:-/tmp}/histv-ui-harness`), never into the repo.
 
-A `ref` is a git ref (`git archive <ref> src src-tauri/themes` into a scratch folder), `@worktree` (the working tree, uncommitted changes included; the default for `toggle` and `paint`) or `dir:PATH` (a folder holding `src/` and `src-tauri/themes/`).
+`--repo PATH` (before the command) resolves refs and `@worktree` in another repository or worktree, read-only, for example `run.sh --repo ../ui-style-toggle toggle @worktree`. A `ref` is a git ref (`git archive <ref> src src-tauri/themes` into a scratch folder), `@worktree` (the working tree, uncommitted changes included; the default for `toggle` and `paint`) or `dir:PATH` (a folder holding `src/` and `src-tauri/themes/`).
 
 Exit codes, the same for every command: `0` passed, `1` a difference or failed check, `2` nothing was compared or checked (a gate that compared nothing must not pass), `3` harness error (the mock was asked an unknown command or event, or the page threw).
 
@@ -120,7 +120,7 @@ Every other state is 1280 x 800. A state whose post-condition does not hold (mod
 
 `run.sh parity [--baseline e4d0ee2] [--candidate HEAD] [--baseline-style native] [--candidate-style classic] [--tol 1] [--states ...]`
 
-Renders the same cells on both refs and compares `x y w h`, `display` and `visibility` of every id, and ids present on one side only. Theme pairs: Default Dark with Classic Dark, Default Light with Classic Light, Nord, Jessica Dark (where the candidate lacks the `Classic` name the plain name is used, with a note).
+Renders the same cells on both refs and compares `x y w h`, `display` and `visibility` of every id, and ids present on one side only (the four ids the contract adds, `sel-ui-style`, `ui-style-css`, `doublet-tokens-css`, `doublet-components-css`, are left out). Theme pairs: Default Dark with Classic Dark, Default Light with Classic Light, Nord, Jessica Dark (where the candidate lacks the `Classic` name the plain name is used, with a note).
 
 Tolerance: 1 px per coordinate. It covers sub-pixel rounding and font hinting, which measured 0 px between two renders of the same ref (the first control below). Anything above is printed as `DIFF <state> / <theme>  #id  prop: baseline A  candidate B`.
 
@@ -148,7 +148,7 @@ A missing `data-ui-style` while the right sheets are active is reported as a `WA
 
 ## Negative controls
 
-`run.sh selftest` runs each command where it must fail and where it must pass and checks the exit code and a line of the output. `stubs.py` builds the failing trees: a copy of the front end at `5e73dad` (the last commit before the style toggle; the selftest also uses it as the tree with no style control) with a minimal implementation of the contract table (`#sel-ui-style`, `data-ui-style`, `#ui-style-css`, disabled Doublet sheets, `Classic Dark`/`Classic Light` themes, `css/app-classic.css` copied from `e4d0ee2`). Variants: `correct` (style applied in `<head>` from a cache), `leaky` (a live switch leaves the other style's custom properties on `<html>`), `late` (style applied only after `get_config`). They are controls for the harness, not a model of the real implementation.
+`run.sh selftest` runs each command where it must fail and where it must pass and checks the exit code and a line of the output. `stubs.py` builds the failing trees: a copy of the front end at `5e73dad` (the last commit before the style toggle; the selftest also uses it as the tree with no style control) with a minimal implementation of the contract table (`#sel-ui-style`, `data-ui-style`, `#ui-style-css` written with `document.write` in `<head>`, Doublet sheets with ids `doublet-tokens-css` and `doublet-components-css` disabled under classic, `Classic Dark`/`Classic Light` themes, `css/app-classic.css` copied from `e4d0ee2`). Variants: `correct` (style applied in `<head>` from a cache), `leaky` (a live switch leaves the other style's custom properties on `<html>`), `late` (style applied only after `get_config`). They are controls for the harness, not a model of the real implementation.
 
 Result on 2026-11-26 (11 of 11 behaved as expected):
 
@@ -179,6 +179,28 @@ The style control does not exist on HEAD yet.
 | `parity` | exit 2, 0 cells compared: HEAD has no classic style to compare. |
 | `toggle HEAD`, `paint HEAD` | exit 2, nothing to switch or persist. |
 
+### On the implementation (`feat/ui-style-toggle`, 8b97f78, working tree)
+
+Run with `--repo` pointing at that worktree.
+
+| Command | Result |
+|---|---|
+| `matrix @worktree` | 126 cells (2 styles x 7 themes x 9 states), 0 failed, 0 skips. |
+| `toggle @worktree` | exit 0: 84 switches (7 themes x 2 states x 6), 11172 element comparisons, 0 differences. |
+| `paint @worktree` | exit 0: classic and doublet persisted, first painted frame already correct with `get_config` delayed 300 ms. |
+| `parity --candidate @worktree` | exit 1: 36 cells, 652 unexplained differences on 49 ids after the four contract ids are set aside. Triage below. |
+
+Parity differences, by what they look like (not yet triaged against the wording pass; `parity-explained.json` is still empty):
+
+- Display changes, not sizes: `#row-rc-mode` is `flex` on `e4d0ee2` and `none` on the candidate in every state with the rail open, and `#rc-toggle` is `flex` against `inline-flex`. This is the rate-control row (`updateRcModeVisibility` in `app.js`); the fixtures list a hardware encoder first, so it may be a behaviour change since `e4d0ee2`, not a style difference. UNCERTAIN until someone reads the diff.
+- `#start-tooltip`: 134 x 28 at `e4d0ee2` in the `rows` state against 20 x 12 on the candidate.
+- Header row of the queue: `#queue-table` 8.8 px taller, `#queue-body` and `#select-all` shifted down by the same amount in 8 states.
+- `#sel-theme` 57 px higher in 8 states (the rail footer is a different height).
+- Text-sized elements in `drawer`, the two modals and the status strip (`#job-status`, `#job-file`, `#job-progress-text`, `#ow-yes`, `#ow-no`, `#ow-always`, `#overwrite-body`, `#fallback-body`, `#fb-yes`, `#fb-no`): small x shifts and widths, likely the new wording.
+- `narrow-800`: `#left-panel` and `#queue-container` 57 px lower, `#right-panel` 57 px taller.
+
+The full list is in the run's `parity/` report and `parity` prints it by id at the end.
+
 ## What the harness cannot cover
 
 - Real WebKitGTK (Linux) and WebView2 (Windows) engines. Everything here is Chromium 157: layout, font metrics, `color-mix`, `@property`, `backdrop-filter` and stylesheet-swap timing can differ in the real webviews. Spec item 6 stays open until someone looks at both.
@@ -189,7 +211,7 @@ The style control does not exist on HEAD yet.
 
 ## UNCERTAIN
 
-- **How the persisted style reaches the first frame.** The contract says the persisted style applies before first paint but not by what channel; the config is behind async IPC, so the app needs an early channel (an inline script reading a `localStorage` cache, or a value injected by Rust). `paint` covers a cache the app writes by itself (load 1 then load 2 in one browser context) and, through `--seed`, any channel that can be written as a script. A channel injected by the Tauri runtime before page scripts (such as an initialization script) cannot be reproduced without knowing its name. Smallest contract change: add a row to the table naming the channel, for example "`localStorage['histv.uiStyle']`, written on every change and on every `get_config`", and pass that to `--seed`.
+- **How the persisted style reaches the first frame.** The config is behind async IPC, so the app needs an early channel. The implementation on `feat/ui-style-toggle` uses `localStorage['histv-ui-style']`, read by `js/ui-style.js` in `<head>`, which writes `<link id="ui-style-css">` with `document.write`. `paint` covers any cache the app writes by itself (load 1 then load 2 in one browser context) and, through `--seed`, any channel that can be written as a script. A channel injected by the Tauri runtime before page scripts cannot be reproduced without knowing its name. The contract does not name the channel; `paint` does not need it for a `localStorage` cache.
 - **Frame sampling is not pixels.** A `requestAnimationFrame` callback runs immediately before the frame it belongs to is painted, which is why `paint` treats its sample as what the frame shows; the harness does not read pixels to confirm it. If the paint-timing entry is missing the first frame with a `<body>` is used and the run says so.
 - **Parity depends on identical wording-sized text.** Where the plain-language copy changes the width of a button or label the box changes; those are the differences `parity-explained.json` is for. Until the toggle exists, how many of them there are is not known.
 - **Theme names for the parity pairs.** `Classic Dark` and `Classic Light` are assumed to be the exact names (spec decision 3); a different spelling skips the pair with a note rather than failing.

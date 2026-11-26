@@ -59,8 +59,8 @@ EARLY_HEAD = r"""<script>
   try { s = localStorage.getItem('histv.uiStyle') === 'classic' ? 'classic' : 'doublet'; } catch (e) {}
   document.documentElement.dataset.uiStyle = s;
   var d = s === 'classic' ? ' disabled' : '';
-  document.write('<link rel="stylesheet" href="css/doublet-tokens.css"' + d + '>' +
-    '<link rel="stylesheet" href="css/doublet-components.css"' + d + '>' +
+  document.write('<link rel="stylesheet" id="doublet-tokens-css" href="css/doublet-tokens.css"' + d + '>' +
+    '<link rel="stylesheet" id="doublet-components-css" href="css/doublet-components.css"' + d + '>' +
     '<link id="ui-style-css" rel="stylesheet" href="css/' + (s === 'classic' ? 'app-classic.css' : 'app.css') + '">');
 })();
 </script>"""
