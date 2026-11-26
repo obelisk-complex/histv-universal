@@ -105,22 +105,27 @@ All reached through the app's own controls or backend events, on a queue filled 
 | `rows` | files added, a batch started, row 2 mid-encode at 41.7% with ETA |
 | `drawer` | `rows` plus "Advanced settings" opened |
 | `rail-collapsed` | `rows` plus the splitter toggle; the rail must have shrunk |
+| `rail-min`, `rail-max` | `rows` with `--rail-w` on `#main-area` set to `1px` / `2000px`, so the CSS `min-width` / `max-width` of `#right-panel` decide its width; the rail must measure exactly that limit |
 | `narrow-800` | `rows` at 800 x 900 (the column-mode breakpoint is 820) |
 | `modal-overwrite`, `modal-fallback` | `rows` plus the `overwrite-prompt` / `fallback-prompt` event |
 | `modal-preflight` | files added (no batch), `preflight_check` answers two warnings, Start clicked |
 | `log` | `rows`, six log lines of each class, log panel opened |
 
-Every other state is 1280 x 800. A state whose post-condition does not hold (modal not visible, rail not shrunk, ...) is a failed cell. Transitions and animations are given zero duration from the first line of the page, so geometry and computed styles are read at their end state.
+Every other state is 1280 x 800. `--rail-w` is used instead of a drag because it is the one route both refs share: the drag at `e4d0ee2` leaves the rail at 312 px (measured), and the current front end's drag clamps through the same CSS limits. A state whose post-condition does not hold (modal not visible, rail not shrunk, ...) is a failed cell. Transitions and animations are given zero duration from the first line of the page, so geometry and computed styles are read at their end state.
 
 ## matrix
 
-`run.sh matrix <ref> [--styles ...] [--themes ...] [--states ...]` writes, per cell, `matrix/<ref>/<style>/<theme>/<state>.png` and `.json` under the output folder, plus `summary.json`. The JSON holds, for every element with an id, `x y w h` (2 decimals), computed `display` and `visibility`, and the active style sheets. Full matrix: 2 styles x 7 themes x 9 states = 126 cells.
+`run.sh matrix <ref> [--styles ...] [--themes ...] [--states ...]` writes, per cell, `matrix/<ref>/<style>/<theme>/<state>.png` and `.json` under the output folder, plus `summary.json`. The JSON holds, for every element with an id, `x y w h` (2 decimals), computed `display` and `visibility`, the computed `color`, `background-color`, `border-top-color`, `border-bottom-color` and `box-shadow`, and the active style sheets. The pointer is parked in the corner and focus dropped before reading, so hover and focus colours do not depend on where a state's last click landed. Full matrix: 2 styles x 7 themes x 11 states = 154 cells. Besides every id, the dump has `queue-row-N` and `queue-row-N-status` (the row and its status badge, which have no ids).
 
 ## parity
 
-`run.sh parity [--baseline e4d0ee2] [--candidate HEAD] [--baseline-style native] [--candidate-style classic] [--tol 1] [--states ...]`
+`run.sh parity [--baseline e4d0ee2] [--candidate HEAD] [--baseline-style native] [--candidate-style classic] [--tol 1] [--colour-tol 2] [--map OLD=NEW ...] [--states ...]`
 
-Renders the same cells on both refs and compares `x y w h`, `display` and `visibility` of every id, and ids present on one side only (the four ids the contract adds, `sel-ui-style`, `ui-style-css`, `doublet-tokens-css`, `doublet-components-css`, are left out). Theme pairs: Default Dark with Classic Dark, Default Light with Classic Light, Nord, Jessica Dark (where the candidate lacks the `Classic` name the plain name is used, with a note).
+Renders the same cells on both refs and compares `x y w h`, `display` and `visibility` of every id, and ids present on one side only (the four ids the contract adds, `sel-ui-style`, `ui-style-css`, `doublet-tokens-css`, `doublet-components-css`, are left out). Geometry is compared on every theme: Default Dark, Default Light, Nord, Jessica Dark (Creditor and the Classic themes do not exist on `e4d0ee2`).
+
+**Colours are compared on mapped theme pairs only**, by default `Default Dark = Classic Dark` and `Default Light = Classic Light` (spec decision 3: the implementer built the Classic themes from the old values). Nord and Jessica Dark changed palette on purpose since 2.6.0, so they get geometry checks and no colour checks. `--map OLD=NEW` (repeatable) replaces the defaults; a mapped pair whose new name is missing from the candidate falls back to geometry only, with a note. Colours are also skipped unless both sides render the same style, and for elements `display: none` on either side. The run line says how many cells had colour checks.
+
+Colour tolerance: 2 per channel (0-255) and 0.02 alpha; lengths inside a `box-shadow` use the geometry tolerance. Measured same-ref noise: 0 (two renders of `e4d0ee2`, 18 colour cells, tolerance 0), so the 2 only absorbs rounding in derived colours. Computed strings are compared token by token: colour tokens by channel, `px` tokens by length, anything else (`none`, `inset`) exactly. Coverage limit: only ids and the queue rows and status badges are read; hover, focus and pressed colours, and un-id'd elements such as modal buttons' inner spans, are not.
 
 Tolerance: 1 px per coordinate. It covers sub-pixel rounding and font hinting, which measured 0 px between two renders of the same ref (the first control below). Anything above is printed as `DIFF <state> / <theme>  #id  prop: baseline A  candidate B`.
 
@@ -150,7 +155,7 @@ A missing `data-ui-style` while the right sheets are active is reported as a `WA
 
 `run.sh selftest` runs each command where it must fail and where it must pass and checks the exit code and a line of the output. `stubs.py` builds the failing trees: a copy of HEAD's front end with a minimal implementation of the contract table (`#sel-ui-style`, `data-ui-style`, `#ui-style-css` written with `document.write` in `<head>`, Doublet sheets with ids `doublet-tokens-css` and `doublet-components-css` disabled under classic, `Classic Dark`/`Classic Light` themes, `css/app-classic.css` copied from `e4d0ee2`). Variants: `correct` (style applied in `<head>` from a cache), `leaky` (a live switch leaves the other style's custom properties on `<html>`), `late` (style applied only after `get_config`). They are controls for the harness, not a model of the real implementation.
 
-Result on 2026-11-26 (11 of 11 behaved as expected):
+Result on 2026-11-26 (11 of 11 behaved as expected; the 5 candidate-mutation controls below are in the next table):
 
 | Command | Control | Expected | Got |
 |---|---|---|---|
@@ -165,6 +170,18 @@ Result on 2026-11-26 (11 of 11 behaved as expected):
 | paint | `correct` stub | exit 0 | exit 0 |
 | paint | `late` stub | exit 1 | exit 1, 19 painted frames in doublet until 324 ms |
 | paint | HEAD, no control | exit 2 | exit 2 |
+
+`run.sh selftest --candidate-repo PATH` adds controls that copy the candidate's front end (the `@worktree` of that repo) into the output folder, change one thing in `css/app-classic.css`, and run `parity` classic against classic on the states `rows`, `rail-min`, `rail-max` with identity theme maps. The edit must change the file or the control aborts. Without `--candidate-repo` these are skipped and `selftest` exits 2.
+
+| Mutation | Expected | Got (2026-11-26, candidate ec3fc9e) |
+|---|---|---|
+| none (unmutated copy) | exit 0, colour checks ran | exit 0 |
+| `#btn-add-files { background-color: #ff00ff !important }` | exit 1, names the element | exit 1: `#btn-add-files background-color: baseline rgba(55, 55, 55, 0.5) candidate rgb(255, 0, 255)` |
+| `#btn-start { box-shadow: 0 0 0 3px #ff0000 !important }` | exit 1 | exit 1: `#btn-start box-shadow: baseline none candidate rgb(255, 0, 0) 0px 0px 0px 3px` |
+| rail `min-width` 258px to 300px | exit 1 | exit 1: `#right-panel w` 258 against 300 in `rail-min` |
+| rail `max-width` 460px to 400px | exit 1 | exit 1: `#right-panel w` 460 against 400 in `rail-max` |
+
+All 16 controls behaved as expected. The `rail-min` and `rail-max` mutations were not caught before the two rail states existed.
 
 Two controls found harness bugs while they were built and are the reason for the current design: a first toggle run reported 187 colour differences between a switched and a fresh page because transitions started before the zero-duration rule was installed (it is now installed before page scripts run), and a first paint run flagged a missing `data-ui-style` on a page whose style sheets were correct (now a warning).
 
@@ -188,7 +205,9 @@ Run with `--repo` pointing at that worktree.
 | `matrix @worktree` | 126 cells (2 styles x 7 themes x 9 states), 0 failed, 0 skips. |
 | `toggle @worktree` | exit 0: 84 switches (7 themes x 2 states x 6), 11172 element comparisons, 0 differences. |
 | `paint @worktree` | exit 0: classic and doublet persisted, first painted frame already correct with `get_config` delayed 300 ms. |
-| `parity --candidate @worktree` | exit 1: 36 cells, 652 unexplained differences on 49 ids after the four contract ids are set aside. Triage below. |
+| `parity --candidate @worktree` | exit 1: 44 cells (22 with colour checks), 1260 unexplained differences, all geometry (see colours below). The count rose from 652 because rail-min, rail-max and the queue rows and status badges are now compared. |
+
+Colour result (ec3fc9e): 0 colour differences in the 22 colour-checked cells (Default Dark = Classic Dark and Default Light = Classic Light, 11 states each). Not vacuous: in `rows`, 109 visible ids shared by `e4d0ee2` and the candidate's Classic Dark have identical `color`, `background-color`, border colours and `box-shadow`, and the same check catches the mutations above. Rail extremes: `#right-panel` measures 258 px at `rail-min` and 460 px at `rail-max` on both sides; the differences in those states are the same families as below, none on the rail.
 
 Parity differences, by what they look like (not yet triaged against the wording pass; `parity-explained.json` is still empty):
 
