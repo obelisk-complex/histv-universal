@@ -500,5 +500,359 @@
     "props": [
       "h"
     ]
+  },
+  {
+    "id": "chk-auto-clear",
+    "reason": "Follows from the hidden quality-mode row (422292f, accepted) less the two-line encoder summary (0e7ebec): drawer rows below move up 24px.",
+    "states": [
+      "drawer"
+    ],
+    "props": [
+      "y"
+    ]
+  },
+  {
+    "id": "chk-compat",
+    "reason": "Follows from the hidden quality-mode row (422292f, accepted) less the two-line encoder summary (0e7ebec): drawer rows below move up 24px.",
+    "states": [
+      "drawer"
+    ],
+    "props": [
+      "y"
+    ]
+  },
+  {
+    "id": "chk-delete-source",
+    "reason": "Follows from the hidden quality-mode row (422292f, accepted) less the two-line encoder summary (0e7ebec): drawer rows below move up 24px.",
+    "states": [
+      "drawer"
+    ],
+    "props": [
+      "y"
+    ]
+  },
+  {
+    "id": "chk-force-local",
+    "reason": "Follows from the hidden quality-mode row (422292f, accepted) less the two-line encoder summary (0e7ebec): drawer rows below move up 24px.",
+    "states": [
+      "drawer"
+    ],
+    "props": [
+      "y"
+    ]
+  },
+  {
+    "id": "chk-hdr",
+    "reason": "Follows from the hidden quality-mode row (422292f, accepted) less the two-line encoder summary (0e7ebec): drawer rows below move up 24px.",
+    "states": [
+      "drawer"
+    ],
+    "props": [
+      "y"
+    ]
+  },
+  {
+    "id": "chk-low-priority",
+    "reason": "Follows from the hidden quality-mode row (422292f, accepted) less the two-line encoder summary (0e7ebec): drawer rows below move up 24px.",
+    "states": [
+      "drawer"
+    ],
+    "props": [
+      "y"
+    ]
+  },
+  {
+    "id": "chk-overwrite",
+    "reason": "Follows from the hidden quality-mode row (422292f, accepted) less the two-line encoder summary (0e7ebec): drawer rows below move up 24px.",
+    "states": [
+      "drawer"
+    ],
+    "props": [
+      "y"
+    ]
+  },
+  {
+    "id": "chk-precision",
+    "reason": "Follows from the hidden quality-mode row (422292f, accepted) less the two-line encoder summary (0e7ebec): drawer rows below move up 24px.",
+    "states": [
+      "drawer"
+    ],
+    "props": [
+      "y"
+    ]
+  },
+  {
+    "id": "chk-preserve-av1",
+    "reason": "Follows from the hidden quality-mode row (422292f, accepted) less the two-line encoder summary (0e7ebec): drawer rows below move up 24px.",
+    "states": [
+      "drawer"
+    ],
+    "props": [
+      "y"
+    ]
+  },
+  {
+    "id": "chk-save-log",
+    "reason": "Follows from the hidden quality-mode row (422292f, accepted) less the two-line encoder summary (0e7ebec): drawer rows below move up 24px.",
+    "states": [
+      "drawer"
+    ],
+    "props": [
+      "y"
+    ]
+  },
+  {
+    "id": "chk-toast",
+    "reason": "Follows from the hidden quality-mode row (422292f, accepted) less the two-line encoder summary (0e7ebec): drawer rows below move up 24px.",
+    "states": [
+      "drawer"
+    ],
+    "props": [
+      "y"
+    ]
+  },
+  {
+    "id": "encoder-summary",
+    "reason": "Behaviour (422292f, 0e7ebec, accepted): the encoder summary lists one encoder per codec in the queue and wraps to two lines; rows below move down.",
+    "states": [
+      "drawer"
+    ],
+    "props": [
+      "h"
+    ]
+  },
+  {
+    "id": "lbl-qp",
+    "reason": "Follows from the hidden quality-mode row (422292f, accepted) less the two-line encoder summary (0e7ebec): drawer rows below move up 24px.",
+    "states": [
+      "drawer"
+    ],
+    "props": [
+      "y"
+    ]
+  },
+  {
+    "id": "num-bitrate",
+    "reason": "Behaviour (422292f, 0e7ebec, accepted): the encoder summary lists one encoder per codec in the queue and wraps to two lines; rows below move down.",
+    "states": [
+      "drawer"
+    ],
+    "props": [
+      "y"
+    ]
+  },
+  {
+    "id": "num-qp-i",
+    "reason": "Follows from the hidden quality-mode row (422292f, accepted) less the two-line encoder summary (0e7ebec): drawer rows below move up 24px.",
+    "states": [
+      "drawer"
+    ],
+    "props": [
+      "y"
+    ]
+  },
+  {
+    "id": "num-qp-p",
+    "reason": "Follows from the hidden quality-mode row (422292f, accepted) less the two-line encoder summary (0e7ebec): drawer rows below move up 24px.",
+    "states": [
+      "drawer"
+    ],
+    "props": [
+      "y"
+    ]
+  },
+  {
+    "id": "num-threads",
+    "reason": "Follows from the hidden quality-mode row (422292f, accepted) less the two-line encoder summary (0e7ebec): drawer rows below move up 24px.",
+    "states": [
+      "drawer"
+    ],
+    "props": [
+      "y"
+    ]
+  },
+  {
+    "id": "peak-toggle",
+    "reason": "Behaviour (93455bb, accepted): the 4x VBR peak button widens the peak toggle.",
+    "states": [
+      "drawer"
+    ],
+    "props": [
+      "w"
+    ]
+  },
+  {
+    "id": "peak-toggle",
+    "reason": "Behaviour (422292f, 0e7ebec, accepted): the encoder summary lists one encoder per codec in the queue and wraps to two lines; rows below move down.",
+    "states": [
+      "drawer"
+    ],
+    "props": [
+      "y"
+    ]
+  },
+  {
+    "id": "radio-output-mode",
+    "reason": "Follows from the hidden quality-mode row (422292f, accepted) less the two-line encoder summary (0e7ebec): drawer rows below move up 24px.",
+    "states": [
+      "drawer"
+    ],
+    "props": [
+      "y"
+    ]
+  },
+  {
+    "id": "rc-toggle",
+    "reason": "Behaviour (422292f, accepted): refreshEncoderDisplay re-checks the quality-mode row when files are added and hides it, as every fixture encoder is hardware; 2.6.0 never re-checked.",
+    "states": [
+      "drawer",
+      "log",
+      "modal-fallback",
+      "modal-overwrite",
+      "modal-preflight",
+      "narrow-800",
+      "rail-collapsed",
+      "rows"
+    ],
+    "props": [
+      "display"
+    ]
+  },
+  {
+    "id": "rc-toggle",
+    "reason": "Behaviour (422292f, accepted): refreshEncoderDisplay re-checks the quality-mode row when files are added and hides it, as every fixture encoder is hardware; 2.6.0 never re-checked.",
+    "states": [
+      "drawer"
+    ],
+    "props": [
+      "h"
+    ]
+  },
+  {
+    "id": "rc-toggle",
+    "reason": "Behaviour (422292f, accepted): refreshEncoderDisplay re-checks the quality-mode row when files are added and hides it, as every fixture encoder is hardware; 2.6.0 never re-checked.",
+    "states": [
+      "drawer"
+    ],
+    "props": [
+      "w"
+    ]
+  },
+  {
+    "id": "rc-toggle",
+    "reason": "Behaviour (422292f, accepted): refreshEncoderDisplay re-checks the quality-mode row when files are added and hides it, as every fixture encoder is hardware; 2.6.0 never re-checked.",
+    "states": [
+      "drawer"
+    ],
+    "props": [
+      "x"
+    ]
+  },
+  {
+    "id": "rc-toggle",
+    "reason": "Behaviour (422292f, accepted): refreshEncoderDisplay re-checks the quality-mode row when files are added and hides it, as every fixture encoder is hardware; 2.6.0 never re-checked.",
+    "states": [
+      "drawer"
+    ],
+    "props": [
+      "y"
+    ]
+  },
+  {
+    "id": "row-qp",
+    "reason": "Follows from the hidden quality-mode row (422292f, accepted) less the two-line encoder summary (0e7ebec): drawer rows below move up 24px.",
+    "states": [
+      "drawer"
+    ],
+    "props": [
+      "y"
+    ]
+  },
+  {
+    "id": "row-rc-mode",
+    "reason": "Behaviour (422292f, accepted): refreshEncoderDisplay re-checks the quality-mode row when files are added and hides it, as every fixture encoder is hardware; 2.6.0 never re-checked.",
+    "states": [
+      "drawer",
+      "log",
+      "modal-fallback",
+      "modal-overwrite",
+      "modal-preflight",
+      "narrow-800",
+      "rail-collapsed",
+      "rows"
+    ],
+    "props": [
+      "display"
+    ]
+  },
+  {
+    "id": "row-rc-mode",
+    "reason": "Behaviour (422292f, accepted): refreshEncoderDisplay re-checks the quality-mode row when files are added and hides it, as every fixture encoder is hardware; 2.6.0 never re-checked.",
+    "states": [
+      "drawer"
+    ],
+    "props": [
+      "h"
+    ]
+  },
+  {
+    "id": "row-rc-mode",
+    "reason": "Behaviour (422292f, accepted): refreshEncoderDisplay re-checks the quality-mode row when files are added and hides it, as every fixture encoder is hardware; 2.6.0 never re-checked.",
+    "states": [
+      "drawer"
+    ],
+    "props": [
+      "w"
+    ]
+  },
+  {
+    "id": "row-rc-mode",
+    "reason": "Behaviour (422292f, accepted): refreshEncoderDisplay re-checks the quality-mode row when files are added and hides it, as every fixture encoder is hardware; 2.6.0 never re-checked.",
+    "states": [
+      "drawer"
+    ],
+    "props": [
+      "x"
+    ]
+  },
+  {
+    "id": "row-rc-mode",
+    "reason": "Behaviour (422292f, accepted): refreshEncoderDisplay re-checks the quality-mode row when files are added and hides it, as every fixture encoder is hardware; 2.6.0 never re-checked.",
+    "states": [
+      "drawer"
+    ],
+    "props": [
+      "y"
+    ]
+  },
+  {
+    "id": "sel-post-action",
+    "reason": "Follows from the hidden quality-mode row (422292f, accepted) less the two-line encoder summary (0e7ebec): drawer rows below move up 24px.",
+    "states": [
+      "drawer"
+    ],
+    "props": [
+      "y"
+    ]
+  },
+  {
+    "id": "settings-panel",
+    "reason": "Follows from the hidden quality-mode row (422292f, accepted) less the two-line encoder summary (0e7ebec): drawer rows below move up 24px.",
+    "states": [
+      "drawer"
+    ],
+    "props": [
+      "h"
+    ]
+  },
+  {
+    "id": "splitter-toggle",
+    "reason": "Behaviour (38aa6ec, accepted): the collapsed splitter toggle sits inside the window instead of half off it.",
+    "states": [
+      "rail-collapsed"
+    ],
+    "props": [
+      "x"
+    ]
   }
 ]
