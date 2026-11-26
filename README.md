@@ -2,6 +2,8 @@
 
 [![Quillx](https://raw.githubusercontent.com/qainsights/quillx/main/badges/quillx-4.svg)](https://github.com/qainsights/quillx) Architecture, integration decisions, and review are mine. Claude generated the implementation under close direction. Output reviewed line by line (but that doesn't mean I caught everything).
 
+> **Branch status.** This is `3.0.0-dev`, the long-lived integration branch for HISTV 3.0. `main` stays on the stable 2.x line. 3.0 is promoted to `main` only as an official release, after extensive testing on Linux and at least some testing on Windows and macOS. Stable builds are on the [Releases page](https://github.com/obelisk-complex/histv-universal/releases); this branch is built from source (see "Building from source" under Download).
+
 A cross-platform batch video encoder that shrinks your video files to a target quality level. No need to babysit the queue or tweak settings per file - just pick a target bitrate, add your files, and hit start.
 
 Available as a desktop app and a headless CLI for servers (see [CLI-README.md](CLI-README.md)) The CLI can be used with Sonarr/Radarr via Custom Script; please see the [Sonarr-Radarr Guide](Sonarr-Radarr-Integration.md) for details. Both GUI and CLI use the same encoding engine for compatibility and maintainability. Portable binaries are on the GitHub [Releases page](https://github.com/obelisk-complex/histv-universal/releases).
@@ -31,6 +33,22 @@ Available as a desktop app and a headless CLI for servers (see [CLI-README.md](C
 
 </details>
 
+## What is new in 3.0.0-dev
+
+Changes on this branch that the 2.x line on `main` does not have.
+
+- **More GPUs can encode.** Vulkan encoders (HEVC and H.264, on Linux and Windows) and Direct3D 12 encoders (Windows) are used when the vendor encoders (VAAPI, NVENC, QSV, AMF) are not available. Each is checked with a test encode at start-up. On Linux machines with two GPUs, HISTV uses the lowest render node, and the Intel one for QSV.
+- **The CLI uses your GPU too.** Auto mode now picks the same hardware encoder as the GUI, per file and per codec family. It used to stay on software.
+- **Dolby Vision needs fewer extra tools.** ffmpeg writes the Dolby Vision data itself for profile 5 and 8 sources, so audio of any codec, subtitles and MKV output all survive, and MP4Box is only needed for profile 7 or when a hardware encoder is kept. Profile 5 stays profile 5 on that route. A profile 7 source is now written as profile 8.1, because the output has no enhancement layer. See [Dolby Vision and HDR10+](#dolby-vision-and-hdr10).
+- **HDR10+ is found and kept.** HDR10+ sources are detected from the first frame, libx265 writes the dynamic metadata itself, and hardware HEVC encoders get it injected afterwards. Where it cannot be kept, the pre-flight check and the CLI dry run say so before you start, and the log says why.
+- **Every source frame is kept.** Video re-encodes no longer duplicate or drop frames, so Dolby Vision and HDR10+ metadata stays lined up with its pictures.
+- **Ubuntu's ffmpeg 6.1 works with `hevc_vaapi`,** and HEVC from VAAPI now has the right frame size instead of coming out padded or a few rows short.
+- **Animated GIF, APNG and WebP work with a forced hardware encoder.** APNG files now report their duration, which they previously failed to.
+- **ffmpeg is HISTV's own build.** The `-full` builds and the Flatpak bundle ffmpeg n8.1.3 (release `ffmpeg-n8.1.3-histv.2`), and the in-app downloader fetches it first and checks its SHA-256.
+- **The encoder summary matches what will happen.** It follows each file's codec family, so H.264 sources show H.264 and a mixed queue lists every encoder in use.
+- **Start-up log lines reach the log panel,** including the encoder detection results, which the panel used to miss.
+- **The CLI no longer panics on non-ASCII file names** in the dry-run table and the live display.
+
 ## Features
 
 <details>
@@ -39,7 +57,7 @@ Available as a desktop app and a headless CLI for servers (see [CLI-README.md](C
 - **Queue management** - drag-and-drop, clipboard paste (Ctrl+V), file/folder picker. Click, Shift+click, Ctrl+click, Ctrl+A, Delete. Right-click context menu (also Shift+F10 for keyboard users). Drag to reorder.
 - **GIF/APNG/WebP support** - animated GIFs, APNGs, and WebPs are converted to proper video files automatically.
 - **Per-file codec resolution** - the app decides the codec, container, and audio handling for each file individually based on its source properties. H.264 stays H.264, HEVC stays HEVC, and everything else converts to HEVC. No manual codec selection needed.
-- **AV1 support** - first-class AV1 encoding via libsvtav1 and hardware AV1 encoders (AMF, NVENC, QSV, VideoToolbox, VAAPI). Enable Preserve AV1 to keep AV1 sources as AV1 instead of converting to HEVC.
+- **AV1 support** - first-class AV1 encoding via libsvtav1 and hardware AV1 encoders (AMF, NVENC, QSV, D3D12, VideoToolbox, VAAPI). Enable Preserve AV1 to keep AV1 sources as AV1 instead of converting to HEVC.
 - **Compatibility Mode** - one checkbox to force H.264/MP4/AAC output for maximum device compatibility.
 - **Smart decisions** - the app figures out what to do with each file before you start. Files that are already small enough get copied untouched. Files that are too big get shrunk. The queue shows the plan in real time as you change settings.
 - **GPU encoding** - tests your GPU at startup and picks the fastest working encoder for each codec family (HEVC, H.264, AV1). Falls back to software automatically if the GPU encoder fails mid-file.
@@ -47,8 +65,8 @@ Available as a desktop app and a headless CLI for servers (see [CLI-README.md](C
 - **Precision mode** - one checkbox for the best possible quality. Uses software encoding with smart analysis that adapts to your system's RAM. Tests a few short clips first to make sure it won't make the file bigger. Slower, but produces the smallest file that still looks great.
 - **VBR peak ceiling** - controls how much the bitrate can spike on action-heavy scenes (1.5x to 4x). Higher values look better on complex content.
 - **Audio handling** - each audio track is handled separately. Tracks already below 640kbps are copied as-is. Tracks above the cap are re-encoded to the same codec at the cap. Codecs with no ffmpeg encoder (DTS, TrueHD) fall back to EAC3. Compatibility Mode forces AAC.
-- **HDR support** - HDR videos are detected automatically and encoded in 10-bit. Dolby Vision and HDR10+ dynamic metadata are preserved automatically when tools are available (the app downloads MP4Box if needed for DV packaging). When preservation isn't possible, the app falls back gracefully to HDR10 and tells you why. Untick the HDR checkbox to convert HDR to SDR with industry-standard tonemapping so colours look right on a normal screen.
-- **Pre-flight checks** - before encoding starts, the app scans your queue and warns you if any files won't get their best-possible encode (e.g. DV files without MP4Box). Offers to download missing tools, encode anyway, or cancel.
+- **HDR support** - HDR videos are detected automatically and encoded in 10-bit. Dolby Vision and HDR10+ dynamic metadata are preserved automatically when the encoder and ffmpeg allow it (the app downloads MP4Box if needed for DV packaging). When preservation isn't possible, the app falls back gracefully to HDR10 and tells you why. Untick the HDR checkbox to convert HDR to SDR with industry-standard tonemapping so colours look right on a normal screen.
+- **Pre-flight checks** - before encoding starts, the app scans your queue and warns you if any files won't get their best-possible encode (e.g. DV profile 7 files without MP4Box, or HDR10+ files whose encoder can't keep the metadata). Offers to download missing tools, encode anyway, or cancel.
 - **Subtitles** - all subtitle tracks are kept.
 - **Output options** - save to a folder, next to the source file, or replace the source. Container is preserved per-file (MKV stays MKV, MP4 stays MP4, MOV stays MOV; other formats default to MKV).
 - **Queue columns** - source file size, estimated compressed size, resolution, HDR type badge (DV8, HDR10+, HDR10, HLG, SDR), source and target bitrates, and resizable column headers.
@@ -65,8 +83,8 @@ Available as a desktop app and a headless CLI for servers (see [CLI-README.md](C
 - **Notifications** - system notification when the batch finishes.
 - **Auto-clear** - optionally clears finished items from the queue.
 - **Flatpak support** - available as a Flatpak bundle for Linux with host filesystem access so ffmpeg subprocesses can reach your files directly.
-- **Themes** - six built-in themes (dark, light, and four community-inspired palettes). Create your own with just 6 colour values - the app derives everything else automatically. See [THEMES.md](THEMES.md).
-- **ffmpeg downloader** - offers to download ffmpeg for you if it's not installed. It fetches HISTV's own ffmpeg build first and checks it against a pinned SHA-256 before using it. If that download fails, it falls back to third-party static builds, which are not checksum-verified.
+- **Themes** - twelve built-in themes: four Doublet pairings (Doublet, Doublet Dusk, Doublet Ember, Doublet Filigree), Default Dark, Default Light, and six more palettes (Jessica Dark, Solarised Dark, Nord, Vempire, Creditor, Monokai). Create your own with just 6 colour values - the app derives everything else automatically. See [THEMES.md](THEMES.md).
+- **ffmpeg downloader** - offers to download ffmpeg for you if it's not installed. It fetches HISTV's own ffmpeg build first and checks it against a pinned SHA-256 before using it. If that download fails, it falls back to third-party static builds, which are not checksum-verified. A downloaded copy is used ahead of an ffmpeg in a system folder such as `/usr/bin`.
 - **Remembers settings** - everything is saved to config.json in the same folder as the .exe, and restored on next launch.
 - **CLI version** - same engine as a command-line tool for servers and scripts. Shows a persistent queue table during encoding matching the GUI's columns. See [CLI-README.md](CLI-README.md).
 
@@ -131,11 +149,13 @@ If you use a standard build, ffmpeg is required. The GUI offers to download it o
 
 | OS | Architecture | GPU encoders |
 |----|-------------|-------------|
-| Windows | x86_64 | AMF, NVENC, QSV |
-| Linux | x86_64 | VAAPI, NVENC, QSV |
+| Windows | x86_64 | AMF, NVENC, QSV, D3D12, Vulkan |
+| Linux | x86_64 | VAAPI, NVENC, QSV, Vulkan |
 | macOS | x86_64 / ARM64 | VideoToolbox |
 
-Hardware encoder detection covers HEVC, H.264, and AV1 codec families on all platforms. Each encoder is verified with a test encode at startup.
+Hardware encoder detection covers HEVC, H.264, and AV1 codec families on all platforms, except Vulkan, which is used for HEVC and H.264 only. Encoders are tried in the order shown, and each is verified with a test encode at startup.
+
+HISTV looks for ffmpeg beside the app first, then in the folder its own downloader uses, then in common install folders (Homebrew, Chocolatey, snap and similar) and on your PATH. A system folder such as `/usr/bin` beside a packaged HISTV does not count as "beside the app", so a downloaded ffmpeg wins over the system one.
 
 <details>
 <summary><strong>Building from source</strong></summary>
@@ -182,14 +202,23 @@ If an encode makes the file meaningfully bigger than it was (accounting for cont
 
 ### Dolby Vision and HDR10+
 
-When "Preserve HDR" is ticked, the app automatically detects Dolby Vision and HDR10+ content and preserves the dynamic metadata through re-encoding. No extra settings needed — the app picks the best path for each file:
+When "Preserve HDR" is ticked, the app detects Dolby Vision and HDR10+ content and keeps the dynamic metadata through re-encoding. No extra settings needed: the app picks the route for each file from the encoder that will run, your ffmpeg and the tools it finds.
 
-| Source | Tools needed | Result |
-|--------|-------------|--------|
-| Dolby Vision (any profile) | MP4Box | Full DV preservation. Output forced to MP4. |
-| HDR10+ | None | Full dynamic metadata preservation. |
-| DV without tools | None | Falls back to HDR10 base layer. |
-| HDR10 / HLG | None | Preserved as-is (existing behaviour). |
+| Source | Encoder | Tools needed | Result |
+|--------|---------|--------------|--------|
+| Dolby Vision profile 5 or 8 | libx265 (software HEVC) | An ffmpeg with native Dolby Vision coding (HISTV's own build has it) | ffmpeg writes the Dolby Vision data itself. Audio, subtitles and the MKV container are kept. Profile 5 stays profile 5. HDR10+ is kept too if the source has both. |
+| Dolby Vision profile 8 or 10, AV1 output | libsvtav1 | Native Dolby Vision coding in ffmpeg | Same as above, in AV1. |
+| Dolby Vision profile 5, 7 or 8 | A hardware HEVC encoder | MP4Box | The hardware encoder is kept and the output is MP4. Profile 5 and 7 are written as profile 8.1. HDR10+ is not kept. Without MP4Box, profile 5 and 8 switch to libx265 as above. |
+| Dolby Vision profile 7, or profile 5 or 8 with an ffmpeg that lacks native coding | Any | MP4Box | Output is MP4. Profile 5 and 7 are written as profile 8.1. Without MP4Box it falls back to the HDR10 base layer. |
+| HDR10+ | libx265 | An ffmpeg whose libx265 can write HDR10+ (HISTV's own build can) | libx265 writes the dynamic metadata. |
+| HDR10+ | A hardware HEVC encoder | None | The metadata is injected after encoding, and B-frames are turned off for that encode. |
+| HDR10+ | `hevc_vaapi` with ffmpeg older than 7 | None | Static HDR10 only: that ffmpeg's demuxer mis-orders the stream's parameter sets. |
+| HDR10+ | H.264 or AV1 output | None | Static HDR10 only: HDR10+ is kept in HEVC output only. |
+| HDR10 / HLG | Any | None | Preserved as-is. |
+
+On Linux, a VAAPI encoder is replaced by libx265 for Dolby Vision because AMD 10-bit VAAPI HEVC produced visible artefacts. Setting `HISTV_ALLOW_VAAPI_DV=1` keeps VAAPI for testing the MP4Box route.
+
+When HDR10+ cannot be kept, the log says "Static HDR10 only" with the reason, and the pre-flight check (GUI) and dry run (CLI) warn before encoding starts. If a hardware encode fails and the software fallback runs, the route is decided again for libx265.
 
 All bitstream processing uses streaming I/O so memory usage stays bounded regardless of file size. If a DV/HDR10+ pipeline step fails, the app falls back to the next best option and logs why.
 
@@ -226,17 +255,27 @@ People with a pile of video files at different sizes and formats who want to shr
 ```
 ├── src/                        # Frontend (HTML + CSS + JS)
 │   ├── index.html
-│   ├── js/app.js
-│   └── css/app.css
+│   ├── js/
+│   │   ├── app.js
+│   │   ├── lib.js              # Pure helpers shared with app.js
+│   │   └── lib.test.js         # Unit tests for lib.js
+│   └── css/
+│       ├── app.css
+│       ├── doublet-tokens.css  # Vendored Doublet design tokens
+│       └── doublet-components.css  # Vendored Doublet components
 ├── src-tauri/
 │   ├── Cargo.toml
 │   ├── tauri.conf.json
 │   ├── build.rs
+│   ├── capabilities/           # Tauri permissions
+│   ├── icons/
+│   ├── themes/                 # Built-in theme JSON files (8)
+│   ├── tests/                  # Integration tests and fixtures
 │   └── src/
 │       ├── main.rs             # GUI entry point
 │       ├── cli_main.rs         # CLI entry point
 │       ├── lib.rs              # Tauri commands, app setup, shared state
-│       ├── encoder.rs          # Encoder detection, flag mapping, batch loop
+│       ├── encoder.rs          # Encoder detection, routing, flag mapping, batch loop
 │       ├── ffmpeg.rs           # Binary resolution, download, spawning
 │       ├── probe.rs            # Media probing via ffprobe (DV/HDR10+ detection)
 │       ├── queue.rs            # Queue data structures, file collection
@@ -246,7 +285,7 @@ People with a pile of video files at different sizes and formats who want to shr
 │       ├── hevc_utils.rs       # Streaming HEVC NAL reader/writer
 │       ├── mkv_tags.rs         # MKV stream statistics tag repair (EBML)
 │       ├── webp_decode.rs      # Animated WebP RIFF parser + decode pipeline
-│       ├── events.rs           # EventSink + BatchControl traits
+│       ├── events.rs           # EventSink + BatchControl traits, start-up log buffer
 │       ├── config.rs           # GUI persistent settings
 │       ├── themes.rs           # Theme loading + built-in themes
 │       ├── tauri_sink.rs       # GUI EventSink (Tauri emit)
@@ -256,11 +295,36 @@ People with a pile of video files at different sizes and formats who want to shr
 │       ├── batch_control.rs    # CLI BatchControl (atomics + TTY prompts)
 │       ├── remote.rs           # Network mount detection + caching
 │       ├── staging.rs          # Wave-based local staging for remote files
-│       └── disk_monitor.rs     # Disk-space estimation + runtime monitoring
-├── .github/workflows/          # CI: per-platform builds
+│       ├── disk_monitor.rs     # Disk-space estimation + runtime monitoring
+│       └── test_helpers.rs     # Mock sinks and factories for tests
+├── tools/
+│   ├── ffmpeg/                 # Build, pin and verify HISTV's ffmpeg
+│   │   ├── fetch.sh            # Fetch a pinned source
+│   │   ├── package.sh          # Package a verified ffmpeg/ffprobe pair
+│   │   ├── verify.sh           # Conformance check for a built pair
+│   │   ├── check-pins.sh       # Keep the ffmpeg tag and sha256 pins in step
+│   │   ├── run-job-in-docker.sh  # Run a build-ffmpeg.yml job locally
+│   │   └── e2e/                # Hand-run end-to-end harness (see its README)
+│   └── generate-cargo-sources.py  # cargo-sources.json for the Flatpak
+├── .github/workflows/
+│   ├── ci.yml                  # Tests, macOS/Windows compile checks, ffmpeg pin check, dependency audit
+│   ├── build-ffmpeg.yml        # Builds and publishes the ffmpeg archives
+│   ├── build-platform.yml      # Per-platform app build (reusable)
+│   ├── build-flatpak.yml       # Flatpak build
+│   ├── build-preview.yml       # Preview build of a branch
+│   └── release.yml             # Release build on publish
+├── com.histv.encoder.yml       # Flatpak manifest
+├── com.histv.encoder.desktop
+├── com.histv.encoder.metainfo.xml
+├── cargo-sources.json          # Vendored crate sources for the Flatpak
+├── rust-toolchain.toml
+├── docs/                       # Plans and specs
+├── screenshots/
 ├── THEMES.md                   # Theme creation guide
 ├── CLI-README.md               # CLI documentation
 ├── Sonarr-Radarr-Integration.md
+├── THIRD-PARTY-LICENCES
+├── LICENSE
 └── README.md
 ```
 
@@ -279,3 +343,35 @@ The corresponding source is the upstream source at the versions pinned in [`buil
 Dolby Vision processing uses the [dolby_vision](https://crates.io/crates/dolby_vision) crate by quietvoid (MIT). HDR10+ processing uses the [hdr10plus](https://crates.io/crates/hdr10plus) crate by quietvoid (MIT).
 
 This software is based in part on the work of the Independent JPEG Group. See [THIRD-PARTY-LICENCES](THIRD-PARTY-LICENCES) for full details.
+
+<details>
+<summary><strong>Technical changelog</strong></summary>
+
+Everything on `3.0.0-dev` that is not in `main`, from the commits since the branch point (`git log main..3.0.0-dev`).
+
+#### Miscellanea
+
+**Encoder routing** (`src-tauri/src/encoder.rs`)
+- Vulkan and Direct3D 12 encoders added to the per-platform priority tables; `pick_encoder` takes the first hardware encoder in table order, and the GUI, the batch engine and the CLI share it (6d95b71). `hw_device_args` builds the device arguments for detection and real encodes alike; the lowest DRI render node is used, and an Intel node for QSV (6d95b71, 1a93ebd).
+- `dovi_route`, `dovi_route_for_encoder`, `hdr10plus_route` and `hdr10plus_loss` make the Dolby Vision and HDR10+ decisions as pure functions, decided for the encoder that will run (6d95b71, 7055a8c). `fallback_sw_args` decides again for the software fallback (aedc0ad). `hevc_vaapi` on ffmpeg older than 7 returns `Err` from `hdr10plus_route` (a3d0520).
+- `FfmpegCaps` is filled by a capability probe: `dovi_x265`, `dovi_svtav1`, `x265_hdr10plus`, `hevc_metadata_size`, `no_fps_mode`, `ffmpeg_major`. Detection and probes time out (`output_with_timeout`).
+- Video encodes use `-fps_mode passthrough`, or `-vsync passthrough` before ffmpeg 5.1 (8ab98f7). `hevc_vaapi` frame size is fixed with `hevc_metadata` where it exists and by padding and cropping where it does not (98bb595, 4737543). AV1 constant quality on VAAPI and D3D12 uses `-global_quality` (1a93ebd). Profile 7 converts to 8.1 (b028a45).
+- `hevc_parser` `=0.6.10` is a direct dependency behind the `dovi` feature, used by `hevc_utils.rs` to match dynamic metadata to frames in display order.
+
+**ffmpeg handling** (`src-tauri/src/ffmpeg.rs`)
+- `histv_release` pins the tag `ffmpeg-n8.1.3-histv.2` and one SHA-256 per platform; `download_urls` tries the HISTV archive first, then unverified third-party builds (4dc8bd0, 23e5c98, 17fdb38). A drop guard removes the partial archive on every failure path (2f30303), and a checksum mismatch is logged as one (5e73dad).
+- `resolve_binary` skips the executable's own directory when it is a system directory (`SYSTEM_EXE_DIRS`), through `sibling_binary` (4eba290, 81cb0a8).
+
+**Frontend and probing**
+- `LogBuffer` in `events.rs` queues log lines until the `attach_log_listener` command runs; `listenTauriEvents` resolves after every listener is registered (1283d14, ab63e57, e8003ca).
+- `resolveEncoderFamilies` and `resolveFamilyForCodec` in `app.js` mirror `lib.js`, and `lib.test.js` compares the two copies (422292f, 0e7ebec, c93d96e).
+- `probe.rs` reads HDR10+ from the first frame's side data of PQ HEVC sources, and APNG duration from the packet span (6d95b71, 104958b). `webp_decode.rs` builds device arguments through `hw_device_args`.
+- `truncate_filename` in `cli_main.rs` counts characters, not bytes (44cff31).
+
+**Build, CI and tests**
+- `build-ffmpeg.yml` builds ffmpeg n8.1.3 from commit-pinned sources with Vulkan, D3D12, AMF, libvpl and x265 HDR10+, and publishes archives with `BUILDINFO.txt`, build attestations and `histv-ffmpeg-sources.tar` (0c9b880, 6298d53). `tools/ffmpeg/` holds the helper scripts; `verify.sh` gates the build, `check-pins.sh` keeps the tag and checksums in step across `ffmpeg.rs`, `build-platform.yml` and the Flatpak manifest (c5f57c9).
+- Release bundles and the Flatpak ship the HISTV ffmpeg (2ff9762). `ci.yml` skips the Linux test job on pull requests, runs the pin check as its own job and audits dependencies weekly; jobs have timeouts (5e73dad, 3d90b5a).
+- `tools/ffmpeg/e2e/` runs the real argument builder through `histv-cli` against synthetic sources. Last results for `ffmpeg-n8.1.3-histv.2`: 295 PASS, 0 FAIL, 10 XFAIL, 0 XPASS, 12 SKIP (f36a06a, fcc96b8; details in `tools/ffmpeg/e2e/README.md`).
+- Dependencies updated after `cargo audit` (9ad2d0e); `cargo-sources.json` regenerated for the Flatpak (b1ba3f5).
+
+</details>
