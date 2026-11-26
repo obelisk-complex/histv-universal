@@ -788,6 +788,12 @@ jobs:
           # (GITHUB_ENV-set, unconverted) PKG_CONFIG_PATH, so libsvtav1/libzimg
           # aren't found. Feed it a Windows/mixed path via cygpath.
           export PKG_CONFIG_PATH="$(cygpath -m "$PREFIX/lib/pkgconfig")"
+          # Some .pc files list the compiler's implicit libs, including -lgcc_s.
+          # On MinGW that is the import library for libgcc_s_seh-1.dll, which
+          # would become a run-time dependency; -static-libgcc supplies the
+          # unwinder statically instead.
+          grep -l -- '-lgcc_s' "$PREFIX"/lib/pkgconfig/*.pc || true
+          sed -i 's/-lgcc_s//g' "$PREFIX"/lib/pkgconfig/*.pc
           ./configure \
             --prefix="$PREFIX" \
             --pkg-config-flags=--static \
