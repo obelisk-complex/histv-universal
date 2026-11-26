@@ -77,12 +77,7 @@ pub async fn extract_rpus(
         return Err("No DV RPU NAL units found in bitstream".to_string());
     }
 
-    // Convert profiles without an HDR10 fallback layer to Profile 8.1.
-    // Profile 5: single-layer DV, no HDR10 base — non-DV players get nothing.
-    // Profile 7 (compat_id=0): dual-layer DV, no HDR10 fallback in base.
-    // Converting to 8.1 gives both DV and HDR10 compatibility in the output.
-    let needs_conversion = dovi_profile == 5
-        || (dovi_profile == 7 && dovi_bl_compat_id.map(|id| id == 0).unwrap_or(true));
+    let needs_conversion = needs_profile_conversion(dovi_profile);
 
     let mut rpu_payloads: Vec<Vec<u8>> = Vec::with_capacity(nalu_data.len());
     let mut conversion_applied = false;
@@ -441,9 +436,15 @@ pub fn mp4box_args(
     args
 }
 
-/// Determine whether a DV profile requires conversion to 8.1.
-pub fn needs_profile_conversion(dovi_profile: u8, dovi_bl_compat_id: Option<u8>) -> bool {
-    dovi_profile == 5 || (dovi_profile == 7 && dovi_bl_compat_id.map(|id| id == 0).unwrap_or(true))
+/// Whether the RPUs must be converted to profile 8.1 for the re-encoded
+/// single-layer output.
+/// - Profile 5 has no HDR10 base layer, so non-DV players would get nothing.
+/// - Profile 7 is dual-layer and the encode keeps only the base layer. Its
+///   RPUs describe the enhancement layer (`el_spatial_resampling_filter_flag`,
+///   residual and NLQ data), so they would label a stream with no
+///   enhancement layer as profile 7, whatever the compatibility id.
+pub fn needs_profile_conversion(dovi_profile: u8) -> bool {
+    matches!(dovi_profile, 5 | 7)
 }
 
 /// Map source profile + conversion state to (profile_num, compat_id) for MP4Box.
@@ -494,39 +495,18 @@ mod tests {
     // ── needs_profile_conversion ────────────────────────────────
 
     #[test]
-    fn test_profile5_needs_conversion() {
-        assert!(needs_profile_conversion(5, None));
-        assert!(needs_profile_conversion(5, Some(0)));
-        assert!(needs_profile_conversion(5, Some(1)));
+    fn profiles_5_and_7_convert_to_81() {
+        assert!(needs_profile_conversion(5));
+        // Profile 7 whatever its compatibility id (7.6 on UHD Blu-ray): the
+        // base-layer-only output cannot stay profile 7.
+        assert!(needs_profile_conversion(7));
     }
 
     #[test]
-    fn test_profile7_compat0_needs_conversion() {
-        assert!(needs_profile_conversion(7, Some(0)));
-    }
-
-    #[test]
-    fn test_profile7_no_compat_needs_conversion() {
-        // None defaults to true (no compat info = assume no HDR10 fallback)
-        assert!(needs_profile_conversion(7, None));
-    }
-
-    #[test]
-    fn test_profile7_nonzero_compat_no_conversion() {
-        assert!(!needs_profile_conversion(7, Some(1)));
-        assert!(!needs_profile_conversion(7, Some(6)));
-    }
-
-    #[test]
-    fn test_profile8_no_conversion() {
-        assert!(!needs_profile_conversion(8, None));
-        assert!(!needs_profile_conversion(8, Some(1)));
-    }
-
-    #[test]
-    fn test_other_profiles_no_conversion() {
-        assert!(!needs_profile_conversion(4, None));
-        assert!(!needs_profile_conversion(10, Some(0)));
+    fn other_profiles_keep_their_rpus() {
+        for p in [4, 8, 10] {
+            assert!(!needs_profile_conversion(p), "{p}");
+        }
     }
 
     // ── dv_profile_mapping ─────────────────────────────────────

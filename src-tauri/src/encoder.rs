@@ -804,8 +804,7 @@ pub mod hdr10plus_loss {
 ///
 /// `profile` is the source's HDR10+ profile from the probe ("A", "B",
 /// "N/A", or empty when unknown). With Dolby Vision kept, only native DV
-/// through libx265 can carry HDR10+ as well (experimental: no sample has
-/// both).
+/// through libx265 can carry HDR10+ as well.
 #[allow(clippy::too_many_arguments)]
 pub fn hdr10plus_route(
     has_hdr10plus: bool,
