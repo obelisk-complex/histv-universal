@@ -9,21 +9,77 @@ The standard builds do not include FFmpeg.
 FFmpeg
 ------
 
-FFmpeg (https://ffmpeg.org) is licensed under the GNU General Public
-Licence version 2 or later (GPLv2+). The bundled binaries are
-unmodified static builds compiled with --enable-gpl.
+FFmpeg (https://ffmpeg.org), version n8.1.1, is built with --enable-gpl
+and --enable-version3 and linked with GPL-licensed libraries (x264 and
+x265), so the bundled ffmpeg and ffprobe binaries are distributed under
+the GNU General Public Licence version 3 or later (GPLv3+). The full
+licence text is in FFMPEG-LICENSE.txt, next to this file (in the Flatpak:
+/app/share/licenses/ffmpeg/LICENSE.txt).
 
-Sources:
-  Windows / Linux: https://github.com/BtbN/FFmpeg-Builds
-  macOS:           https://evermeet.cx/ffmpeg/
+The binaries are histv's own static builds. They are compiled from the
+unmodified upstream source of FFmpeg and each library below; no patches
+are applied.
+
+Libraries compiled into the binaries (versions as pinned in the build
+recipe; the licence file read at each pinned version is in brackets):
+
+  x264 (commit b35605ace3dd, stable branch)
+      GPL v2 or later [COPYING, x264.h header]
+  x265 4.2
+      GPL v2 or later [COPYING, source/x265.h header]
+  SVT-AV1 v3.1.2
+      BSD 3-Clause Clear, plus the Alliance for Open Media Patent
+      License 1.0 [LICENSE.md, PATENTS.md]
+  dav1d 1.5.5
+      BSD 2-Clause [COPYING]
+  zimg release-3.0.5
+      WTFPL version 2 [COPYING]
+  Opus 1.6.1
+      BSD 3-Clause [COPYING]
+  libogg 1.3.6 and libvorbis 1.3.7
+      BSD 3-Clause [COPYING in each]
+  LAME 3.100
+      LGPL v2 or later [COPYING (GNU Library General Public License
+      version 2), libmp3lame/lame.c header]
+
+Linux builds only:
+
+  zlib 1.3.2
+      zlib licence [LICENSE]
+  libdrm 2.4.134
+      MIT [source file headers, e.g. xf86drm.c]
+  libva 2.24.1
+      MIT [COPYING]
+
+Linux and Windows builds only:
+
+  libvpl (Intel oneVPL dispatcher) v2.15.0
+      MIT [LICENSE]
+  AMD AMF headers v1.4.36 (headers only; the AMF runtime is part of the
+  user's AMD graphics driver)
+      MIT [LICENSE.txt]
+  nv-codec-headers n12.2.72.0 (headers only; the NVENC/NVDEC runtime is
+  part of the user's NVIDIA graphics driver)
+      MIT [notice in include/ffnvcodec/*.h; the repository has no
+      separate licence file]
+
+The macOS and Windows builds otherwise link only system libraries
+(VideoToolbox and AudioToolbox on macOS; Direct3D 11 and DXVA2 on
+Windows).
 
 Source code availability:
-  The complete source code corresponding to the bundled FFmpeg binaries
-  is available from the repositories listed above. In accordance with
-  the GPL, we will also provide the corresponding source code on
-  request for a period of three years from the date of each release.
-  Requests may be sent via the project's GitHub Issues page at
-  https://github.com/obelisk-complex/histv-universal/issues.
+  The corresponding source is the unmodified upstream source of the
+  components above at the pinned versions. FFMPEG-BUILDINFO.txt, next to
+  this file (in the Flatpak: /app/share/licenses/ffmpeg/BUILDINFO.txt),
+  lists every source pin (tag, commit, or tarball URL with its SHA-256)
+  and the exact configure line used. The build recipe is
+  .github/workflows/build-ffmpeg.yml, with helper scripts in tools/ffmpeg/,
+  in https://github.com/obelisk-complex/histv-universal. The built
+  archives are published as releases of that repository whose tags begin
+  with "ffmpeg-". In accordance with the GPL, we will also provide the
+  corresponding source code on request for a period of three years from
+  the date of each release. Requests may be sent via the project's
+  GitHub Issues page at https://github.com/obelisk-complex/histv-universal/issues.
 
 This software is based in part on the work of the Independent JPEG
 Group (IJG).
@@ -31,7 +87,6 @@ Group (IJG).
 FFmpeg is a trademark of Fabrice Bellard.
 
 Full licence text:
-  GPLv2 - https://www.gnu.org/licenses/old-licenses/gpl-2.0.html
   GPLv3 - https://www.gnu.org/licenses/gpl-3.0.html
 
 

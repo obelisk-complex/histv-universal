@@ -66,7 +66,7 @@ Available as a desktop app and a headless CLI for servers (see [CLI-README.md](C
 - **Auto-clear** - optionally clears finished items from the queue.
 - **Flatpak support** - available as a Flatpak bundle for Linux with host filesystem access so ffmpeg subprocesses can reach your files directly.
 - **Themes** - six built-in themes (dark, light, and four community-inspired palettes). Create your own with just 6 colour values - the app derives everything else automatically. See [THEMES.md](THEMES.md).
-- **ffmpeg downloader** - offers to download ffmpeg for you if it's not installed.
+- **ffmpeg downloader** - offers to download ffmpeg for you if it's not installed. It fetches HISTV's own ffmpeg build first and checks it against a pinned SHA-256 before using it. If that download fails, it falls back to third-party static builds, which are not checksum-verified.
 - **Remembers settings** - everything is saved to config.json in the same folder as the .exe, and restored on next launch.
 - **CLI version** - same engine as a command-line tool for servers and scripts. Shows a persistent queue table during encoding matching the GUI's columns. See [CLI-README.md](CLI-README.md).
 
@@ -272,7 +272,9 @@ People with a pile of video files at different sizes and formats who want to shr
 
 ### Third-party software
 
-The **-full** builds bundle [FFmpeg](https://ffmpeg.org) and [MP4Box](https://gpac.io) (GPAC). FFmpeg is licensed under the [GNU General Public Licence v2+](https://www.gnu.org/licenses/old-licenses/gpl-2.0.html). The bundled FFmpeg binaries are unmodified static GPL builds from [BtbN/FFmpeg-Builds](https://github.com/BtbN/FFmpeg-Builds) (Windows/Linux) and [evermeet.cx](https://evermeet.cx/ffmpeg/) (macOS). MP4Box is licensed under the [GNU Lesser General Public Licence v2.1+](https://www.gnu.org/licenses/old-licenses/lgpl-2.1.html). The corresponding source code is available from those repositories. We will provide the source on request for three years from the date of each release - file an issue on this repo.
+The **-full** builds bundle [FFmpeg](https://ffmpeg.org) n8.1.1 and [MP4Box](https://gpac.io) (GPAC). The bundled ffmpeg and ffprobe are HISTV's own static builds, compiled from unmodified upstream source with `--enable-gpl --enable-version3` and linked against GPL libraries (x264, x265), so they are distributed under the [GNU General Public Licence v3+](https://www.gnu.org/licenses/gpl-3.0.html). They also contain SVT-AV1, dav1d, zimg, Opus, libogg, libvorbis and LAME (LGPL v2+), plus libva, libdrm, zlib and libvpl on Linux; every component and its licence is listed in [THIRD-PARTY-LICENCES](THIRD-PARTY-LICENCES). MP4Box is licensed under the [GNU Lesser General Public Licence v2.1+](https://www.gnu.org/licenses/old-licenses/lgpl-2.1.html).
+
+The corresponding source is the upstream source at the versions pinned in [`build-ffmpeg.yml`](.github/workflows/build-ffmpeg.yml), which is also the build recipe. Each archive ships a `BUILDINFO.txt` with every source pin and the exact configure line, and the archives are published as the `ffmpeg-*` [releases](https://github.com/obelisk-complex/histv-universal/releases). We will also provide the source on request for three years from the date of each release - file an issue on this repo.
 
 Dolby Vision processing uses the [dolby_vision](https://crates.io/crates/dolby_vision) crate by quietvoid (MIT). HDR10+ processing uses the [hdr10plus](https://crates.io/crates/hdr10plus) crate by quietvoid (MIT).
 

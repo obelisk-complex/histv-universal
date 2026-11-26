@@ -22,21 +22,26 @@ finish-args:
   - --filesystem=host
 
 modules:
-  # ── FFmpeg (pre-built GPL static build from BtbN) ──
-  # Pinned to a dated autobuild release (not the moving `latest` tag) so the
-  # sha256 stays stable. Keep this URL in sync with
-  # FFMPEG_BTBN_* in .github/workflows/build-platform.yml.
+  # ── FFmpeg (histv's own static GPL build, compiled from pinned source) ──
+  # Built by .github/workflows/build-ffmpeg.yml and published as the immutable
+  # release below. The archive is flat (ffmpeg, ffprobe, SHA256SUMS,
+  # LICENSE.txt, BUILDINFO.txt), so strip-components must be 0: the
+  # flatpak-builder default of 1 would strip every file. Keep the tag and
+  # sha256 in sync with FFMPEG_HISTV_* in .github/workflows/build-platform.yml
+  # and histv_release in src-tauri/src/ffmpeg.rs (tools/ffmpeg/check-pins.sh
+  # checks this in CI).
   - name: ffmpeg
     buildsystem: simple
     sources:
       - type: archive
-        url: https://github.com/BtbN/FFmpeg-Builds/releases/download/autobuild-2026-06-13-13-31/ffmpeg-n8.1.1-13-g83e8541aa6-linux64-gpl-8.1.tar.xz
-        sha256: 6e776e69d415f7c021af65cbb42cd423804ca653fc8190a32d5878411be6cbfd
-        strip-components: 1
+        url: https://github.com/obelisk-complex/histv-universal/releases/download/ffmpeg-n8.1.1-histv.1/histv-ffmpeg-linux-x64.tar.gz
+        sha256: '0000000000000000000000000000000000000000000000000000000000000000'
+        strip-components: 0
     build-commands:
-      - install -Dm755 bin/ffmpeg /app/bin/ffmpeg
-      - install -Dm755 bin/ffprobe /app/bin/ffprobe
+      - install -Dm755 ffmpeg /app/bin/ffmpeg
+      - install -Dm755 ffprobe /app/bin/ffprobe
       - install -Dm644 LICENSE.txt /app/share/licenses/ffmpeg/LICENSE.txt
+      - install -Dm644 BUILDINFO.txt /app/share/licenses/ffmpeg/BUILDINFO.txt
 
   # ── HISTV (built from source with vendored cargo deps) ──
   - name: histv
