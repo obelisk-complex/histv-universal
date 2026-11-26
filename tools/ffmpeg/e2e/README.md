@@ -64,7 +64,7 @@ An unexplained failure stays a FAIL.
 |---|---|
 | `encoders` | every encoder the app can pick, per codec (H.264, HEVC, AV1) and rate-control arm: VBR; constant quality (CQP); CRF for software encoders. Checks the encode decodes, the codec, the rate-control flag on the command line, that the quality flag changes the output (two values, two sizes; an ignored AVOption is only a warning), and that VBR lands near the target |
 | `size-colour` | picture size at 640x360, 1920x1080 and 1000x562, in the container and as decoded; colour primaries, transfer and matrix (BT.709 SDR, BT.2020 PQ HDR) in the container and in the bitstream; 10-bit output for HDR |
-| `animated` | GIF, animated WebP (through the app's own compositor) and APNG, at an even and an odd size: codec, even-padded size, duration; with software and hardware encoders |
+| `animated` | GIF and animated WebP (through the app's own compositor) at an even and an odd size, with software and hardware encoders; APNG once, at the even size, with libx265: codec, even-padded size, duration |
 | `hdr10plus` | HDR10+ per-frame metadata compared with the source in display order, with B-frames in the source: the libx265 route, the hardware route (extract, encode without B-frames, inject; static HDR10 only for `hevc_vaapi` on ffmpeg older than 7), the copy route, and the SDR route (metadata must be gone) |
 
 Known defects declared XFAIL:
@@ -110,24 +110,22 @@ at 320x180.
 
 | ffmpeg | PASS | FAIL | XFAIL | XPASS | SKIP |
 |---|---|---|---|---|---|
-| n8.1.3, `ffmpeg-n8.1.3-histv.2` (linux-x64 archive, sha256 checked) | 291 | 1 | 10 | 0 | 12 |
-| 6.1.1-3ubuntu5 (`/usr/bin/ffmpeg`), sources made by the n8.1.3 build | 201 | 2 | 3 | 0 | 22 |
+| n8.1.3, `ffmpeg-n8.1.3-histv.2` (linux-x64 archive, sha256 checked) | 295 | 0 | 10 | 0 | 12 |
+| 6.1.1-3ubuntu5 (`/usr/bin/ffmpeg`), sources made by the n8.1.3 build | 208 | 0 | 3 | 0 | 22 |
 
 The 10 XFAIL on n8.1.3: `av1_vulkan` container and decoded size at three sizes
 (6), once more in the encoder matrix (1), and `av1_vaapi` decoded size at three
 sizes (3). On 6.1.1 only the `av1_vaapi` three remain. The 12 and 22 SKIP are
 the encoders listed above as absent, plus the Vulkan encoders and the libx265
-HDR10+ route on 6.1.1.
+HDR10+ route on 6.1.1. No XPASS: both known defects are still present.
 
-The FAILs, all unexplained:
+Nothing failed unexplained. The APNG probe failure of the previous run
+(`histv-cli` could not read a duration from an APNG written by ffmpeg, so the
+`animated` suite failed on both builds) is fixed: the probe reads the largest
+packet pts + duration as a last tier, and the APNG case passes on both builds.
 
-- both builds, `animated`: `histv-cli` cannot probe an APNG written by ffmpeg.
-  The container has no duration, and the packet scan reads the first packet
-  (0 s), so all six duration tiers fail and nothing is encoded. GIF and WebP
-  sources are unaffected.
-
-On 6.1.1 the `hevc_vaapi` route of `hdr10plus` failed in that run, and now
-passes with the outcome the app gives there. AMD (Mesa) `hevc_vaapi` writes a
+On 6.1.1 the `hevc_vaapi` route of `hdr10plus` passes with the outcome the app
+gives there: static HDR10, not HDR10+. AMD (Mesa) `hevc_vaapi` writes a
 different PPS in the packets than in the Matroska CodecPrivate. The app's demux
 step (`-bsf:v hevc_mp4toannexb`) adds the container's parameter sets to the
 stream. Before ffmpeg 7 it puts them after the in-band ones, so the decoder
@@ -135,4 +133,5 @@ takes the stale PPS and reports `cu_qp_delta` errors (5 in 24 frames); n8.1.3
 puts them before, and the stream decodes cleanly. The injection step is not
 involved. The app keeps static HDR10 only for `hevc_vaapi` on an ffmpeg older
 than 7, and the suite asserts that there: clean decode, PQ transfer, no HDR10+
-metadata.
+metadata. On n8.1.3 the same route keeps the per-frame HDR10+ metadata (24
+frames match the source).
