@@ -1220,6 +1220,14 @@ pub fn dovi_route_for_encoder(
     route
 }
 
+/// Whether a finished ffmpeg output needs its Dolby Vision sample entry
+/// restored (`mp4_entry`): a profile 5 stream copy into MP4. ffmpeg cannot
+/// write `dvhe`, so the copy of a `dvhe` file comes out as `hev1`. Profile 8
+/// and non-DV copies are left as ffmpeg wrote them.
+fn copy_needs_dovi_entry(decision: &EncodeDecision, dovi_p5: bool) -> bool {
+    dovi_p5 && matches!(decision, EncodeDecision::Copy)
+}
+
 /// Whether an encoder name is a hardware encoder (software ones are the
 /// `lib*` wrappers: libx265, libx264, libsvtav1).
 pub fn is_hardware_encoder_name(name: &str) -> bool {
@@ -3666,6 +3674,22 @@ async fn encode_single_file(
             queue[idx].status = QueueItemStatus::Failed;
             sink.queue_item_updated(idx, "Failed");
             return EncodeFileResult::Failed;
+        }
+    }
+
+    // A copied profile 5 stream keeps its dvcC record, but ffmpeg writes the
+    // sample entry as hev1; restore dvhe so players apply Dolby Vision.
+    if copy_needs_dovi_entry(&decision, dovi_in_output && item_dovi_profile == Some(5)) {
+        match crate::mp4_entry::mark_dolby_vision_file(&temp_output_file) {
+            Ok(n) if n > 0 => sink.log("  Dolby Vision: profile 5 sample entry restored"),
+            Ok(_) => {}
+            Err(e) => {
+                let msg = format!(
+                    "  WARNING: Dolby Vision profile 5 sample entry not set ({e}); some players may show wrong colours"
+                );
+                sink.log(&msg);
+                write_log(log_writer, &msg);
+            }
         }
     }
 
@@ -9549,6 +9573,19 @@ mod tests {
         );
         assert_eq!(dovi_hdr10_log_line(7, &CAPS_ALL, true, false), generic);
         assert_eq!(dovi_hdr10_log_line(8, &CAPS_NONE, true, false), generic);
+    }
+
+    #[test]
+    fn copy_needs_dovi_entry_only_for_profile5_copies() {
+        let vbr = EncodeDecision::Vbr {
+            target_bps: 1,
+            peak_bps: 2,
+        };
+        assert!(copy_needs_dovi_entry(&EncodeDecision::Copy, true));
+        // Profile 8 or non-DV copies, and re-encodes (which write dvh1).
+        assert!(!copy_needs_dovi_entry(&EncodeDecision::Copy, false));
+        assert!(!copy_needs_dovi_entry(&vbr, true));
+        assert!(!copy_needs_dovi_entry(&vbr, false));
     }
 
     #[test]
