@@ -4,10 +4,13 @@
 # Usage: package.sh <stage-dir> <ffmpeg-source-dir> <archive-path> <linux|windows|macos>
 #
 # <stage-dir> already holds the stripped ffmpeg and ffprobe (.exe on Windows).
-# Adds LICENSE.txt (COPYING.GPLv3 from the ffmpeg tree), BUILDINFO.txt (source
-# pins from the environment, the configure line, where to get the source) and
+# Adds LICENSE.txt (COPYING.GPLv3 from the ffmpeg tree), BUILDINFO.txt and
 # SHA256SUMS, then writes <archive-path> (.tar.gz or .zip) with no top-level
-# directory. Runs under macOS bash 3.2 and MSYS2.
+# directory. BUILDINFO.txt lists every source pin from the workflow's env block
+# (values from the environment), the sources fetch.sh recorded in
+# $HISTV_SOURCES, the configure line, and where the corresponding source is.
+# Packaging fails if a pin that applies to this platform is missing from
+# BUILDINFO.txt or differs from the workflow. Runs under macOS bash 3.2 and MSYS2.
 
 set -euo pipefail
 
@@ -31,9 +34,26 @@ skip_pin() {
   case "$platform:$1" in
     macos:NVHEADERS_* | macos:AMF_* | macos:LIBVPL_* | macos:VULKAN_*) return 0 ;;
     macos:ZLIB_* | macos:LIBDRM_* | macos:LIBVA_*) return 0 ;;
-    windows:ZLIB_* | windows:LIBDRM_* | windows:LIBVA_*) return 0 ;;
+    windows:LIBDRM_* | windows:LIBVA_*) return 0 ;;
   esac
   return 1
+}
+
+workflow="$(cd "$(dirname "$0")/../.." && pwd)/.github/workflows/build-ffmpeg.yml"
+[ -f "$workflow" ] || { echo "package: missing $workflow" >&2; exit 1; }
+[ -s "${HISTV_SOURCES:-}" ] || { echo "package: HISTV_SOURCES is unset or empty (fetch.sh records sources there)" >&2; exit 1; }
+
+# Pin names and values as written in the workflow's top-level env block.
+workflow_pins() {
+  awk '
+    /^env:/ { inenv = 1; next }
+    inenv && /^[^ #]/ { exit }
+    inenv && /^  [A-Z0-9_]+: / {
+      key = $1; sub(/:$/, "", key)
+      if (key !~ /_(TAG|COMMIT|VER|URL|SHA256)$/) next
+      val = $0; sub(/^[^"]*"/, "", val); sub(/".*$/, "", val)
+      print key "=" val
+    }' "$workflow"
 }
 
 cp "$ffsrc/COPYING.GPLv3" "$stage/LICENSE.txt"
@@ -56,31 +76,43 @@ compiler=$(cc --version 2>/dev/null | head -n 1 || true)
   fi
   echo
   echo "Source pins (all upstream, no source patches applied):"
-  env | LC_ALL=C sort | grep -E '^[A-Z0-9]+_(TAG|COMMIT|VER|URL|SHA256)=' | while IFS= read -r line; do
-    skip_pin "$line" || echo "  $line"
+  workflow_pins | LC_ALL=C sort | while IFS= read -r pin; do
+    key=${pin%%=*}
+    skip_pin "$key" && continue
+    eval "val=\${$key:-}"
+    echo "  $key=$val"
   done
   echo
-  echo "Git sources (checked out at the tag or commit above):"
-  echo "  FFMPEG_TAG      https://github.com/FFmpeg/FFmpeg.git"
-  echo "  X264_COMMIT     https://code.videolan.org/videolan/x264.git"
-  echo "  X265_VER        https://download.videolan.org/pub/videolan/x265/x265_<X265_VER>.tar.gz"
-  echo "  SVTAV1_TAG      https://gitlab.com/AOMediaCodec/SVT-AV1.git"
-  echo "  ZIMG_TAG        https://github.com/sekrit-twc/zimg.git (with submodules)"
-  if [ "$platform" != macos ]; then
-    echo "  NVHEADERS_TAG   https://github.com/FFmpeg/nv-codec-headers.git"
-    echo "  AMF_TAG         https://github.com/GPUOpen-LibrariesAndSDKs/AMF.git"
-    echo "  LIBVPL_TAG      https://github.com/intel/libvpl.git"
-    echo "  VULKAN_HEADERS_TAG https://github.com/KhronosGroup/Vulkan-Headers.git"
-  fi
-  echo "  Tarball sources are the *_URL entries, checked against *_SHA256."
+  echo "Sources fetched for this build (git: resolved commit; tarball: verified SHA-256):"
+  while IFS="$(printf '\t')" read -r kind dest a b c; do
+    case "$kind" in
+      git) echo "  $(basename "$dest"): $a tag $b commit $c" ;;
+      tarball) echo "  $(basename "$dest"): $b sha256 $c" ;;
+    esac
+  done <"$HISTV_SOURCES"
   echo
   echo "ffmpeg configuration:"
   echo "  $config"
   echo
-  echo "Corresponding source: this binary is built only from the upstream sources"
-  echo "listed above, unmodified, using the build recipe linked above. LICENSE.txt"
-  echo "is the GNU GPL v3 under which the combined binary is distributed."
+  echo "Corresponding source: histv-ffmpeg-sources.tar, published with this"
+  echo "archive (same release), holds every source above as fetched (tarballs) or"
+  echo "as a git archive at the listed commit, plus the build recipe. This binary"
+  echo "is built only from those sources, unmodified. LICENSE.txt is the GNU GPL v3"
+  echo "under which the combined binary is distributed."
 } >"$stage/BUILDINFO.txt"
+
+# Every pin that applies here must appear in BUILDINFO.txt with the workflow's value.
+missing=""
+while IFS= read -r pin; do
+  skip_pin "${pin%%=*}" && continue
+  grep -qxF "  $pin" "$stage/BUILDINFO.txt" || missing="$missing ${pin%%=*}"
+done <<EOF
+$(workflow_pins)
+EOF
+if [ -n "$missing" ]; then
+  echo "package: BUILDINFO.txt lacks or disagrees with workflow pins:$missing" >&2
+  exit 1
+fi
 
 files="ffmpeg$exe ffprobe$exe LICENSE.txt BUILDINFO.txt"
 (cd "$stage" && sha256 $files >SHA256SUMS)
