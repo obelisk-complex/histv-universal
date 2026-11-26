@@ -1864,26 +1864,57 @@ pub struct PreflightWarning {
     pub missing_tool: Option<String>,
 }
 
-/// Why a Dolby Vision source will lose DV, if it will. `None` when DV is kept.
-/// Assumes HDR preservation is on and an HEVC target (the route's outcome
-/// does not depend on the family when libx265 has native DV).
+/// Why a Dolby Vision source is written as HDR10, worded for
+/// "HDR10 fallback (..)". Shared by the GUI pre-flight, the CLI dry run and
+/// the encode log.
+pub mod dovi_loss {
+    pub const NO_MP4BOX: &str = "MP4Box not found";
+    pub const NO_NATIVE: &str = "this ffmpeg has no native Dolby Vision coding";
+    /// Profile 5 has no HDR10 base layer, so plain HDR10 output probably has wrong
+    /// colours (UNVERIFIED: inferred from `dovi_pipeline::needs_profile_conversion`, not run).
+    pub const P5_NO_MP4BOX: &str = "profile 5 has no HDR10 layer, so colours are likely wrong; install MP4Box or use HISTV's ffmpeg";
+    pub const P5_NO_NATIVE: &str =
+        "profile 5 has no HDR10 layer, so colours are likely wrong; use HISTV's ffmpeg";
+}
+
+/// Why a Dolby Vision source will lose DV, if it will: the reason (an
+/// `dovi_loss` string) and the tool whose installation would fix it. `None`
+/// when DV is kept. Assumes HDR preservation is on and an HEVC target (the
+/// route's outcome does not depend on the family when libx265 has native DV).
 pub fn dovi_preflight_issue(
     profile: u8,
     caps: &FfmpegCaps,
     rust_dovi: bool,
     mp4box_dvp: bool,
 ) -> Option<(&'static str, Option<&'static str>)> {
+    use dovi_loss::*;
     let route = |rpu_ok| dovi_route(profile, "hevc", false, caps, rpu_ok, true);
     if route(rust_dovi && mp4box_dvp).keeps_dovi() {
         return None;
     }
+    let p5 = profile == 5;
     if rust_dovi && route(true) == DoviRoute::RpuPipeline {
-        Some(("HDR10 fallback (MP4Box not found)", Some("MP4Box")))
+        Some((if p5 { P5_NO_MP4BOX } else { NO_MP4BOX }, Some("MP4Box")))
     } else {
-        Some((
-            "HDR10 fallback (this ffmpeg has no native Dolby Vision coding)",
-            None,
-        ))
+        Some((if p5 { P5_NO_NATIVE } else { NO_NATIVE }, None))
+    }
+}
+
+/// The encode-time log line for a Dolby Vision source that `dovi_route`
+/// sends to plain HDR10. Profile 5 gets the reason and the way out; the rest
+/// keep the generic line.
+fn dovi_hdr10_log_line(
+    profile: u8,
+    caps: &FfmpegCaps,
+    rust_dovi: bool,
+    mp4box_dvp: bool,
+) -> String {
+    match dovi_preflight_issue(profile, caps, rust_dovi, mp4box_dvp) {
+        Some((reason, _)) if profile == 5 => {
+            format!("  Dolby Vision cannot be kept - output is HDR10 ({reason})")
+        }
+        _ => "  Dolby Vision cannot be kept with this ffmpeg and tool set - output is HDR10"
+            .to_string(),
     }
 }
 
@@ -1902,7 +1933,7 @@ pub fn preflight_scan(
         }
 
         if let Some(profile) = item.probe.dovi_profile {
-            if let Some((actual, tool)) = dovi_preflight_issue(
+            if let Some((reason, tool)) = dovi_preflight_issue(
                 profile,
                 &ff_caps,
                 caps.can_process_dovi,
@@ -1912,7 +1943,7 @@ pub fn preflight_scan(
                     file_name: item.file_name.clone(),
                     source_type: format!("Dolby Vision Profile {}", profile),
                     best_possible: "Full DV preservation".to_string(),
-                    actual_outcome: actual.to_string(),
+                    actual_outcome: format!("HDR10 fallback ({reason})"),
                     missing_tool: tool.map(str::to_string),
                 });
             }
@@ -2569,9 +2600,12 @@ async fn encode_single_file(
             }
         }
         Some(DoviRoute::Hdr10) if preserve_hdr && !settings.compatibility_mode => {
-            sink.log(
-                "  Dolby Vision cannot be kept with this ffmpeg and tool set - output is HDR10",
-            );
+            sink.log(&dovi_hdr10_log_line(
+                item_dovi_profile.unwrap_or_default(),
+                &ffmpeg_caps(),
+                caps.can_process_dovi,
+                caps.can_package_dovi_mp4,
+            ));
         }
         _ => {}
     }
@@ -9448,6 +9482,73 @@ mod tests {
             Some(None)
         );
         assert_eq!(dovi_preflight_issue(7, &CAPS_NONE, true, true), None);
+    }
+
+    #[test]
+    fn preflight_profile5_hdr10_route_names_the_missing_base_layer() {
+        use dovi_loss::*;
+        // No native coding, Rust pipeline present, MP4Box missing: the way
+        // out is MP4Box or HISTV's ffmpeg.
+        assert_eq!(
+            dovi_preflight_issue(5, &CAPS_NONE, true, false),
+            Some((P5_NO_MP4BOX, Some("MP4Box")))
+        );
+        // No native coding and no Rust pipeline: only the ffmpeg helps.
+        assert_eq!(
+            dovi_preflight_issue(5, &CAPS_NONE, false, false),
+            Some((P5_NO_NATIVE, None))
+        );
+        for detail in [P5_NO_MP4BOX, P5_NO_NATIVE] {
+            assert!(detail.contains("profile 5 has no HDR10 layer"));
+            assert!(detail.contains("HISTV's ffmpeg"));
+        }
+        assert!(P5_NO_MP4BOX.contains("install MP4Box"));
+        assert!(!P5_NO_NATIVE.contains("MP4Box"));
+    }
+
+    #[test]
+    fn preflight_profile5_unaffected_when_dv_can_be_kept() {
+        // Native coding, or the RPU pipeline with MP4Box.
+        assert_eq!(dovi_preflight_issue(5, &CAPS_ALL, false, false), None);
+        assert_eq!(dovi_preflight_issue(5, &CAPS_NONE, true, true), None);
+    }
+
+    #[test]
+    fn preflight_profiles_7_8_keep_the_generic_hdr10_wording() {
+        use dovi_loss::*;
+        assert_eq!(
+            dovi_preflight_issue(7, &CAPS_ALL, true, false),
+            Some((NO_MP4BOX, Some("MP4Box")))
+        );
+        assert_eq!(
+            dovi_preflight_issue(8, &CAPS_NONE, true, false),
+            Some((NO_MP4BOX, Some("MP4Box")))
+        );
+        assert_eq!(
+            dovi_preflight_issue(8, &CAPS_NONE, false, false),
+            Some((NO_NATIVE, None))
+        );
+        assert_eq!(NO_MP4BOX, "MP4Box not found");
+        assert_eq!(NO_NATIVE, "this ffmpeg has no native Dolby Vision coding");
+        assert!(!NO_MP4BOX.contains("profile 5"));
+        assert!(!NO_NATIVE.contains("profile 5"));
+    }
+
+    #[test]
+    fn dovi_hdr10_log_line_is_specific_for_profile5_only() {
+        use dovi_loss::*;
+        let generic =
+            "  Dolby Vision cannot be kept with this ffmpeg and tool set - output is HDR10";
+        assert_eq!(
+            dovi_hdr10_log_line(5, &CAPS_NONE, true, false),
+            format!("  Dolby Vision cannot be kept - output is HDR10 ({P5_NO_MP4BOX})")
+        );
+        assert_eq!(
+            dovi_hdr10_log_line(5, &CAPS_NONE, false, false),
+            format!("  Dolby Vision cannot be kept - output is HDR10 ({P5_NO_NATIVE})")
+        );
+        assert_eq!(dovi_hdr10_log_line(7, &CAPS_ALL, true, false), generic);
+        assert_eq!(dovi_hdr10_log_line(8, &CAPS_NONE, true, false), generic);
     }
 
     #[test]

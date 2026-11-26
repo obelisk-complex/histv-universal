@@ -567,23 +567,20 @@ fn print_dry_run_plan(
     {
         let caps = histv_lib::dovi_tools::capabilities();
         let ff_caps = encoder::ffmpeg_caps();
-        let mut dv_no_mp4box = 0usize;
-        let mut dv_no_native = 0usize;
-        for item in probed_items.iter() {
-            let Some(profile) = item.probe.dovi_profile else {
-                continue;
-            };
-            match encoder::dovi_preflight_issue(
-                profile,
-                &ff_caps,
-                caps.can_process_dovi,
-                caps.can_package_dovi_mp4,
-            ) {
-                Some((_, Some(_))) => dv_no_mp4box += 1,
-                Some((_, None)) => dv_no_native += 1,
-                None => {}
-            }
-        }
+        let mut dv_lost: Vec<&str> = probed_items
+            .iter()
+            .filter_map(|item| item.probe.dovi_profile)
+            .filter_map(|profile| {
+                encoder::dovi_preflight_issue(
+                    profile,
+                    &ff_caps,
+                    caps.can_process_dovi,
+                    caps.can_package_dovi_mp4,
+                )
+            })
+            .map(|(reason, _)| reason)
+            .collect();
+        dv_lost.sort_unstable();
         // A copied video stream keeps its HDR10+ metadata.
         let mut hdr10plus_lost: Vec<&str> = probed_items
             .iter()
@@ -595,16 +592,13 @@ fn print_dry_run_plan(
 
         let yellow = if is_tty { "\x1b[33m" } else { "" };
 
-        if dv_no_mp4box > 0 {
+        for (reason, n) in dv_lost.chunk_by(|a, b| a == b).map(|g| (g[0], g.len())) {
             eprintln!(
-                "  {yellow}{}WARNING:{reset} {} Dolby Vision file{} will fall back to HDR10 (MP4Box not found)",
-                bold, dv_no_mp4box, if dv_no_mp4box == 1 { "" } else { "s" },
-            );
-        }
-        if dv_no_native > 0 {
-            eprintln!(
-                "  {yellow}{}WARNING:{reset} {} Dolby Vision file{} will fall back to HDR10 (this ffmpeg has no native Dolby Vision coding)",
-                bold, dv_no_native, if dv_no_native == 1 { "" } else { "s" },
+                "  {yellow}{}WARNING:{reset} {} Dolby Vision file{} will fall back to HDR10 ({})",
+                bold,
+                n,
+                if n == 1 { "" } else { "s" },
+                reason,
             );
         }
         for (reason, n) in hdr10plus_lost
