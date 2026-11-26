@@ -10,6 +10,8 @@
       "modal-overwrite",
       "modal-preflight",
       "rail-collapsed",
+      "rail-max",
+      "rail-min",
       "rows"
     ],
     "props": [
@@ -97,6 +99,8 @@
       "modal-overwrite",
       "modal-preflight",
       "narrow-800",
+      "rail-max",
+      "rail-min",
       "rows"
     ],
     "props": [
@@ -114,6 +118,8 @@
       "modal-overwrite",
       "modal-preflight",
       "narrow-800",
+      "rail-max",
+      "rail-min",
       "rows"
     ],
     "props": [
@@ -130,6 +136,8 @@
       "modal-fallback",
       "modal-overwrite",
       "modal-preflight",
+      "rail-max",
+      "rail-min",
       "rows"
     ],
     "props": [
@@ -147,6 +155,8 @@
       "modal-overwrite",
       "narrow-800",
       "rail-collapsed",
+      "rail-max",
+      "rail-min",
       "rows"
     ],
     "props": [
@@ -164,6 +174,8 @@
       "modal-overwrite",
       "narrow-800",
       "rail-collapsed",
+      "rail-max",
+      "rail-min",
       "rows"
     ],
     "props": [
@@ -181,6 +193,8 @@
       "modal-overwrite",
       "narrow-800",
       "rail-collapsed",
+      "rail-max",
+      "rail-min",
       "rows"
     ],
     "props": [
@@ -198,6 +212,8 @@
       "modal-overwrite",
       "narrow-800",
       "rail-collapsed",
+      "rail-max",
+      "rail-min",
       "rows"
     ],
     "props": [
@@ -254,6 +270,8 @@
       "modal-overwrite",
       "narrow-800",
       "rail-collapsed",
+      "rail-max",
+      "rail-min",
       "rows"
     ],
     "props": [
@@ -270,6 +288,8 @@
       "modal-overwrite",
       "narrow-800",
       "rail-collapsed",
+      "rail-max",
+      "rail-min",
       "rows"
     ],
     "props": [
@@ -295,6 +315,8 @@
       "modal-fallback",
       "modal-overwrite",
       "rail-collapsed",
+      "rail-max",
+      "rail-min",
       "rows"
     ],
     "props": [
@@ -712,6 +734,8 @@
       "modal-preflight",
       "narrow-800",
       "rail-collapsed",
+      "rail-max",
+      "rail-min",
       "rows"
     ],
     "props": [
@@ -779,6 +803,8 @@
       "modal-preflight",
       "narrow-800",
       "rail-collapsed",
+      "rail-max",
+      "rail-min",
       "rows"
     ],
     "props": [
@@ -853,6 +879,384 @@
     ],
     "props": [
       "x"
+    ]
+  },
+  {
+    "id": "queue-row-0",
+    "reason": "Wording (a784a50): longer queue headers (Source size, Output size (est.)) wrap to two lines in app-classic.css.",
+    "states": [
+      "drawer",
+      "log",
+      "modal-fallback",
+      "modal-overwrite",
+      "modal-preflight",
+      "rail-max",
+      "rail-min",
+      "rows"
+    ],
+    "props": [
+      "y"
+    ]
+  },
+  {
+    "id": "queue-row-0",
+    "reason": "New by design: the Style row (#sel-ui-style) under Theme adds a 57px footer row to the rail.",
+    "states": [
+      "narrow-800"
+    ],
+    "props": [
+      "y"
+    ]
+  },
+  {
+    "id": "queue-row-0-status",
+    "reason": "Wording (a784a50): longer queue headers (Source size, Output size (est.)) wrap to two lines in app-classic.css.",
+    "states": [
+      "drawer",
+      "log",
+      "modal-fallback",
+      "modal-overwrite",
+      "modal-preflight",
+      "rail-max",
+      "rail-min",
+      "rows"
+    ],
+    "props": [
+      "y"
+    ]
+  },
+  {
+    "id": "queue-row-0-status",
+    "reason": "New by design: the Style row (#sel-ui-style) under Theme adds a 57px footer row to the rail.",
+    "states": [
+      "narrow-800"
+    ],
+    "props": [
+      "y"
+    ]
+  },
+  {
+    "id": "queue-row-1",
+    "reason": "Wording (a784a50): longer queue headers (Source size, Output size (est.)) wrap to two lines in app-classic.css.",
+    "states": [
+      "drawer",
+      "log",
+      "modal-fallback",
+      "modal-overwrite",
+      "modal-preflight",
+      "rail-max",
+      "rail-min",
+      "rows"
+    ],
+    "props": [
+      "y"
+    ]
+  },
+  {
+    "id": "queue-row-1",
+    "reason": "New by design: the Style row (#sel-ui-style) under Theme adds a 57px footer row to the rail.",
+    "states": [
+      "narrow-800"
+    ],
+    "props": [
+      "y"
+    ]
+  },
+  {
+    "id": "queue-row-1-status",
+    "reason": "Wording (a784a50): longer queue headers (Source size, Output size (est.)) wrap to two lines in app-classic.css.",
+    "states": [
+      "drawer",
+      "log",
+      "modal-fallback",
+      "modal-overwrite",
+      "modal-preflight",
+      "rail-max",
+      "rail-min",
+      "rows"
+    ],
+    "props": [
+      "y"
+    ]
+  },
+  {
+    "id": "queue-row-1-status",
+    "reason": "New by design: the Style row (#sel-ui-style) under Theme adds a 57px footer row to the rail.",
+    "states": [
+      "narrow-800"
+    ],
+    "props": [
+      "y"
+    ]
+  },
+  {
+    "id": "queue-row-2",
+    "reason": "Wording (a784a50): longer queue headers (Source size, Output size (est.)) wrap to two lines in app-classic.css.",
+    "states": [
+      "drawer",
+      "log",
+      "modal-fallback",
+      "modal-overwrite",
+      "modal-preflight",
+      "rail-max",
+      "rail-min",
+      "rows"
+    ],
+    "props": [
+      "y"
+    ]
+  },
+  {
+    "id": "queue-row-2",
+    "reason": "New by design: the Style row (#sel-ui-style) under Theme adds a 57px footer row to the rail.",
+    "states": [
+      "narrow-800"
+    ],
+    "props": [
+      "y"
+    ]
+  },
+  {
+    "id": "queue-row-2-status",
+    "reason": "Wording (a784a50): longer queue headers (Source size, Output size (est.)) wrap to two lines in app-classic.css.",
+    "states": [
+      "drawer",
+      "log",
+      "modal-fallback",
+      "modal-overwrite",
+      "modal-preflight",
+      "rail-max",
+      "rail-min",
+      "rows"
+    ],
+    "props": [
+      "y"
+    ]
+  },
+  {
+    "id": "queue-row-2-status",
+    "reason": "New by design: the Style row (#sel-ui-style) under Theme adds a 57px footer row to the rail.",
+    "states": [
+      "narrow-800"
+    ],
+    "props": [
+      "y"
+    ]
+  },
+  {
+    "id": "queue-row-3",
+    "reason": "Wording (a784a50): longer queue headers (Source size, Output size (est.)) wrap to two lines in app-classic.css.",
+    "states": [
+      "drawer",
+      "log",
+      "modal-fallback",
+      "modal-overwrite",
+      "modal-preflight",
+      "rail-max",
+      "rail-min",
+      "rows"
+    ],
+    "props": [
+      "y"
+    ]
+  },
+  {
+    "id": "queue-row-3",
+    "reason": "New by design: the Style row (#sel-ui-style) under Theme adds a 57px footer row to the rail.",
+    "states": [
+      "narrow-800"
+    ],
+    "props": [
+      "y"
+    ]
+  },
+  {
+    "id": "queue-row-3-status",
+    "reason": "Wording (a784a50): longer queue headers (Source size, Output size (est.)) wrap to two lines in app-classic.css.",
+    "states": [
+      "drawer",
+      "log",
+      "modal-fallback",
+      "modal-overwrite",
+      "modal-preflight",
+      "rail-max",
+      "rail-min",
+      "rows"
+    ],
+    "props": [
+      "y"
+    ]
+  },
+  {
+    "id": "queue-row-3-status",
+    "reason": "New by design: the Style row (#sel-ui-style) under Theme adds a 57px footer row to the rail.",
+    "states": [
+      "narrow-800"
+    ],
+    "props": [
+      "y"
+    ]
+  },
+  {
+    "id": "queue-row-4",
+    "reason": "Wording (a784a50): longer queue headers (Source size, Output size (est.)) wrap to two lines in app-classic.css.",
+    "states": [
+      "drawer",
+      "log",
+      "modal-fallback",
+      "modal-overwrite",
+      "modal-preflight",
+      "rail-max",
+      "rail-min",
+      "rows"
+    ],
+    "props": [
+      "y"
+    ]
+  },
+  {
+    "id": "queue-row-4",
+    "reason": "New by design: the Style row (#sel-ui-style) under Theme adds a 57px footer row to the rail.",
+    "states": [
+      "narrow-800"
+    ],
+    "props": [
+      "y"
+    ]
+  },
+  {
+    "id": "queue-row-4-status",
+    "reason": "Wording (a784a50): longer queue headers (Source size, Output size (est.)) wrap to two lines in app-classic.css.",
+    "states": [
+      "drawer",
+      "log",
+      "modal-fallback",
+      "modal-overwrite",
+      "modal-preflight",
+      "rail-max",
+      "rail-min",
+      "rows"
+    ],
+    "props": [
+      "y"
+    ]
+  },
+  {
+    "id": "queue-row-4-status",
+    "reason": "New by design: the Style row (#sel-ui-style) under Theme adds a 57px footer row to the rail.",
+    "states": [
+      "narrow-800"
+    ],
+    "props": [
+      "y"
+    ]
+  },
+  {
+    "id": "queue-row-5",
+    "reason": "Wording (a784a50): longer queue headers (Source size, Output size (est.)) wrap to two lines in app-classic.css.",
+    "states": [
+      "drawer",
+      "log",
+      "modal-fallback",
+      "modal-overwrite",
+      "modal-preflight",
+      "rail-max",
+      "rail-min",
+      "rows"
+    ],
+    "props": [
+      "y"
+    ]
+  },
+  {
+    "id": "queue-row-5",
+    "reason": "New by design: the Style row (#sel-ui-style) under Theme adds a 57px footer row to the rail.",
+    "states": [
+      "narrow-800"
+    ],
+    "props": [
+      "y"
+    ]
+  },
+  {
+    "id": "queue-row-5-status",
+    "reason": "Wording (a784a50): longer queue headers (Source size, Output size (est.)) wrap to two lines in app-classic.css.",
+    "states": [
+      "drawer",
+      "log",
+      "modal-fallback",
+      "modal-overwrite",
+      "modal-preflight",
+      "rail-max",
+      "rail-min",
+      "rows"
+    ],
+    "props": [
+      "y"
+    ]
+  },
+  {
+    "id": "queue-row-5-status",
+    "reason": "New by design: the Style row (#sel-ui-style) under Theme adds a 57px footer row to the rail.",
+    "states": [
+      "narrow-800"
+    ],
+    "props": [
+      "y"
+    ]
+  },
+  {
+    "id": "queue-row-6",
+    "reason": "Wording (a784a50): longer queue headers (Source size, Output size (est.)) wrap to two lines in app-classic.css.",
+    "states": [
+      "drawer",
+      "log",
+      "modal-fallback",
+      "modal-overwrite",
+      "modal-preflight",
+      "rail-max",
+      "rail-min",
+      "rows"
+    ],
+    "props": [
+      "y"
+    ]
+  },
+  {
+    "id": "queue-row-6",
+    "reason": "New by design: the Style row (#sel-ui-style) under Theme adds a 57px footer row to the rail.",
+    "states": [
+      "narrow-800"
+    ],
+    "props": [
+      "y"
+    ]
+  },
+  {
+    "id": "queue-row-6-status",
+    "reason": "Wording (a784a50): longer queue headers (Source size, Output size (est.)) wrap to two lines in app-classic.css.",
+    "states": [
+      "drawer",
+      "log",
+      "modal-fallback",
+      "modal-overwrite",
+      "modal-preflight",
+      "rail-max",
+      "rail-min",
+      "rows"
+    ],
+    "props": [
+      "y"
+    ]
+  },
+  {
+    "id": "queue-row-6-status",
+    "reason": "New by design: the Style row (#sel-ui-style) under Theme adds a 57px footer row to the rail.",
+    "states": [
+      "narrow-800"
+    ],
+    "props": [
+      "y"
     ]
   }
 ]
