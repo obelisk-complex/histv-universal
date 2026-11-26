@@ -648,6 +648,10 @@ pub struct FfmpegCaps {
     /// set when the option is reported as unrecognised; a failed probe
     /// leaves the modern spelling in place.
     pub no_fps_mode: bool,
+    /// Major release number from `ffmpeg -version`. `None` when it cannot be
+    /// read (git and date-stamped builds, a failed probe); nothing is gated
+    /// on an unknown version.
+    pub ffmpeg_major: Option<u32>,
 }
 
 static FFMPEG_CAPS: std::sync::RwLock<FfmpegCaps> = std::sync::RwLock::new(FfmpegCaps {
@@ -656,7 +660,26 @@ static FFMPEG_CAPS: std::sync::RwLock<FfmpegCaps> = std::sync::RwLock::new(Ffmpe
     x265_hdr10plus: false,
     hevc_metadata_size: false,
     no_fps_mode: false,
+    ffmpeg_major: None,
 });
+
+/// Major release number from `ffmpeg -version` output ("ffmpeg version
+/// n8.1.3 ..."), or from a bare version string. `None` for builds without a
+/// release number ("N-12345-g...", "git-...", "2024-05-01-git-...").
+pub fn parse_ffmpeg_major(version_output: &str) -> Option<u32> {
+    let token = version_output
+        .lines()
+        .find_map(|l| l.strip_prefix("ffmpeg version "))
+        .unwrap_or(version_output)
+        .split_whitespace()
+        .next()?;
+    let token = token.strip_prefix('n').unwrap_or(token);
+    let (major, _) = token.split_once('.')?;
+    if major.is_empty() || !major.bytes().all(|b| b.is_ascii_digit()) {
+        return None;
+    }
+    major.parse().ok()
+}
 
 /// Whether ffmpeg's stderr says `-fps_mode` is not an option (before 5.1).
 pub fn fps_mode_unrecognised(stderr: &str) -> bool {
@@ -729,6 +752,9 @@ async fn ffmpeg_stdout_stderr(args: &[&str]) -> Option<(String, String)> {
 
 async fn probe_ffmpeg_caps(has_x265: bool, has_svtav1: bool) -> FfmpegCaps {
     let mut caps = FfmpegCaps::default();
+    if let Some((out, _)) = ffmpeg_stdout_stderr(&["-version"]).await {
+        caps.ffmpeg_major = parse_ffmpeg_major(&out);
+    }
     if let Some((out, _)) = ffmpeg_stdout_stderr(&["-hide_banner", "-h", "bsf=hevc_metadata"]).await
     {
         caps.hevc_metadata_size = bsf_help_has_size(&out);
@@ -853,7 +879,15 @@ pub mod hdr10plus_loss {
     pub const X265_NO_SUPPORT: &str = "this ffmpeg's libx265 cannot write HDR10+";
     pub const X265_PROFILE: &str =
         "the HDR10+ metadata is neither profile A nor B, which libx265 needs";
+    pub const VAAPI_OLD_FFMPEG: &str =
+        "this ffmpeg's demuxer mis-orders the stream's parameter sets";
 }
+
+/// The oldest ffmpeg major version whose `hevc_mp4toannexb` puts the
+/// container's parameter sets ahead of the in-band ones. Older releases put
+/// them after, and `hevc_vaapi` (AMD/Mesa) writes a different PPS in-band
+/// than in the container header, so the decoder picks the stale one.
+const VAAPI_MIN_FFMPEG_MAJOR: u32 = 7;
 
 /// HDR10+ routing for one file, decided before any extraction.
 ///
@@ -903,6 +937,13 @@ pub fn hdr10plus_route(
     }
     if dovi_kept {
         return Err(DOVI_KEPT);
+    }
+    if encoder == "hevc_vaapi"
+        && caps
+            .ffmpeg_major
+            .is_some_and(|m| m < VAAPI_MIN_FFMPEG_MAJOR)
+    {
+        return Err(VAAPI_OLD_FFMPEG);
     }
     Ok(Some(Hdr10PlusRoute::Injector))
 }
@@ -8675,6 +8716,7 @@ mod tests {
         x265_hdr10plus: true,
         hevc_metadata_size: true,
         no_fps_mode: false,
+        ffmpeg_major: None,
     };
     const CAPS_NONE: FfmpegCaps = FfmpegCaps {
         dovi_x265: false,
@@ -8682,7 +8724,75 @@ mod tests {
         x265_hdr10plus: false,
         hevc_metadata_size: false,
         no_fps_mode: false,
+        ffmpeg_major: None,
     };
+
+    #[test]
+    fn parse_ffmpeg_major_versions() {
+        let banner = |v: &str| {
+            format!("ffmpeg version {v} Copyright (c) 2000-2024 the FFmpeg developers\nbuilt with gcc 13\n")
+        };
+        assert_eq!(parse_ffmpeg_major(&banner("n8.1.3")), Some(8));
+        assert_eq!(parse_ffmpeg_major(&banner("8.1.3")), Some(8));
+        assert_eq!(parse_ffmpeg_major(&banner("6.1.1-3ubuntu5")), Some(6));
+        assert_eq!(parse_ffmpeg_major(&banner("7.0")), Some(7));
+        assert_eq!(parse_ffmpeg_major(&banner("n7.1.1-4-gabcdef")), Some(7));
+        assert_eq!(parse_ffmpeg_major(&banner("9.0.1")), Some(9));
+        // The bare version token is accepted too.
+        assert_eq!(parse_ffmpeg_major("n8.1.3"), Some(8));
+        assert_eq!(parse_ffmpeg_major("6.1.1-3ubuntu5"), Some(6));
+        // Git and date-stamped builds carry no release number.
+        assert_eq!(parse_ffmpeg_major(&banner("N-117341-g1a2b3c4d5e")), None);
+        assert_eq!(parse_ffmpeg_major(&banner("git-2024-05-01-abcdef")), None);
+        assert_eq!(parse_ffmpeg_major(&banner("2024-05-01-git-abcdef")), None);
+        assert_eq!(parse_ffmpeg_major(&banner("unknown")), None);
+        assert_eq!(parse_ffmpeg_major(""), None);
+        assert_eq!(parse_ffmpeg_major("ffmpeg version \n"), None);
+    }
+
+    #[test]
+    fn hdr10p_vaapi_needs_ffmpeg_7() {
+        use hdr10plus_loss::*;
+        use Hdr10PlusRoute::*;
+        let with = |major| FfmpegCaps {
+            ffmpeg_major: major,
+            ..CAPS_ALL
+        };
+        let route = |enc, caps: &FfmpegCaps| {
+            hdr10plus_route(true, true, true, enc, "hevc", None, caps, "B")
+        };
+        for major in [Some(5), Some(6)] {
+            assert_eq!(
+                route("hevc_vaapi", &with(major)),
+                Err(VAAPI_OLD_FFMPEG),
+                "{major:?}"
+            );
+        }
+        for major in [Some(7), Some(8), Some(9), None] {
+            assert_eq!(
+                route("hevc_vaapi", &with(major)),
+                Ok(Some(Injector)),
+                "{major:?}"
+            );
+        }
+        // Other encoders are unaffected by the version.
+        assert_eq!(route("hevc_nvenc", &with(Some(6))), Ok(Some(Injector)));
+        assert_eq!(route("libx265", &with(Some(6))), Ok(Some(X265Native)));
+        // Nothing to keep: no reason is given.
+        assert_eq!(
+            hdr10plus_route(
+                false,
+                true,
+                true,
+                "hevc_vaapi",
+                "hevc",
+                None,
+                &with(Some(6)),
+                ""
+            ),
+            Ok(None)
+        );
+    }
 
     #[test]
     fn parse_help_has_dolbyvision() {

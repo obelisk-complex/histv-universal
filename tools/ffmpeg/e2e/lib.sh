@@ -155,6 +155,12 @@ enc_usable() {
   esac
 }
 
+# ffmpeg_major: major release number of the ffmpeg under test ("n8.1.3" -> 8,
+# "6.1.1-3ubuntu5" -> 6); empty for builds without a release number.
+ffmpeg_major() {
+  "$FFMPEG" -hide_banner -version 2>/dev/null | sed -n '1s/^ffmpeg version n\{0,1\}\([0-9][0-9]*\)\..*/\1/p'
+}
+
 # caps_yes <label>: the app's capability line says "<label> yes".
 caps_yes() { printf '%s' "$CAPS_LINE" | grep -q "$1 yes"; }
 

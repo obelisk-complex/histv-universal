@@ -7,7 +7,9 @@
 # ffprobe and compared with the source, in display order:
 #   libx265 route    x265 writes the metadata itself (dhdr10-info)
 #   hardware route   hevc_vaapi / hevc_vulkan cannot; the app extracts the
-#                    metadata, encodes without B-frames and injects it again
+#                    metadata, encodes without B-frames and injects it again.
+#                    hevc_vaapi on an ffmpeg older than 7 is the exception: the
+#                    app keeps static HDR10 only (see the loop below)
 #   copy route       a source under the bitrate target is stream-copied
 #   SDR route        tone-mapped to SDR, the metadata must be gone
 # A build whose x265 lacks HDR10+ (the system ffmpeg 6.1.1 here) cannot make the
@@ -66,6 +68,19 @@ for enc in hevc_vaapi hevc_vulkan; do
     continue
   fi
   run_cli "h10p-$enc" "$SRC" -c hevc -e "$enc" -b 1 --hdr
+  major=$(ffmpeg_major)
+  if [ "$enc" = hevc_vaapi ] && [ -n "$major" ] && [ "$major" -lt 7 ]; then
+    # Before ffmpeg 7, hevc_mp4toannexb puts the container's parameter sets
+    # after the in-band ones. AMD/Mesa hevc_vaapi writes a different PPS in
+    # each, so the decoder takes the stale one (cu_qp_delta errors). The app
+    # keeps static HDR10 instead of injecting.
+    if cli_ok "$enc route (ffmpeg $major): static HDR10"; then
+      expect_eq "$enc route (ffmpeg $major): pix_fmt" "$(probe_v "$CLI_OUT" pix_fmt)" yuv420p10le
+      expect_eq "$enc route (ffmpeg $major): transfer stays PQ" "$(probe_v "$CLI_OUT" color_transfer)" smpte2084
+      expect_eq "$enc route (ffmpeg $major): no HDR10+ metadata" "$(hdr10plus_frames "$CLI_OUT" | awk '$1 != "none"' | wc -l)" 0
+    fi
+    continue
+  fi
   if cli_ok "$enc route"; then
     expect_eq "$enc route: pix_fmt" "$(probe_v "$CLI_OUT" pix_fmt)" yuv420p10le
     hdr10plus_check "$enc route"
