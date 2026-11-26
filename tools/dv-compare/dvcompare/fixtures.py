@@ -40,7 +40,9 @@ def clip(tools, dest, bframes=4, crf=12, seconds=2, size="480x270", fps=24):
             "-x265-params",
             (
                 f"bframes={bframes}:keyint={fps}:log-level=error:colorprim=bt2020:transfer=smpte2084:"
-                "colormatrix=bt2020nc:repeat-headers=1"
+                "colormatrix=bt2020nc:repeat-headers=1:"
+                "master-display=G(13250,34500)B(7500,3000)R(34000,16000)WP(15635,16450)L(10000000,1):"
+                "max-cll=1000,400"
             ),
             "-f",
             "mp4",
