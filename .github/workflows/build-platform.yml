@@ -272,6 +272,23 @@ jobs:
           cp ffmpeg-bin/BUILDINFO.txt bundle-cli/FFMPEG-BUILDINFO.txt
           cd bundle-cli && 7z a -tzip -mx=9 ../artefacts/histv-cli-windows-full.zip * && cd ..
 
+      - name: Repair AppImage icon (Linux)
+        if: inputs.label == 'linux'
+        shell: bash
+        run: |
+          set -e
+          # Tauri leaves .DirIcon as an absolute symlink into the runner's
+          # checkout, which dangles on any other machine. The plain AppImage is
+          # published as it stands, so repair it before the -full variant is
+          # derived from it.
+          APPIMAGETOOL_URL="https://github.com/AppImage/appimagetool/releases/download/${APPIMAGETOOL_VERSION}/appimagetool-x86_64.AppImage"
+          curl -fSL --retry 3 -o appimagetool "$APPIMAGETOOL_URL"
+          echo "${APPIMAGETOOL_SHA256}  appimagetool" | sha256sum -c -
+          chmod +x appimagetool
+
+          APPIMAGE=$(find artefacts -name "*.AppImage" | head -1)
+          APPIMAGETOOL=./appimagetool tools/appimage/repack.sh "$APPIMAGE" "$APPIMAGE"
+
       - name: Bundle full (Linux)
         if: inputs.label == 'linux'
         shell: bash
@@ -296,20 +313,10 @@ jobs:
           find squashfs-root -name 'libEGL*.so*' -delete
           find squashfs-root -name 'libgbm*.so*' -delete
 
-          # Fix .DirIcon: Tauri generates an absolute-path symlink that dangles
-          # when the AppImage is mounted on a different machine. Replace with a
-          # real copy so file managers can display the icon.
-          rm -f squashfs-root/.DirIcon
-          ICON_SRC=$(find squashfs-root/usr/share/icons/hicolor -name 'histv.png' -path '*/512x512/*' -print -quit 2>/dev/null || find squashfs-root/usr/share/icons/hicolor -name 'histv.png' -print -quit 2>/dev/null)
-          if [ -n "$ICON_SRC" ]; then
-            cp "$ICON_SRC" squashfs-root/.DirIcon
-          fi
+          # Fix .DirIcon (dangling symlink, see tools/appimage/fix-diricon.sh)
+          tools/appimage/fix-diricon.sh squashfs-root
 
-          # Get appimagetool to repack (pinned version)
-          APPIMAGETOOL_URL="https://github.com/AppImage/appimagetool/releases/download/${APPIMAGETOOL_VERSION}/appimagetool-x86_64.AppImage"
-          curl -fSL --retry 3 -o appimagetool "$APPIMAGETOOL_URL"
-          echo "${APPIMAGETOOL_SHA256}  appimagetool" | sha256sum -c -
-          chmod +x appimagetool
+          # Repack with the pinned appimagetool fetched above
           ARCH=x86_64 ./appimagetool --appimage-extract-and-run squashfs-root/ artefacts/histv-linux-full.AppImage
 
           # CLI full - tar.gz with ffmpeg
