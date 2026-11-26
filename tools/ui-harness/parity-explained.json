@@ -1,1 +1,576 @@
-[]
+[
+  {
+    "id": "ui-style-css",
+    "reason": "New by design (spec contract): the interface-style stylesheet link and control do not exist in 2.6.0.",
+    "states": [
+      "drawer",
+      "empty",
+      "log",
+      "modal-fallback",
+      "modal-overwrite",
+      "modal-preflight",
+      "narrow-800",
+      "rail-collapsed",
+      "rows"
+    ],
+    "props": [
+      "present"
+    ]
+  },
+  {
+    "id": "sel-ui-style",
+    "reason": "New by design (spec contract): the interface-style stylesheet link and control do not exist in 2.6.0.",
+    "states": [
+      "drawer",
+      "empty",
+      "log",
+      "modal-fallback",
+      "modal-overwrite",
+      "modal-preflight",
+      "narrow-800",
+      "rail-collapsed",
+      "rows"
+    ],
+    "props": [
+      "present"
+    ]
+  },
+  {
+    "id": "doublet-tokens-css",
+    "reason": "New by design (spec contract): the interface-style stylesheet link and control do not exist in 2.6.0.",
+    "states": [
+      "drawer",
+      "empty",
+      "log",
+      "modal-fallback",
+      "modal-overwrite",
+      "modal-preflight",
+      "narrow-800",
+      "rail-collapsed",
+      "rows"
+    ],
+    "props": [
+      "present"
+    ]
+  },
+  {
+    "id": "doublet-components-css",
+    "reason": "New by design (spec contract): the interface-style stylesheet link and control do not exist in 2.6.0.",
+    "states": [
+      "drawer",
+      "empty",
+      "log",
+      "modal-fallback",
+      "modal-overwrite",
+      "modal-preflight",
+      "narrow-800",
+      "rail-collapsed",
+      "rows"
+    ],
+    "props": [
+      "present"
+    ]
+  },
+  {
+    "id": "sel-theme",
+    "reason": "New by design: the Style row (#sel-ui-style) under Theme adds a 57px footer row to the rail.",
+    "states": [
+      "drawer",
+      "empty",
+      "log",
+      "modal-fallback",
+      "modal-overwrite",
+      "modal-preflight",
+      "rail-collapsed",
+      "rows"
+    ],
+    "props": [
+      "y"
+    ]
+  },
+  {
+    "id": "right-panel",
+    "reason": "New by design: the Style row (#sel-ui-style) under Theme adds a 57px footer row to the rail.",
+    "states": [
+      "narrow-800"
+    ],
+    "props": [
+      "h"
+    ]
+  },
+  {
+    "id": "left-panel",
+    "reason": "New by design: the Style row (#sel-ui-style) under Theme adds a 57px footer row to the rail.",
+    "states": [
+      "narrow-800"
+    ],
+    "props": [
+      "y"
+    ]
+  },
+  {
+    "id": "left-panel",
+    "reason": "New by design: the Style row (#sel-ui-style) under Theme adds a 57px footer row to the rail.",
+    "states": [
+      "narrow-800"
+    ],
+    "props": [
+      "h"
+    ]
+  },
+  {
+    "id": "queue-container",
+    "reason": "New by design: the Style row (#sel-ui-style) under Theme adds a 57px footer row to the rail.",
+    "states": [
+      "narrow-800"
+    ],
+    "props": [
+      "y"
+    ]
+  },
+  {
+    "id": "queue-container",
+    "reason": "New by design: the Style row (#sel-ui-style) under Theme adds a 57px footer row to the rail.",
+    "states": [
+      "narrow-800"
+    ],
+    "props": [
+      "h"
+    ]
+  },
+  {
+    "id": "queue-summary",
+    "reason": "New by design: the Style row (#sel-ui-style) under Theme adds a 57px footer row to the rail.",
+    "states": [
+      "narrow-800"
+    ],
+    "props": [
+      "y"
+    ]
+  },
+  {
+    "id": "queue-table",
+    "reason": "New by design: the Style row (#sel-ui-style) under Theme adds a 57px footer row to the rail.",
+    "states": [
+      "narrow-800"
+    ],
+    "props": [
+      "y"
+    ]
+  },
+  {
+    "id": "queue-body",
+    "reason": "Wording (a784a50): longer queue headers (Source size, Output size (est.)) wrap to two lines in app-classic.css.",
+    "states": [
+      "drawer",
+      "empty",
+      "log",
+      "modal-fallback",
+      "modal-overwrite",
+      "modal-preflight",
+      "narrow-800",
+      "rows"
+    ],
+    "props": [
+      "y"
+    ]
+  },
+  {
+    "id": "select-all",
+    "reason": "Wording (a784a50): longer queue headers (Source size, Output size (est.)) wrap to two lines in app-classic.css.",
+    "states": [
+      "drawer",
+      "empty",
+      "log",
+      "modal-fallback",
+      "modal-overwrite",
+      "modal-preflight",
+      "narrow-800",
+      "rows"
+    ],
+    "props": [
+      "y"
+    ]
+  },
+  {
+    "id": "queue-table",
+    "reason": "Wording (a784a50): longer queue headers (Source size, Output size (est.)) wrap to two lines in app-classic.css.",
+    "states": [
+      "drawer",
+      "empty",
+      "log",
+      "modal-fallback",
+      "modal-overwrite",
+      "modal-preflight",
+      "rows"
+    ],
+    "props": [
+      "h"
+    ]
+  },
+  {
+    "id": "start-tooltip",
+    "reason": "Wording (a784a50): the 'Batch already running' and 'No pending items in the queue' Start hints were removed, so the tooltip is empty.",
+    "states": [
+      "drawer",
+      "empty",
+      "log",
+      "modal-fallback",
+      "modal-overwrite",
+      "narrow-800",
+      "rail-collapsed",
+      "rows"
+    ],
+    "props": [
+      "x"
+    ]
+  },
+  {
+    "id": "start-tooltip",
+    "reason": "Wording (a784a50): the 'Batch already running' and 'No pending items in the queue' Start hints were removed, so the tooltip is empty.",
+    "states": [
+      "drawer",
+      "empty",
+      "log",
+      "modal-fallback",
+      "modal-overwrite",
+      "narrow-800",
+      "rail-collapsed",
+      "rows"
+    ],
+    "props": [
+      "y"
+    ]
+  },
+  {
+    "id": "start-tooltip",
+    "reason": "Wording (a784a50): the 'Batch already running' and 'No pending items in the queue' Start hints were removed, so the tooltip is empty.",
+    "states": [
+      "drawer",
+      "empty",
+      "log",
+      "modal-fallback",
+      "modal-overwrite",
+      "narrow-800",
+      "rail-collapsed",
+      "rows"
+    ],
+    "props": [
+      "w"
+    ]
+  },
+  {
+    "id": "start-tooltip",
+    "reason": "Wording (a784a50): the 'Batch already running' and 'No pending items in the queue' Start hints were removed, so the tooltip is empty.",
+    "states": [
+      "drawer",
+      "empty",
+      "log",
+      "modal-fallback",
+      "modal-overwrite",
+      "narrow-800",
+      "rail-collapsed",
+      "rows"
+    ],
+    "props": [
+      "h"
+    ]
+  },
+  {
+    "id": "radio-output-mode",
+    "reason": "Wording (a784a50): label 'Where' became 'Output location', option 'Use the Save to folder' became 'Save to folder'.",
+    "states": [
+      "drawer"
+    ],
+    "props": [
+      "x"
+    ]
+  },
+  {
+    "id": "radio-output-mode",
+    "reason": "Wording (a784a50): label 'Where' became 'Output location', option 'Use the Save to folder' became 'Save to folder'.",
+    "states": [
+      "drawer"
+    ],
+    "props": [
+      "w"
+    ]
+  },
+  {
+    "id": "sel-post-action",
+    "reason": "Wording (a784a50): the After batch Action label lost its tooltip icon, so the select starts earlier.",
+    "states": [
+      "drawer"
+    ],
+    "props": [
+      "x"
+    ]
+  },
+  {
+    "id": "sel-post-action",
+    "reason": "Wording (a784a50): the After batch Action label lost its tooltip icon, so the select starts earlier.",
+    "states": [
+      "drawer"
+    ],
+    "props": [
+      "w"
+    ]
+  },
+  {
+    "id": "job-status",
+    "reason": "Wording (a784a50): status chip reads 'Encoding' instead of 'Encoding...', so it is narrower.",
+    "states": [
+      "drawer",
+      "log",
+      "modal-fallback",
+      "modal-overwrite",
+      "narrow-800",
+      "rail-collapsed",
+      "rows"
+    ],
+    "props": [
+      "w"
+    ]
+  },
+  {
+    "id": "job-file",
+    "reason": "Wording (a784a50): status chip reads 'Encoding' instead of 'Encoding...', so it is narrower.",
+    "states": [
+      "drawer",
+      "log",
+      "modal-fallback",
+      "modal-overwrite",
+      "narrow-800",
+      "rail-collapsed",
+      "rows"
+    ],
+    "props": [
+      "x"
+    ]
+  },
+  {
+    "id": "job-file",
+    "reason": "Wording (a784a50): status chip reads 'Encoding' instead of 'Encoding...', so it is narrower.",
+    "states": [
+      "narrow-800"
+    ],
+    "props": [
+      "w"
+    ]
+  },
+  {
+    "id": "job-progress-text",
+    "reason": "Wording (a784a50): status chip reads 'Encoding' instead of 'Encoding...', so it is narrower.",
+    "states": [
+      "drawer",
+      "log",
+      "modal-fallback",
+      "modal-overwrite",
+      "rail-collapsed",
+      "rows"
+    ],
+    "props": [
+      "x"
+    ]
+  },
+  {
+    "id": "modal-overwrite-title",
+    "reason": "Wording (a784a50): dialog body is the file name only (one line) and buttons read Replace / Skip / Replace all.",
+    "states": [
+      "modal-overwrite"
+    ],
+    "props": [
+      "y"
+    ]
+  },
+  {
+    "id": "overwrite-body",
+    "reason": "Wording (a784a50): dialog body is the file name only (one line) and buttons read Replace / Skip / Replace all.",
+    "states": [
+      "modal-overwrite"
+    ],
+    "props": [
+      "y"
+    ]
+  },
+  {
+    "id": "overwrite-body",
+    "reason": "Wording (a784a50): dialog body is the file name only (one line) and buttons read Replace / Skip / Replace all.",
+    "states": [
+      "modal-overwrite"
+    ],
+    "props": [
+      "h"
+    ]
+  },
+  {
+    "id": "ow-yes",
+    "reason": "Wording (a784a50): dialog body is the file name only (one line) and buttons read Replace / Skip / Replace all.",
+    "states": [
+      "modal-overwrite"
+    ],
+    "props": [
+      "x"
+    ]
+  },
+  {
+    "id": "ow-yes",
+    "reason": "Wording (a784a50): dialog body is the file name only (one line) and buttons read Replace / Skip / Replace all.",
+    "states": [
+      "modal-overwrite"
+    ],
+    "props": [
+      "y"
+    ]
+  },
+  {
+    "id": "ow-yes",
+    "reason": "Wording (a784a50): dialog body is the file name only (one line) and buttons read Replace / Skip / Replace all.",
+    "states": [
+      "modal-overwrite"
+    ],
+    "props": [
+      "w"
+    ]
+  },
+  {
+    "id": "ow-no",
+    "reason": "Wording (a784a50): dialog body is the file name only (one line) and buttons read Replace / Skip / Replace all.",
+    "states": [
+      "modal-overwrite"
+    ],
+    "props": [
+      "x"
+    ]
+  },
+  {
+    "id": "ow-no",
+    "reason": "Wording (a784a50): dialog body is the file name only (one line) and buttons read Replace / Skip / Replace all.",
+    "states": [
+      "modal-overwrite"
+    ],
+    "props": [
+      "y"
+    ]
+  },
+  {
+    "id": "ow-no",
+    "reason": "Wording (a784a50): dialog body is the file name only (one line) and buttons read Replace / Skip / Replace all.",
+    "states": [
+      "modal-overwrite"
+    ],
+    "props": [
+      "w"
+    ]
+  },
+  {
+    "id": "ow-always",
+    "reason": "Wording (a784a50): dialog body is the file name only (one line) and buttons read Replace / Skip / Replace all.",
+    "states": [
+      "modal-overwrite"
+    ],
+    "props": [
+      "x"
+    ]
+  },
+  {
+    "id": "ow-always",
+    "reason": "Wording (a784a50): dialog body is the file name only (one line) and buttons read Replace / Skip / Replace all.",
+    "states": [
+      "modal-overwrite"
+    ],
+    "props": [
+      "y"
+    ]
+  },
+  {
+    "id": "ow-always",
+    "reason": "Wording (a784a50): dialog body is the file name only (one line) and buttons read Replace / Skip / Replace all.",
+    "states": [
+      "modal-overwrite"
+    ],
+    "props": [
+      "w"
+    ]
+  },
+  {
+    "id": "modal-fallback-title",
+    "reason": "Wording (a784a50): dialog body is the file name only (one line) and buttons read Replace / Skip / Replace all.",
+    "states": [
+      "modal-fallback"
+    ],
+    "props": [
+      "y"
+    ]
+  },
+  {
+    "id": "fallback-body",
+    "reason": "Wording (a784a50): dialog body is the file name only (one line) and buttons read Replace / Skip / Replace all.",
+    "states": [
+      "modal-fallback"
+    ],
+    "props": [
+      "y"
+    ]
+  },
+  {
+    "id": "fallback-body",
+    "reason": "Wording (a784a50): dialog body is the file name only (one line) and buttons read Replace / Skip / Replace all.",
+    "states": [
+      "modal-fallback"
+    ],
+    "props": [
+      "h"
+    ]
+  },
+  {
+    "id": "fb-yes",
+    "reason": "Wording (a784a50): dialog body is the file name only (one line) and buttons read Replace / Skip / Replace all.",
+    "states": [
+      "modal-fallback"
+    ],
+    "props": [
+      "y"
+    ]
+  },
+  {
+    "id": "fb-no",
+    "reason": "Wording (a784a50): dialog body is the file name only (one line) and buttons read Replace / Skip / Replace all.",
+    "states": [
+      "modal-fallback"
+    ],
+    "props": [
+      "y"
+    ]
+  },
+  {
+    "id": "advanced-arrow",
+    "reason": "Wording (fb25e9f): 'H.264/MP4 - plays on...' became 'H.264/MP4. Plays on...', one line less in the 0-width collapsed rail.",
+    "states": [
+      "rail-collapsed"
+    ],
+    "props": [
+      "y"
+    ]
+  },
+  {
+    "id": "advanced-toggle",
+    "reason": "Wording (fb25e9f): 'H.264/MP4 - plays on...' became 'H.264/MP4. Plays on...', one line less in the 0-width collapsed rail.",
+    "states": [
+      "rail-collapsed"
+    ],
+    "props": [
+      "y"
+    ]
+  },
+  {
+    "id": "profile-list",
+    "reason": "Wording (fb25e9f): 'H.264/MP4 - plays on...' became 'H.264/MP4. Plays on...', one line less in the 0-width collapsed rail.",
+    "states": [
+      "rail-collapsed"
+    ],
+    "props": [
+      "h"
+    ]
+  }
+]
