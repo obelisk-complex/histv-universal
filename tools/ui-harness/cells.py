@@ -1,5 +1,5 @@
 """Render one cell of the matrix (ref x style x theme x state) and return its geometry."""
-from core import check_applied, dump, open_page
+from core import CellFailure, HarnessError, check_applied, dump, open_page
 from states import STATES
 
 
@@ -18,5 +18,12 @@ def render_cell(session, site, tree, theme, ui_style, state, shot_path=None, dro
             loaded.page.screenshot(path=str(shot_path))
         loaded.check()
         return d
+    except (CellFailure, HarnessError):
+        raise
+    except Exception as e:
+        # A timeout is usually the page not doing what the state needs; if the
+        # mock refused a call that is the real cause, so look there first.
+        loaded.check()
+        raise CellFailure(str(e).strip().splitlines()[0])
     finally:
         loaded.close()

@@ -7,6 +7,7 @@ import sys
 import core
 from core import EXIT_DIFF, EXIT_HARNESS, EXIT_NOTHING, EXIT_OK, CellFailure, HarnessError, Report, Session, Site, slug
 from cells import render_cell
+from parity import cmd_parity
 from states import STATES, STYLES, THEMES
 
 
@@ -65,6 +66,14 @@ def main():
     m.add_argument("--mock-drop", nargs="*", default=[], metavar="CMD",
                    help="negative control: make the mock not know these commands")
     m.set_defaults(fn=cmd_matrix)
+    q = sub.add_parser("parity", help="compare bounding boxes of shared ids between two refs")
+    q.add_argument("--baseline", default="e4d0ee2", help="default: the last commit before Doublet")
+    q.add_argument("--candidate", default="HEAD")
+    q.add_argument("--baseline-style", default="native", choices=["native", "doublet", "classic"])
+    q.add_argument("--candidate-style", default="classic", choices=["native", "doublet", "classic"])
+    q.add_argument("--tol", type=float, default=1.0, help="allowed difference per x, y, w, h in px (default 1)")
+    q.add_argument("--states", nargs="*", choices=list(STATES))
+    q.set_defaults(fn=cmd_parity)
     a = p.parse_args()
     try:
         return a.fn(a)
