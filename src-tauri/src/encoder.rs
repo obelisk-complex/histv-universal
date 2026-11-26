@@ -402,6 +402,19 @@ pub fn hw_device_args(
     render_node: Option<&str>,
     os: TargetOs,
 ) -> HwArgs {
+    hw_device_args_with(enc, pix_fmt, has_tonemap, render_node, os, true)
+}
+
+/// `hw_device_args`, with `device_decode` false keeping VAAPI 10-bit
+/// decode in software (`vaapi_device_decode_ok`).
+pub fn hw_device_args_with(
+    enc: &str,
+    pix_fmt: &str,
+    has_tonemap: bool,
+    render_node: Option<&str>,
+    os: TargetOs,
+    device_decode: bool,
+) -> HwArgs {
     let s = |v: &[&str]| v.iter().map(|x| x.to_string()).collect::<Vec<String>>();
     let ten_bit = pix_fmt == "p010le";
     let mut hw = HwArgs {
@@ -413,7 +426,7 @@ pub fn hw_device_args(
 
     if os == TargetOs::Linux && is_vaapi_encoder(enc) {
         match render_node {
-            Some(node) if ten_bit && !has_tonemap => {
+            Some(node) if ten_bit && !has_tonemap && device_decode => {
                 hw.pre_input = s(&[
                     "-hwaccel",
                     "vaapi",
@@ -428,7 +441,11 @@ pub fn hw_device_args(
             }
             Some(node) => {
                 hw.pre_input = s(&["-vaapi_device", node]);
-                hw.upload_filter = Some("format=nv12,hwupload".into());
+                hw.upload_filter = Some(if ten_bit && !has_tonemap {
+                    "format=p010,hwupload".into()
+                } else {
+                    "format=nv12,hwupload".into()
+                });
             }
             None => {
                 hw.pre_input = s(&["-vaapi_device", "/dev/dri/renderD_missing"]);
@@ -625,12 +642,15 @@ pub struct FfmpegCaps {
     pub dovi_svtav1: bool,
     /// libx265 was built with HDR10_PLUS, so `dhdr10-info` works.
     pub x265_hdr10plus: bool,
+    /// The `hevc_metadata` BSF has `width` and `height` (absent in 6.1).
+    pub hevc_metadata_size: bool,
 }
 
 static FFMPEG_CAPS: std::sync::RwLock<FfmpegCaps> = std::sync::RwLock::new(FfmpegCaps {
     dovi_x265: false,
     dovi_svtav1: false,
     x265_hdr10plus: false,
+    hevc_metadata_size: false,
 });
 
 /// The capabilities found by the last `detect_encoders` run.
@@ -643,6 +663,16 @@ pub fn help_has_dolbyvision(help_stdout: &str) -> bool {
     help_stdout
         .lines()
         .any(|l| l.trim_start().starts_with("-dolbyvision"))
+}
+
+/// Whether `ffmpeg -h bsf=hevc_metadata` output lists `width` and `height`.
+pub fn bsf_help_has_size(help_stdout: &str) -> bool {
+    let has = |opt: &str| {
+        help_stdout
+            .lines()
+            .any(|l| l.split_whitespace().next() == Some(opt))
+    };
+    has("-width") && has("-height")
 }
 
 /// Whether an x265 encode's stderr says `dhdr10-info` was ignored because
@@ -689,6 +719,10 @@ async fn ffmpeg_stdout_stderr(args: &[&str]) -> Option<(String, String)> {
 
 async fn probe_ffmpeg_caps(has_x265: bool, has_svtav1: bool) -> FfmpegCaps {
     let mut caps = FfmpegCaps::default();
+    if let Some((out, _)) = ffmpeg_stdout_stderr(&["-hide_banner", "-h", "bsf=hevc_metadata"]).await
+    {
+        caps.hevc_metadata_size = bsf_help_has_size(&out);
+    }
     if has_x265 {
         if let Some((out, _)) =
             ffmpeg_stdout_stderr(&["-hide_banner", "-h", "encoder=libx265"]).await
@@ -1133,10 +1167,11 @@ pub async fn detect_encoders(sink: &dyn EventSink) -> (Vec<EncoderInfo>, Vec<Str
     )
     .await;
     sink.log(&format!(
-        "[detect] Native Dolby Vision: libx265 {}, libsvtav1 {}; x265 HDR10+ (dhdr10-info) {}",
+        "[detect] Native Dolby Vision: libx265 {}, libsvtav1 {}; x265 HDR10+ (dhdr10-info) {}; hevc_metadata width/height {}",
         if caps.dovi_x265 { "yes" } else { "no" },
         if caps.dovi_svtav1 { "yes" } else { "no" },
         if caps.x265_hdr10plus { "yes" } else { "no" },
+        if caps.hevc_metadata_size { "yes" } else { "no" },
     ));
     if let Ok(mut c) = FFMPEG_CAPS.write() {
         *c = caps;
@@ -1266,26 +1301,72 @@ fn select_render_node(nodes: &[(u32, String, Option<u16>)], vendor: Option<u16>)
         .or_else(|| lowest(None))
 }
 
-/// Bitstream filter that sets the HEVC conformance window to the picture
-/// size, for `hevc_vaapi` only.
-///
+/// Whether `encoder` may decode on the VAAPI device. `hevc_vaapi` without
+/// hevc_metadata `width`/`height` needs software frames for the size fix
+/// (`hevc_vaapi_size_fix`).
+pub fn vaapi_device_decode_ok(encoder: &str, bsf_has_size: bool) -> bool {
+    encoder != "hevc_vaapi" || bsf_has_size
+}
+
+/// How an `hevc_vaapi` encode is made to decode at the picture size.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct HevcVaapiSizeFix {
+    /// Filter to run on software frames before the hardware upload.
+    pub pad: Option<String>,
+    /// `-bsf:v` value.
+    pub bsf: String,
+}
+
 /// Mesa radeonsi (25.2.8, RX 7900 XTX) codes the picture at its own
 /// alignment (width to 64, height to 16) and writes that size into the
 /// in-band SPS while keeping ffmpeg's crop offsets, so decoders show the
 /// padding: 1920x1080 decodes as 1920x1088, 640x360 as 640x368, 1000x562 as
-/// 1024x570. ffmpeg's out-of-band SPS (hvcC) has the right size. A fixed
-/// `crop_bottom` is wrong for one of the two SPSs and for heights that need
-/// no padding; `width`/`height` make the BSF compute each SPS's crop from
-/// its own coded size (libavcodec/bsf/h265_metadata.c:203-258), so a stream
-/// that is already right is left unchanged. `width` and `height` are the
-/// encoded picture size; odd sizes cannot be expressed in 4:2:0 crop units.
-pub fn hevc_vaapi_size_bsf(encoder: &str, width: u32, height: u32) -> Option<String> {
-    (encoder == "hevc_vaapi"
-        && width > 0
-        && height > 0
-        && width.is_multiple_of(2)
-        && height.is_multiple_of(2))
-    .then(|| format!("hevc_metadata=width={width}:height={height}"))
+/// 1024x570. ffmpeg's out-of-band SPS (hvcC) has the right size, so any
+/// fixed crop is right for one SPS and wrong for the other.
+///
+/// - `bsf_has_size` (hevc_metadata has `width`/`height`; ffmpeg 6.1 does
+///   not): the BSF computes each SPS's crop from its own coded size
+///   (libavcodec/bsf/h265_metadata.c:203-258).
+/// - Otherwise pad the software frames to 64x64 multiples before the
+///   upload, so both SPSs carry the same coded size, then crop the padding.
+///   The caller keeps decode in software (`vaapi_device_decode_ok`), as
+///   there is no pad filter for device frames in ffmpeg 6.1.
+///
+/// Both decode at the picture size with the right container size (measured
+/// on ffmpeg 6.1.1 and n8.1.3). `width` and `height` are the encoded
+/// picture size; odd sizes cannot be expressed in 4:2:0 crop units.
+pub fn hevc_vaapi_size_fix(
+    encoder: &str,
+    width: u32,
+    height: u32,
+    bsf_has_size: bool,
+) -> Option<HevcVaapiSizeFix> {
+    if encoder != "hevc_vaapi"
+        || width == 0
+        || height == 0
+        || !width.is_multiple_of(2)
+        || !height.is_multiple_of(2)
+    {
+        return None;
+    }
+    if bsf_has_size {
+        return Some(HevcVaapiSizeFix {
+            pad: None,
+            bsf: format!("hevc_metadata=width={width}:height={height}"),
+        });
+    }
+    let (pw, ph) = (width.next_multiple_of(64), height.next_multiple_of(64));
+    if (pw, ph) == (width, height) {
+        return None;
+    }
+    Some(HevcVaapiSizeFix {
+        pad: Some(format!("pad={pw}:{ph}")),
+        bsf: format!(
+            "hevc_metadata=crop_right={}:crop_bottom={}",
+            pw - width,
+            ph - height
+        ),
+    })
 }
 
 /// Render node for an encode on this platform (Linux only).
@@ -2891,8 +2972,10 @@ async fn encode_single_file(
         // around high-contrast text: the flags force a VUI into the SPS that
         // triggers player tone mapping, creating edge overshoot on PQ content
         // that was previously displayed without mapping.
-        let uses_vaapi_hwaccel_decode =
-            is_vaapi_encoder(file_encoder) && file_pix_fmt == "p010le" && tonemap_filter.is_none();
+        let uses_vaapi_hwaccel_decode = is_vaapi_encoder(file_encoder)
+            && file_pix_fmt == "p010le"
+            && tonemap_filter.is_none()
+            && vaapi_device_decode_ok(file_encoder, ffmpeg_caps().hevc_metadata_size);
         let colour_metadata = if uses_vaapi_hwaccel_decode
             && (keeps_dovi || (item_is_hdr && preserve_hdr && !force_sdr))
         {
@@ -2927,7 +3010,7 @@ async fn encode_single_file(
         // hevc_vaapi: restore the picture size in the in-band SPS, which
         // AMD VCN writes with its padded coded size (green rows at the
         // bottom, extra columns on the right). Also required for DV: the
-        // padded size corrupts RPU injection. See `hevc_vaapi_size_bsf`.
+        // padded size corrupts RPU injection. See `hevc_vaapi_size_fix`.
         let (out_w, out_h) = if is_image_source {
             ((item_video_width + 1) & !1, (item_video_height + 1) & !1)
         } else {
@@ -2937,8 +3020,6 @@ async fn encode_single_file(
                 queue[idx].probe.video_rotation,
             )
         };
-        let vaapi_hevc_bsf_owned = hevc_vaapi_size_bsf(file_encoder, out_w, out_h);
-        let vaapi_hevc_bsf = vaapi_hevc_bsf_owned.as_deref();
 
         let ffmpeg_args = assemble_ffmpeg_args(&FfmpegAssemblyParts {
             input_path: &item_full_path,
@@ -2952,7 +3033,8 @@ async fn encode_single_file(
             tonemap_filter,
             codec_family: target_codec,
             colour_metadata,
-            vaapi_hevc_bsf,
+            vaapi_hevc_size: Some((out_w, out_h)),
+            bsf_has_size: ffmpeg_caps().hevc_metadata_size,
             dovi_in_output,
             dovi_p5: dovi_in_output && item_dovi_profile == Some(5),
             keep_source_tag: is_copy_decision
@@ -3199,7 +3281,8 @@ async fn encode_single_file(
                         tonemap_filter,
                         codec_family: target_codec,
                         colour_metadata: None, // SW encode propagates from input
-                        vaapi_hevc_bsf: None,  // SW encode doesn't need VAAPI crop fix
+                        vaapi_hevc_size: None, // SW encode doesn't need VAAPI crop fix
+                        bsf_has_size: false,
                         // Never native DV here: native routes are software already.
                         dovi_in_output: false,
                         dovi_p5: false,
@@ -4311,9 +4394,11 @@ struct FfmpegAssemblyParts<'a> {
     /// for the VAAPI hwaccel decode path; other paths propagate
     /// automatically and explicit flags cause haloing on PQ content.
     colour_metadata: Option<ColourMetadata>,
-    /// `hevc_metadata` BSF that restores the picture size in the SPS of a
-    /// `hevc_vaapi` encode (`hevc_vaapi_size_bsf`). None for other encoders.
-    vaapi_hevc_bsf: Option<&'a str>,
+    /// Output picture size, for the `hevc_vaapi` size fix
+    /// (`hevc_vaapi_size_fix`; ignored for other encoders).
+    vaapi_hevc_size: Option<(u32, u32)>,
+    /// ffmpeg's `hevc_metadata` has `width`/`height` (`FfmpegCaps`).
+    bsf_has_size: bool,
     /// The output stream carries Dolby Vision (native coding or a stream
     /// copy). MP4 then needs `-strict unofficial`, without which movenc
     /// drops the dvcC/dvvC record.
@@ -4376,7 +4461,7 @@ fn assemble_ffmpeg_args_for(
         .map(|w| w[1]);
 
     // Image sources are decoded to RGB and converted to 8-bit 4:2:0 below.
-    let hw = hw_device_args(
+    let hw = hw_device_args_with(
         encoder_name.unwrap_or(""),
         if parts.is_image_source {
             "yuv420p"
@@ -4386,9 +4471,21 @@ fn assemble_ffmpeg_args_for(
         parts.tonemap_filter.is_some(),
         render_node,
         os,
+        vaapi_device_decode_ok(encoder_name.unwrap_or(""), parts.bsf_has_size),
     );
+    let size_fix = parts.vaapi_hevc_size.and_then(|(w, h)| {
+        hevc_vaapi_size_fix(encoder_name.unwrap_or(""), w, h, parts.bsf_has_size)
+    });
     let hw_device_init = hw.pre_input;
-    let hw_upload_filter = hw.upload_filter;
+    // The size-fix pad runs on software frames, just before the upload.
+    let hw_upload_filter = match (
+        size_fix.as_ref().and_then(|f| f.pad.as_deref()),
+        hw.upload_filter,
+    ) {
+        (Some(pad), Some(up)) => Some(format!("{pad},{up}")),
+        (Some(pad), None) => Some(pad.to_string()),
+        (None, up) => up,
+    };
 
     let mut args: Vec<String> = vec![
         "-err_detect".into(),
@@ -4523,8 +4620,8 @@ fn assemble_ffmpeg_args_for(
     }
 
     // hevc_vaapi: conformance window from the picture size.
-    if let Some(bsf) = parts.vaapi_hevc_bsf {
-        args.extend(vec!["-bsf:v".into(), bsf.into()]);
+    if let Some(fix) = size_fix {
+        args.extend(vec!["-bsf:v".into(), fix.bsf]);
     }
 
     args.push(parts.output_path.to_string());
@@ -5971,7 +6068,8 @@ mod tests {
             tonemap_filter: None,
             codec_family: "hevc",
             colour_metadata: None,
-            vaapi_hevc_bsf: None,
+            vaapi_hevc_size: None,
+            bsf_has_size: false,
             dovi_in_output: false,
             dovi_p5: false,
             keep_source_tag: false,
@@ -5996,7 +6094,8 @@ mod tests {
             tonemap_filter: None,
             codec_family: "h264",
             colour_metadata: None,
-            vaapi_hevc_bsf: None,
+            vaapi_hevc_size: None,
+            bsf_has_size: false,
             dovi_in_output: false,
             dovi_p5: false,
             keep_source_tag: false,
@@ -6022,7 +6121,8 @@ mod tests {
             tonemap_filter: None,
             codec_family: "hevc",
             colour_metadata: None,
-            vaapi_hevc_bsf: None,
+            vaapi_hevc_size: None,
+            bsf_has_size: false,
             dovi_in_output: false,
             dovi_p5: false,
             keep_source_tag: false,
@@ -6047,7 +6147,8 @@ mod tests {
             tonemap_filter: None,
             codec_family: "hevc",
             colour_metadata: None,
-            vaapi_hevc_bsf: None,
+            vaapi_hevc_size: None,
+            bsf_has_size: false,
             dovi_in_output: false,
             dovi_p5: false,
             keep_source_tag: false,
@@ -6080,7 +6181,8 @@ mod tests {
             tonemap_filter: None,
             codec_family: "hevc",
             colour_metadata: None,
-            vaapi_hevc_bsf: None,
+            vaapi_hevc_size: None,
+            bsf_has_size: false,
             dovi_in_output: false,
             dovi_p5: false,
             keep_source_tag: false,
@@ -6109,7 +6211,8 @@ mod tests {
             tonemap_filter: Some(TONEMAP_HABLE),
             codec_family: "hevc",
             colour_metadata: None,
-            vaapi_hevc_bsf: None,
+            vaapi_hevc_size: None,
+            bsf_has_size: false,
             dovi_in_output: false,
             dovi_p5: false,
             keep_source_tag: false,
@@ -6143,7 +6246,8 @@ mod tests {
             tonemap_filter: Some(TONEMAP_HABLE),
             codec_family: "h264",
             colour_metadata: None,
-            vaapi_hevc_bsf: None,
+            vaapi_hevc_size: None,
+            bsf_has_size: false,
             dovi_in_output: false,
             dovi_p5: false,
             keep_source_tag: false,
@@ -6570,17 +6674,23 @@ mod tests {
     }
 
     /// Needs `HISTV_TEST_FFMPEG` (ffprobe beside it) and a VAAPI render node.
-    /// hevc_vaapi with the size BSF decodes at the source size, in both
-    /// MKV (hvcC plus in-band SPS) and raw HEVC. Then the "driver already
-    /// right" branch: a libx265 stream with a conformance window passes
-    /// through the BSF byte for byte.
+    /// hevc_vaapi software frames with the size fix that ffmpeg supports
+    /// decode at the source size, in both MKV (hvcC plus in-band SPS) and
+    /// raw HEVC. With `width`/`height`, the "driver already right" branch: a
+    /// libx265 stream with a conformance window passes through the BSF
+    /// byte for byte.
     #[cfg(target_os = "linux")]
     #[test]
     #[ignore]
-    fn hevc_vaapi_size_bsf_real_ffmpeg() {
+    fn hevc_vaapi_size_fix_real_ffmpeg() {
         let ffmpeg = std::env::var("HISTV_TEST_FFMPEG").expect("set HISTV_TEST_FFMPEG");
         let dir = tempfile::tempdir().unwrap();
         let node = find_dri_render_node_for("hevc_vaapi").expect("render node");
+        let help = std::process::Command::new(&ffmpeg)
+            .args(["-hide_banner", "-h", "bsf=hevc_metadata"])
+            .output()
+            .unwrap();
+        let has_size = bsf_help_has_size(&String::from_utf8_lossy(&help.stdout));
         let mut failures = Vec::new();
         for (w, h, pix) in [
             (1920, 1080, "p010"),
@@ -6591,15 +6701,18 @@ mod tests {
                 let out = dir.path().join(format!("{w}x{h}.{ext}"));
                 let mut args = strs(&["-v", "error", "-y", "-vaapi_device", &node, "-f", "lavfi"]);
                 args.extend(strs(&["-i", &format!("testsrc2=s={w}x{h}:d=0.2")]));
+                let fix = hevc_vaapi_size_fix("hevc_vaapi", w, h, has_size).unwrap();
+                let vf = match &fix.pad {
+                    Some(pad) => format!("{pad},format={pix},hwupload"),
+                    None => format!("format={pix},hwupload"),
+                };
                 args.extend(strs(&[
                     "-vf",
-                    &format!("format={pix},hwupload"),
+                    &vf,
                     "-c:v",
                     "hevc_vaapi",
-                ]));
-                args.extend(strs(&[
                     "-bsf:v",
-                    &hevc_vaapi_size_bsf("hevc_vaapi", w, h).unwrap(),
+                    &fix.bsf,
                 ]));
                 args.push(out.to_string_lossy().into_owned());
                 let (ok, err) = run_ff(&ffmpeg, &args);
@@ -6612,6 +6725,10 @@ mod tests {
                     ));
                 }
             }
+        }
+        if !has_size {
+            assert!(failures.is_empty(), "{failures:#?}");
+            return;
         }
         let x265 = dir.path().join("x265.h265");
         let mut args = strs(&[
@@ -6643,7 +6760,9 @@ mod tests {
         ]);
         args.extend(strs(&[
             "-bsf:v",
-            &hevc_vaapi_size_bsf("hevc_vaapi", 1000, 562).unwrap(),
+            &hevc_vaapi_size_fix("hevc_vaapi", 1000, 562, true)
+                .unwrap()
+                .bsf,
         ]));
         args.push(copied.to_string_lossy().into_owned());
         assert!(run_ff(&ffmpeg, &args).0);
@@ -6654,15 +6773,47 @@ mod tests {
     }
 
     #[test]
-    fn hevc_vaapi_size_bsf_decision() {
+    fn hevc_vaapi_size_fix_decision() {
+        let fix = |w, h, has_size| hevc_vaapi_size_fix("hevc_vaapi", w, h, has_size);
+        let both = |pad: &str, bsf: &str| HevcVaapiSizeFix {
+            pad: Some(pad.into()),
+            bsf: bsf.into(),
+        };
+        // BSF with width/height.
         assert_eq!(
-            hevc_vaapi_size_bsf("hevc_vaapi", 1920, 1080).as_deref(),
-            Some("hevc_metadata=width=1920:height=1080")
+            fix(1920, 1080, true),
+            Some(HevcVaapiSizeFix {
+                pad: None,
+                bsf: "hevc_metadata=width=1920:height=1080".into(),
+            })
         );
         assert_eq!(
-            hevc_vaapi_size_bsf("hevc_vaapi", 360, 640).as_deref(),
-            Some("hevc_metadata=width=360:height=640")
+            fix(360, 640, true).map(|f| f.bsf),
+            Some("hevc_metadata=width=360:height=640".into())
         );
+        // Older ffmpeg: pad to 64 multiples, crop the pad.
+        assert_eq!(
+            fix(1920, 1080, false),
+            Some(both(
+                "pad=1920:1088",
+                "hevc_metadata=crop_right=0:crop_bottom=8"
+            ))
+        );
+        assert_eq!(
+            fix(640, 360, false),
+            Some(both(
+                "pad=640:384",
+                "hevc_metadata=crop_right=0:crop_bottom=24"
+            ))
+        );
+        assert_eq!(
+            fix(1000, 562, false),
+            Some(both(
+                "pad=1024:576",
+                "hevc_metadata=crop_right=24:crop_bottom=14"
+            ))
+        );
+        assert_eq!(fix(1280, 640, false), None);
         // Other encoders and sizes that 4:2:0 crop units cannot express.
         for enc in [
             "hevc_vulkan",
@@ -6671,11 +6822,31 @@ mod tests {
             "libx265",
             "hevc_qsv",
         ] {
-            assert_eq!(hevc_vaapi_size_bsf(enc, 1920, 1080), None, "{enc}");
+            for has_size in [true, false] {
+                assert_eq!(
+                    hevc_vaapi_size_fix(enc, 1920, 1080, has_size),
+                    None,
+                    "{enc}"
+                );
+            }
         }
-        assert_eq!(hevc_vaapi_size_bsf("hevc_vaapi", 321, 240), None);
-        assert_eq!(hevc_vaapi_size_bsf("hevc_vaapi", 320, 241), None);
-        assert_eq!(hevc_vaapi_size_bsf("hevc_vaapi", 0, 0), None);
+        for has_size in [true, false] {
+            assert_eq!(fix(321, 240, has_size), None);
+            assert_eq!(fix(320, 241, has_size), None);
+            assert_eq!(fix(0, 0, has_size), None);
+        }
+        assert!(!vaapi_device_decode_ok("hevc_vaapi", false));
+        assert!(vaapi_device_decode_ok("hevc_vaapi", true));
+        assert!(vaapi_device_decode_ok("av1_vaapi", false));
+    }
+
+    #[test]
+    fn parse_bsf_help_has_size() {
+        let new = "  -crop_bottom       <int>        ...V....B.. Set bottom border crop offset (from -1 to 16888) (default -1)\n  -width             <int>        ...V....B.. Set width after crop (from -1 to 16888) (default -1)\n  -height            <int>        ...V....B.. Set height after crop (from -1 to 16888) (default -1)\n";
+        assert!(bsf_help_has_size(new));
+        let old = "  -crop_right        <int>        ...V....B.. Set right border crop offset (from -1 to 16888) (default -1)\n  -crop_bottom       <int>        ...V....B.. Set bottom border crop offset (from -1 to 16888) (default -1)\n  -level             <int>        ...V....B.. Set level (table A.6) (from -2 to 255) (default -2)\n";
+        assert!(!bsf_help_has_size(old));
+        assert!(!bsf_help_has_size(""));
     }
 
     #[test]
@@ -6690,7 +6861,8 @@ mod tests {
             audio_codec_args: empty,
             is_image_source: true,
             codec_family: "hevc",
-            vaapi_hevc_bsf: Some("hevc_metadata=width=322:height=242"),
+            vaapi_hevc_size: Some((322, 242)),
+            bsf_has_size: true,
             ..Default::default()
         };
         let node = Some("/dev/dri/renderD128");
@@ -6838,7 +7010,8 @@ mod tests {
             tonemap_filter: None,
             codec_family: "hevc",
             colour_metadata: None,
-            vaapi_hevc_bsf: None,
+            vaapi_hevc_size: None,
+            bsf_has_size: false,
             dovi_in_output: false,
             dovi_p5: false,
             keep_source_tag: false,
@@ -6880,7 +7053,8 @@ mod tests {
             tonemap_filter: None,
             codec_family: "hevc",
             colour_metadata: None,
-            vaapi_hevc_bsf: None,
+            vaapi_hevc_size: None,
+            bsf_has_size: false,
             dovi_in_output: false,
             dovi_p5: false,
             keep_source_tag: false,
@@ -6923,7 +7097,8 @@ mod tests {
             tonemap_filter: None,
             codec_family: "hevc",
             colour_metadata: None,
-            vaapi_hevc_bsf: None,
+            vaapi_hevc_size: None,
+            bsf_has_size: false,
             dovi_in_output: false,
             dovi_p5: false,
             keep_source_tag: false,
@@ -6965,7 +7140,8 @@ mod tests {
             tonemap_filter: None,
             codec_family: "hevc",
             colour_metadata: None,
-            vaapi_hevc_bsf: None,
+            vaapi_hevc_size: None,
+            bsf_has_size: false,
             dovi_in_output: false,
             dovi_p5: false,
             keep_source_tag: false,
@@ -7004,7 +7180,8 @@ mod tests {
             tonemap_filter: Some(TONEMAP_HABLE),
             codec_family: "hevc",
             colour_metadata: None,
-            vaapi_hevc_bsf: None,
+            vaapi_hevc_size: None,
+            bsf_has_size: false,
             dovi_in_output: false,
             dovi_p5: false,
             keep_source_tag: false,
@@ -7043,7 +7220,8 @@ mod tests {
             tonemap_filter: None,
             codec_family: "hevc",
             colour_metadata: None,
-            vaapi_hevc_bsf: None,
+            vaapi_hevc_size: None,
+            bsf_has_size: false,
             dovi_in_output: false,
             dovi_p5: false,
             keep_source_tag: false,
@@ -7072,7 +7250,8 @@ mod tests {
             tonemap_filter: None,
             codec_family: "hevc",
             colour_metadata: None,
-            vaapi_hevc_bsf: None,
+            vaapi_hevc_size: None,
+            bsf_has_size: false,
             dovi_in_output: false,
             dovi_p5: false,
             keep_source_tag: false,
@@ -7107,7 +7286,8 @@ mod tests {
             tonemap_filter: Some(TONEMAP_HABLE),
             codec_family: "hevc",
             colour_metadata: None,
-            vaapi_hevc_bsf: None,
+            vaapi_hevc_size: None,
+            bsf_has_size: false,
             dovi_in_output: false,
             dovi_p5: false,
             keep_source_tag: false,
@@ -7152,7 +7332,8 @@ mod tests {
             tonemap_filter: Some(TONEMAP_HABLE),
             codec_family: "hevc",
             colour_metadata: None,
-            vaapi_hevc_bsf: None,
+            vaapi_hevc_size: None,
+            bsf_has_size: false,
             dovi_in_output: false,
             dovi_p5: false,
             keep_source_tag: false,
@@ -7199,7 +7380,8 @@ mod tests {
             tonemap_filter: None,
             codec_family: "hevc",
             colour_metadata: None,
-            vaapi_hevc_bsf: None,
+            vaapi_hevc_size: None,
+            bsf_has_size: true,
             dovi_in_output: false,
             dovi_p5: false,
             keep_source_tag: false,
@@ -7263,7 +7445,8 @@ mod tests {
             tonemap_filter: None,
             codec_family: "hevc",
             colour_metadata: None,
-            vaapi_hevc_bsf: None,
+            vaapi_hevc_size: None,
+            bsf_has_size: false,
             dovi_in_output: false,
             dovi_p5: false,
             keep_source_tag: false,
@@ -7300,7 +7483,8 @@ mod tests {
             tonemap_filter: None,
             codec_family: "hevc",
             colour_metadata: None,
-            vaapi_hevc_bsf: None,
+            vaapi_hevc_size: None,
+            bsf_has_size: false,
             dovi_in_output: false,
             dovi_p5: false,
             keep_source_tag: false,
@@ -7341,7 +7525,8 @@ mod tests {
             tonemap_filter: None,
             codec_family: "hevc",
             colour_metadata: None,
-            vaapi_hevc_bsf: None,
+            vaapi_hevc_size: None,
+            bsf_has_size: false,
             dovi_in_output: false,
             dovi_p5: false,
             keep_source_tag: false,
@@ -7386,7 +7571,8 @@ mod tests {
                 matrix: "bt2020nc",
                 range: "tv",
             }),
-            vaapi_hevc_bsf: None,
+            vaapi_hevc_size: None,
+            bsf_has_size: false,
             dovi_in_output: false,
             dovi_p5: false,
             keep_source_tag: false,
@@ -7428,7 +7614,8 @@ mod tests {
             tonemap_filter: None,
             codec_family: "hevc",
             colour_metadata: None,
-            vaapi_hevc_bsf: None,
+            vaapi_hevc_size: None,
+            bsf_has_size: false,
             dovi_in_output: false,
             dovi_p5: false,
             keep_source_tag: false,
@@ -7471,7 +7658,8 @@ mod tests {
             tonemap_filter: None,
             codec_family: "hevc",
             colour_metadata: None,
-            vaapi_hevc_bsf: None,
+            vaapi_hevc_size: None,
+            bsf_has_size: false,
             dovi_in_output: false,
             dovi_p5: false,
             keep_source_tag: false,
@@ -7500,7 +7688,8 @@ mod tests {
             tonemap_filter: None,
             codec_family: "hevc",
             colour_metadata: None,
-            vaapi_hevc_bsf: Some("hevc_metadata=width=1920:height=1080"),
+            vaapi_hevc_size: Some((1920, 1080)),
+            bsf_has_size: true,
             dovi_in_output: false,
             dovi_p5: false,
             keep_source_tag: false,
@@ -7510,6 +7699,59 @@ mod tests {
             .windows(2)
             .any(|w| w[0] == "-bsf:v" && w[1] == "hevc_metadata=width=1920:height=1080"));
         assert_eq!(args.last().unwrap(), "output.mp4");
+    }
+
+    /// ffmpeg without hevc_metadata width/height: frames are padded in
+    /// software before the upload (after any tonemap), 10-bit included.
+    #[cfg(target_os = "linux")]
+    #[test]
+    fn assemble_vaapi_size_fallback_old_ffmpeg() {
+        let empty: &[String] = &[];
+        let parts = |pix_fmt, tonemap| FfmpegAssemblyParts {
+            input_path: "input.mkv",
+            output_path: "output.mkv",
+            video_args: &["-c:v", "hevc_vaapi"],
+            pix_fmt,
+            audio_map_args: empty,
+            audio_codec_args: empty,
+            tonemap_filter: tonemap,
+            codec_family: "hevc",
+            vaapi_hevc_size: Some((1000, 562)),
+            bsf_has_size: false,
+            ..Default::default()
+        };
+        let node = Some("/dev/dri/renderD128");
+        let vf = |a: &[String]| a[a.iter().position(|x| x == "-vf").unwrap() + 1].clone();
+        let bsf = |a: &[String]| a[a.len() - 2..].to_vec();
+
+        let a = assemble_ffmpeg_args_for(&parts("yuv420p", None), node, TargetOs::Linux);
+        assert_eq!(vf(&a), "pad=1024:576,format=nv12,hwupload");
+        assert_eq!(
+            bsf(&a),
+            ["hevc_metadata=crop_right=24:crop_bottom=14", "output.mkv"]
+        );
+
+        let a = assemble_ffmpeg_args_for(&parts("yuv420p", Some("tm")), node, TargetOs::Linux);
+        assert_eq!(vf(&a), "tm,pad=1024:576,format=nv12,hwupload");
+
+        // 10-bit decodes in software so the pad can run.
+        let a = assemble_ffmpeg_args_for(&parts("p010le", None), node, TargetOs::Linux);
+        assert_eq!(vf(&a), "pad=1024:576,format=p010,hwupload");
+        assert!(!a.iter().any(|x| x == "-hwaccel"));
+        assert!(a
+            .windows(2)
+            .any(|w| w[0] == "-vaapi_device" && w[1] == "/dev/dri/renderD128"));
+        assert!(a.windows(2).any(|w| w[0] == "-pix_fmt" && w[1] == "p010le"));
+
+        // With width/height the 10-bit route stays on the device.
+        let mut p = parts("p010le", None);
+        p.bsf_has_size = true;
+        let a = assemble_ffmpeg_args_for(&p, node, TargetOs::Linux);
+        assert_eq!(vf(&a), "scale_vaapi=format=p010");
+        assert_eq!(
+            bsf(&a),
+            ["hevc_metadata=width=1000:height=562", "output.mkv"]
+        );
     }
 
     /// Non-VAAPI encoders must NOT include the VAAPI crop BSF.
@@ -7528,7 +7770,8 @@ mod tests {
             tonemap_filter: None,
             codec_family: "hevc",
             colour_metadata: None,
-            vaapi_hevc_bsf: None,
+            vaapi_hevc_size: None,
+            bsf_has_size: false,
             dovi_in_output: false,
             dovi_p5: false,
             keep_source_tag: false,
@@ -8164,11 +8407,13 @@ mod tests {
         dovi_x265: true,
         dovi_svtav1: true,
         x265_hdr10plus: true,
+        hevc_metadata_size: true,
     };
     const CAPS_NONE: FfmpegCaps = FfmpegCaps {
         dovi_x265: false,
         dovi_svtav1: false,
         x265_hdr10plus: false,
+        hevc_metadata_size: false,
     };
 
     #[test]

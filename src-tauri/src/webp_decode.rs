@@ -404,8 +404,8 @@ pub(crate) struct WebpEncodeArgs<'a> {
     pub output_path: &'a str,
     /// Device and upload arguments for the encoder (`hw_device_args`).
     pub hw: &'a crate::encoder::HwArgs,
-    /// `hevc_vaapi_size_bsf` for this encode.
-    pub size_bsf: Option<&'a str>,
+    /// `hevc_vaapi_size_fix` for this encode.
+    pub size_fix: Option<&'a crate::encoder::HevcVaapiSizeFix>,
 }
 
 /// ffmpeg arguments for the encoder that reads RGBA frames from stdin.
@@ -433,17 +433,23 @@ pub(crate) fn webp_encoder_args(a: &WebpEncodeArgs<'_>) -> Vec<String> {
         args.push(a.threads.to_string());
     }
     args.extend(a.video_args.iter().cloned());
-    if let Some(up) = &a.hw.upload_filter {
+    let pad = a.size_fix.and_then(|f| f.pad.as_deref());
+    let vf = match (pad, &a.hw.upload_filter) {
+        (Some(pad), Some(up)) => Some(format!("{pad},{up}")),
+        (Some(pad), None) => Some(pad.to_string()),
+        (None, up) => up.clone(),
+    };
+    if let Some(vf) = vf {
         args.push("-vf".into());
-        args.push(up.clone());
+        args.push(vf);
     }
     if a.hw.emit_pix_fmt {
         args.push("-pix_fmt".into());
         args.push("yuv420p".into());
     }
-    if let Some(bsf) = a.size_bsf {
+    if let Some(fix) = a.size_fix {
         args.push("-bsf:v".into());
-        args.push(bsf.into());
+        args.push(fix.bsf.clone());
     }
     if a.output_path.ends_with(".mp4") {
         args.push("-movflags".into());
@@ -538,6 +544,12 @@ pub async fn transcode_animated_webp(
         crate::encoder::render_node_for(encoder).as_deref(),
         crate::encoder::TargetOs::current(),
     );
+    let size_fix = crate::encoder::hevc_vaapi_size_fix(
+        encoder,
+        padded_w,
+        padded_h,
+        crate::encoder::ffmpeg_caps().hevc_metadata_size,
+    );
     let enc_args = webp_encoder_args(&WebpEncodeArgs {
         video_args,
         threads,
@@ -546,7 +558,7 @@ pub async fn transcode_animated_webp(
         fps: base_fps,
         output_path,
         hw: &hw,
-        size_bsf: crate::encoder::hevc_vaapi_size_bsf(encoder, padded_w, padded_h).as_deref(),
+        size_fix: size_fix.as_ref(),
     });
 
     let mut enc_cmd = crate::ffmpeg::ffmpeg_command();
@@ -787,7 +799,7 @@ mod tests {
     use super::*;
     use crate::encoder::{hw_device_args, TargetOs};
 
-    fn enc_args(enc: &str, bsf: Option<&str>) -> Vec<String> {
+    fn enc_args(enc: &str, fix: Option<&crate::encoder::HevcVaapiSizeFix>) -> Vec<String> {
         let video_args: Vec<String> = ["-c:v", enc].iter().map(|s| s.to_string()).collect();
         let hw = hw_device_args(
             enc,
@@ -804,13 +816,14 @@ mod tests {
             fps: 50.0,
             output_path: "/o/out.mkv",
             hw: &hw,
-            size_bsf: bsf,
+            size_fix: fix,
         })
     }
 
     #[test]
     fn webp_encoder_args_upload_for_vaapi() {
-        let a = enc_args("hevc_vaapi", Some("hevc_metadata=width=322:height=242"));
+        let fix = crate::encoder::hevc_vaapi_size_fix("hevc_vaapi", 322, 242, true);
+        let a = enc_args("hevc_vaapi", fix.as_ref());
         let dev = a.iter().position(|x| x == "-vaapi_device").unwrap();
         assert!(dev < a.iter().position(|x| x == "-f").unwrap());
         assert!(a
@@ -821,6 +834,19 @@ mod tests {
             .windows(2)
             .any(|w| w[0] == "-bsf:v" && w[1] == "hevc_metadata=width=322:height=242"));
         assert_eq!(a.last().unwrap(), "/o/out.mkv");
+    }
+
+    /// Older ffmpeg: the pad runs before the upload.
+    #[test]
+    fn webp_encoder_args_vaapi_pad_fallback() {
+        let fix = crate::encoder::hevc_vaapi_size_fix("hevc_vaapi", 322, 242, false);
+        let a = enc_args("hevc_vaapi", fix.as_ref());
+        assert!(a
+            .windows(2)
+            .any(|w| w[0] == "-vf" && w[1] == "pad=384:256,format=nv12,hwupload"));
+        assert!(a
+            .windows(2)
+            .any(|w| w[0] == "-bsf:v" && w[1] == "hevc_metadata=crop_right=62:crop_bottom=14"));
     }
 
     #[test]
