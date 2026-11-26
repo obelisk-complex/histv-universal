@@ -997,7 +997,8 @@
         qpP: parseInt(numQpP.value, 10) || 22,
         crf: parseInt(numCrf.value, 10) || 20,
         rcMode: getCurrentRcMode(),
-        targetCodecFamily: chkCompat.checked ? 'h264' : 'hevc',
+        compat: chkCompat.checked,
+        preserveAv1: chkPreserveAv1.checked,
       };
     }
 	
@@ -1036,7 +1037,7 @@
         return `CQP (${settings.qpI}/${settings.qpP})`;
       }
 
-      const isSameCodec = sourceCodec === settings.targetCodecFamily;
+      const isSameCodec = sourceCodec === resolveFamilyForCodec(sourceCodec, settings);
 
       if (mbps > settings.target * 1.15 || (mbps > settings.target && !isSameCodec)) {
         const peak = (settings.target * settings.peakMultiplier).toFixed(1).replace(/\.0$/, '');
@@ -1073,7 +1074,7 @@
         return { bytes: item.sourceBytes, approx: true };
       }
 
-      const isSameCodec = sourceCodec === settings.targetCodecFamily;
+      const isSameCodec = sourceCodec === resolveFamilyForCodec(sourceCodec, settings);
 
       if (mbps > settings.target * 1.15 || (mbps > settings.target && !isSameCodec)) {
         // VBR decision
@@ -1817,18 +1818,27 @@
       }
     }
 
-    // Codec families the backend will encode to (mirrors resolveEncoderFamilies
+    // Codec family the backend encodes one source to (mirrors resolveFamilyForCodec
     // in lib.js, which carries the unit tests).
+    function resolveFamilyForCodec(codec, opts) {
+      if (opts.compat) return 'h264';
+      const c = (codec || '').toLowerCase();
+      if (c === 'h264') return 'h264';
+      if (c === 'hevc' || c === 'h265') return 'hevc';
+      if (opts.preserveAv1 && c === 'av1') return 'av1';
+      return 'hevc';
+    }
+
+    // Codec families the backend will encode to for the files still to be
+    // processed (mirrors resolveEncoderFamilies in lib.js).
     function resolveEncoderFamilies() {
-      if (chkCompat.checked) return ['h264'];
-      if (!chkPreserveAv1.checked) return ['hevc'];
+      const opts = { compat: chkCompat.checked, preserveAv1: chkPreserveAv1.checked };
+      if (opts.compat) return ['h264'];
       const active = queueData.filter(it =>
         ['pending', 'probing', 'encoding'].includes((it.status || '').toLowerCase()));
-      const isAv1 = it => (it.videoCodec || '').toLowerCase() === 'av1';
-      const hasAv1 = active.some(isAv1);
-      const hasOther = active.some(it => !isAv1(it));
-      if (!hasAv1) return ['hevc'];
-      return hasOther ? ['hevc', 'av1'] : ['av1'];
+      if (active.length === 0) return ['hevc'];
+      const found = new Set(active.map(it => resolveFamilyForCodec(it.videoCodec, opts)));
+      return ['hevc', 'h264', 'av1'].filter(f => found.has(f));
     }
 
     // Resolve the active encoder(s) for the current settings and queue. Used

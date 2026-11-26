@@ -39,7 +39,7 @@ function computeTargetBitrateLabel(item, settings) {
     return `CQP (${settings.qpI}/${settings.qpP})`;
   }
 
-  const isSameCodec = sourceCodec === settings.targetCodecFamily;
+  const isSameCodec = sourceCodec === resolveFamilyForCodec(sourceCodec, settings);
 
   if (mbps > settings.target * 1.15 || (mbps > settings.target && !isSameCodec)) {
     const peak = (settings.target * settings.peakMultiplier).toFixed(1).replace(/\.0$/, '');
@@ -71,7 +71,7 @@ function computeEstimatedSize(item, settings) {
     return { bytes: item.sourceBytes, approx: true };
   }
 
-  const isSameCodec = sourceCodec === settings.targetCodecFamily;
+  const isSameCodec = sourceCodec === resolveFamilyForCodec(sourceCodec, settings);
 
   if (mbps > settings.target * 1.15 || (mbps > settings.target && !isSameCodec)) {
     const estimatedBytes = (settings.target * 1000000 * item.durationSecs) / 8;
@@ -92,21 +92,29 @@ function formatEstimatedSize(item, settings) {
   return est.approx ? '~' + formatted : formatted;
 }
 
+// Codec family the backend encodes a single source to (mirrors the codec_family
+// "auto" branch of resolve_file_settings in encoder.rs): compatibility mode
+// gives H.264; an H.264 source stays H.264; HEVC stays HEVC; AV1 stays AV1
+// only when Preserve AV1 is on; everything else is converted to HEVC.
+function resolveFamilyForCodec(codec, opts) {
+  if (opts.compat) return 'h264';
+  const c = (codec || '').toLowerCase();
+  if (c === 'h264') return 'h264';
+  if (c === 'hevc' || c === 'h265') return 'hevc';
+  if (opts.preserveAv1 && c === 'av1') return 'av1';
+  return 'hevc';
+}
+
 // Codec families the backend will encode to for the files still to be
-// processed (mirrors resolve_file_settings in encoder.rs). Preserve AV1 only
-// applies to AV1 sources; every other source is converted to HEVC.
-// Returns ['hevc'] for an empty queue, ['h264'] in compatibility mode, and
-// ['hevc', 'av1'] when AV1 and non-AV1 files are mixed.
+// processed. Returns the de-duplicated set in the order hevc, h264, av1;
+// ['hevc'] for an empty queue and ['h264'] in compatibility mode.
 function resolveEncoderFamilies(items, opts) {
   if (opts.compat) return ['h264'];
   const active = (items || []).filter(it =>
     ['pending', 'probing', 'encoding'].includes((it.status || '').toLowerCase()));
-  if (!opts.preserveAv1) return ['hevc'];
-  const isAv1 = it => (it.videoCodec || '').toLowerCase() === 'av1';
-  const hasAv1 = active.some(isAv1);
-  const hasOther = active.some(it => !isAv1(it));
-  if (!hasAv1) return ['hevc'];
-  return hasOther ? ['hevc', 'av1'] : ['av1'];
+  if (active.length === 0) return ['hevc'];
+  const found = new Set(active.map(it => resolveFamilyForCodec(it.videoCodec, opts)));
+  return ['hevc', 'h264', 'av1'].filter(f => found.has(f));
 }
 
 module.exports = {
@@ -116,5 +124,6 @@ module.exports = {
   computeTargetBitrateLabel,
   computeEstimatedSize,
   formatEstimatedSize,
+  resolveFamilyForCodec,
   resolveEncoderFamilies,
 };

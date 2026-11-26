@@ -103,7 +103,8 @@ describe('computeTargetBitrateLabel', () => {
   const baseSettings = {
     target: 4,
     peakMultiplier: 1.5,
-    targetCodecFamily: 'hevc',
+    compat: false,
+    preserveAv1: false,
     rcMode: 'QP',
     qpI: 20,
     qpP: 22,
@@ -140,9 +141,30 @@ describe('computeTargetBitrateLabel', () => {
   });
 
   it('different codec family at threshold gets VBR', () => {
-    const item = { videoBitrateMbps: 4.5, videoCodec: 'h264' };
+    const item = { videoBitrateMbps: 4.5, videoCodec: 'vp9' };
     const label = computeTargetBitrateLabel(item, baseSettings);
     assert.match(label, /VBR/);
+  });
+
+  it('H.264 source stays H.264, so a small overshoot is copied', () => {
+    const item = { videoBitrateMbps: 4.5, videoCodec: 'h264' };
+    assert.equal(computeTargetBitrateLabel(item, baseSettings), 'Copy');
+  });
+
+  it('H.264 source in compatibility mode is also copied within the band', () => {
+    const item = { videoBitrateMbps: 4.5, videoCodec: 'h264' };
+    assert.equal(computeTargetBitrateLabel(item, { ...baseSettings, compat: true }), 'Copy');
+  });
+
+  it('HEVC source in compatibility mode gets VBR (target is H.264)', () => {
+    const item = { videoBitrateMbps: 4.5, videoCodec: 'hevc' };
+    assert.match(computeTargetBitrateLabel(item, { ...baseSettings, compat: true }), /VBR/);
+  });
+
+  it('AV1 source with Preserve AV1 stays AV1, so a small overshoot is copied', () => {
+    const item = { videoBitrateMbps: 4.5, videoCodec: 'av1' };
+    assert.match(computeTargetBitrateLabel(item, baseSettings), /VBR/);
+    assert.equal(computeTargetBitrateLabel(item, { ...baseSettings, preserveAv1: true }), 'Copy');
   });
 });
 
@@ -152,7 +174,8 @@ describe('computeEstimatedSize', () => {
   const baseSettings = {
     target: 4,
     peakMultiplier: 1.5,
-    targetCodecFamily: 'hevc',
+    compat: false,
+    preserveAv1: false,
     rcMode: 'QP',
     qpI: 20,
     qpP: 22,
@@ -193,7 +216,8 @@ describe('formatEstimatedSize', () => {
   const baseSettings = {
     target: 4,
     peakMultiplier: 1.5,
-    targetCodecFamily: 'hevc',
+    compat: false,
+    preserveAv1: false,
     rcMode: 'QP',
     qpI: 20,
     qpP: 22,
@@ -285,12 +309,30 @@ describe('deriveDoubletTokens', () => {
   });
 });
 
+describe('computeEstimatedSize target family', () => {
+  const settings = {
+    target: 4, compat: false, preserveAv1: false,
+    rcMode: 'QP', qpI: 20, qpP: 22, crf: 20, peakMultiplier: 1.5,
+  };
+  const h264 = { sourceBytes: 90000000, videoBitrateMbps: 4.5, videoCodec: 'h264', durationSecs: 160 };
+
+  it('uses the source size for an H.264 source within the copy band', () => {
+    assert.deepEqual(computeEstimatedSize(h264, settings), { bytes: 90000000, approx: false });
+  });
+
+  it('estimates a re-encode for a non-H.264 source at the same bitrate', () => {
+    const vp9 = { ...h264, videoCodec: 'vp9' };
+    assert.deepEqual(computeEstimatedSize(vp9, settings), { bytes: 80000000, approx: false });
+  });
+});
+
 // ── resolveEncoderFamilies ─────────────────────────────────────
 
 describe('resolveEncoderFamilies', () => {
   const av1 = { videoCodec: 'av1', status: 'Pending' };
   const hevc = { videoCodec: 'hevc', status: 'Pending' };
   const vp9 = { videoCodec: 'vp9', status: 'Pending' };
+  const h264 = { videoCodec: 'h264', status: 'Pending' };
   const on = { compat: false, preserveAv1: true };
 
   it('is HEVC for an empty queue even with Preserve AV1 ticked', () => {
@@ -319,6 +361,37 @@ describe('resolveEncoderFamilies', () => {
 
   it('is H.264 in compatibility mode', () => {
     assert.deepEqual(resolveEncoderFamilies([av1], { compat: true, preserveAv1: true }), ['h264']);
+  });
+
+  it('keeps an H.264 source as H.264', () => {
+    assert.deepEqual(resolveEncoderFamilies([h264], { compat: false, preserveAv1: false }), ['h264']);
+    assert.deepEqual(resolveEncoderFamilies([h264], on), ['h264']);
+  });
+
+  it('lists HEVC and H.264 for H.264 plus another codec', () => {
+    assert.deepEqual(resolveEncoderFamilies([h264, vp9], { compat: false, preserveAv1: false }), ['hevc', 'h264']);
+    assert.deepEqual(resolveEncoderFamilies([vp9, h264], on), ['hevc', 'h264']);
+  });
+
+  it('lists H.264 and AV1 for H.264 plus AV1 with Preserve AV1 on', () => {
+    assert.deepEqual(resolveEncoderFamilies([h264, av1], on), ['h264', 'av1']);
+    assert.deepEqual(resolveEncoderFamilies([av1, h264], on), ['h264', 'av1']);
+  });
+
+  it('lists H.264 and HEVC for H.264 plus AV1 with Preserve AV1 off', () => {
+    assert.deepEqual(resolveEncoderFamilies([h264, av1], { compat: false, preserveAv1: false }), ['hevc', 'h264']);
+  });
+
+  it('orders a three-way mix as HEVC, H.264, AV1', () => {
+    assert.deepEqual(resolveEncoderFamilies([av1, h264, hevc], on), ['hevc', 'h264', 'av1']);
+  });
+
+  it('treats h265 as HEVC', () => {
+    assert.deepEqual(resolveEncoderFamilies([{ videoCodec: 'h265', status: 'Pending' }], on), ['hevc']);
+  });
+
+  it('skips finished H.264 files', () => {
+    assert.deepEqual(resolveEncoderFamilies([{ videoCodec: 'h264', status: 'Done' }, hevc], on), ['hevc']);
   });
 
   it('ignores files that are already finished', () => {
