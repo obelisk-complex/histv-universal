@@ -19,11 +19,14 @@ use crate::events::EventSink;
 use crate::ffmpeg as ffbin;
 use crate::hevc_utils;
 
-/// Extracted HDR10+ metadata from a source file, pre-encoded as SEI NALUs
-/// ready for injection. Encoding at extraction time avoids double-parsing.
+/// Extracted HDR10+ metadata from a source file, in display order, also
+/// pre-encoded as SEI NALUs ready for injection.
 pub struct ExtractedHdr10Plus {
     /// One pre-encoded SEI NAL unit per frame, ready to inject.
     pub sei_nalus: Vec<Vec<u8>>,
+    /// Parsed metadata per frame, for libx265's `dhdr10-info` JSON.
+    #[cfg(feature = "dovi")]
+    pub metadata: Vec<Hdr10PlusMetadata>,
     /// Number of raw payloads that failed to encode (logged at extraction time).
     pub encode_failures: usize,
 }
@@ -66,11 +69,14 @@ pub async fn extract_hdr10plus(
     })
     .map_err(|e| format!("Failed to read bitstream: {e}"))?;
 
+    // SEIs sit in decode order; they are matched to pictures by display
+    // position because the encoder reorders pictures its own way.
+    let source_order = hevc_utils::display_order(&raw_hevc);
+
     drop(temp_dir); // clean up large demuxed file
 
-    // Filter to HDR10+ payloads, parse, and pre-encode as SEI NALUs in one pass.
-    // This avoids double-parsing (once here, once at injection).
-    let mut sei_nalus: Vec<Vec<u8>> = Vec::new();
+    // Filter to HDR10+ payloads and parse them.
+    let mut parsed: Vec<Hdr10PlusMetadata> = Vec::new();
     let mut encode_failures = 0usize;
     let mut logged_sample = false;
 
@@ -87,10 +93,7 @@ pub async fn extract_hdr10plus(
                     ));
                     logged_sample = true;
                 }
-                match encode_hdr10plus_nal(&m, false) {
-                    Ok(nalu) => sei_nalus.push(nalu),
-                    Err(_) => encode_failures += 1,
-                }
+                parsed.push(m);
             }
             Err(e) => {
                 if !logged_sample {
@@ -102,8 +105,33 @@ pub async fn extract_hdr10plus(
         }
     }
 
-    if sei_nalus.is_empty() {
+    if parsed.is_empty() {
         return Err("No HDR10+ metadata found in bitstream".to_string());
+    }
+
+    let metadata = match source_order {
+        Ok(order) => hevc_utils::decode_to_display(parsed, &order).unwrap_or_else(|p| {
+            sink.log(&format!(
+                "  HDR10+: Warning: {} metadata frames for {} pictures - keeping decode order",
+                p.len(),
+                order.len()
+            ));
+            p
+        }),
+        Err(e) => {
+            sink.log(&format!(
+                "  HDR10+: Warning: could not read picture order ({e}) - keeping decode order"
+            ));
+            parsed
+        }
+    };
+
+    let mut sei_nalus: Vec<Vec<u8>> = Vec::with_capacity(metadata.len());
+    for m in &metadata {
+        match encode_hdr10plus_nal(m, false) {
+            Ok(nalu) => sei_nalus.push(nalu),
+            Err(_) => encode_failures += 1,
+        }
     }
 
     if encode_failures > 0 {
@@ -120,8 +148,25 @@ pub async fn extract_hdr10plus(
 
     Ok(ExtractedHdr10Plus {
         sei_nalus,
+        metadata,
         encode_failures,
     })
+}
+
+/// Write the metadata as an HDR10+ JSON file for libx265's `dhdr10-info`,
+/// which applies entry N to input (display-order) frame N.
+#[cfg(feature = "dovi")]
+pub fn write_x265_json(metadata: &ExtractedHdr10Plus, path: &Path) -> Result<(), String> {
+    if !json_profile_ok(metadata.metadata.iter().map(|m| m.profile.as_str())) {
+        // The JSON format only holds profile A or B for the whole stream.
+        return Err("HDR10+ metadata is not all profile A or all profile B".to_string());
+    }
+    let refs: Vec<&Hdr10PlusMetadata> = metadata.metadata.iter().collect();
+    let json = hdr10plus::metadata_json::generate_json(&refs, "histv", env!("CARGO_PKG_VERSION"));
+    let file =
+        std::fs::File::create(path).map_err(|e| format!("Could not create HDR10+ JSON: {e}"))?;
+    serde_json::to_writer(std::io::BufWriter::new(file), &json)
+        .map_err(|e| format!("Could not write HDR10+ JSON: {e}"))
 }
 
 /// Inject HDR10+ metadata back into an encoded HEVC file.
@@ -148,6 +193,20 @@ pub async fn inject_hdr10plus(
     let sei_nalus = &metadata.sei_nalus;
     if sei_nalus.is_empty() {
         return Err("No pre-encoded HDR10+ SEI NALUs available".to_string());
+    }
+
+    // The remux below reads raw HEVC, which carries no timestamps. ffmpeg
+    // cannot rebuild them for reordered pictures (B-frames): Matroska refuses
+    // the packets and MP4 silently plays them in decode order. So only
+    // streams whose decode order is their display order are injected; for
+    // those, output picture N takes display-order metadata N.
+    let output_order = hevc_utils::display_order(&encoded_hevc)
+        .map_err(|e| format!("Could not read the encoded picture order: {e}"))?;
+    if !is_display_ordered(&output_order) {
+        return Err(
+            "The encoder reorders pictures (B-frames), which the raw HEVC remux cannot time"
+                .to_string(),
+        );
     }
 
     // Step 2: Stream through encoded bitstream, inject SEI before each new picture
@@ -244,6 +303,21 @@ pub async fn inject_hdr10plus(
 
 // ── Helpers ───────────────────────────────────────────────────────
 
+/// Whether every picture is decoded in display order (no B-frame reordering).
+fn is_display_ordered(order: &[usize]) -> bool {
+    order.iter().enumerate().all(|(d, &p)| d == p)
+}
+
+/// Whether a stream's per-frame profiles fit the HDR10+ JSON format: all
+/// "A" or all "B". `generate_json` panics on anything else ("N/A" frames,
+/// which have a target luminance but no Bezier curve, or a mix).
+fn json_profile_ok<'a>(mut profiles: impl Iterator<Item = &'a str>) -> bool {
+    match profiles.next() {
+        Some(first @ ("A" | "B")) => profiles.all(|p| p == first),
+        _ => false,
+    }
+}
+
 /// Parse an HDR10+ ITU-T T.35 payload from a SEI_PREFIX NAL unit's data.
 /// Returns the raw T.35 payload (including country code) if found.
 fn parse_hdr10plus_from_sei_nalu(nalu_data: &[u8]) -> Option<Vec<u8>> {
@@ -329,6 +403,22 @@ pub async fn inject_hdr10plus(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn display_ordered_rejects_b_frames() {
+        assert!(is_display_ordered(&[0, 1, 2, 3]));
+        assert!(is_display_ordered(&[]));
+        assert!(!is_display_ordered(&[0, 2, 1, 3]));
+    }
+
+    #[test]
+    fn json_profile_ok_needs_one_profile() {
+        assert!(json_profile_ok(["A", "A"].into_iter()));
+        assert!(json_profile_ok(["B"].into_iter()));
+        assert!(!json_profile_ok(["A", "B"].into_iter()));
+        assert!(!json_profile_ok(["N/A", "N/A"].into_iter()));
+        assert!(!json_profile_ok(std::iter::empty()));
+    }
 
     /// Build a minimal SEI_PREFIX NAL with an HDR10+ T.35 payload.
     fn build_hdr10plus_sei_nalu(payload: &[u8]) -> Vec<u8> {

@@ -365,6 +365,27 @@ pub async fn probe_file(file_path: &str, sink: &dyn EventSink) -> Result<ProbeRe
         return Err("No video stream found".to_string());
     }
 
+    // HDR10+ is per-frame side data, which -show_streams never reports.
+    // Read the first frame of PQ HEVC sources to find it.
+    if !has_hdr10plus && video_codec == "hevc" && color_transfer == "smpte2084" {
+        let frame_json = run_ffprobe(&[
+            "-v",
+            "error",
+            "-select_streams",
+            "v:0",
+            "-read_intervals",
+            "%+#1",
+            "-show_entries",
+            "frame=pict_type:frame_side_data=side_data_type",
+            "-of",
+            "json",
+            file_path,
+        ])
+        .await
+        .unwrap_or_default();
+        has_hdr10plus = frames_json_has_hdr10plus(&frame_json);
+    }
+
     let video_bitrate_mbps = video_bitrate_bps / 1_000_000.0;
 
     Ok(ProbeResult {
@@ -382,6 +403,23 @@ pub async fn probe_file(file_path: &str, sink: &dyn EventSink) -> Result<ProbeRe
         has_hdr10plus,
         video_fps,
         subtitle_stream_count,
+    })
+}
+
+/// Whether ffprobe `-show_entries frame_side_data=side_data_type -of json` output has
+/// HDR10+ (SMPTE ST 2094-40) side data on any frame.
+pub fn frames_json_has_hdr10plus(json: &str) -> bool {
+    let v: serde_json::Value = serde_json::from_str(json).unwrap_or(serde_json::Value::Null);
+    v["frames"].as_array().is_some_and(|frames| {
+        frames.iter().any(|f| {
+            f["side_data_list"].as_array().is_some_and(|sds| {
+                sds.iter().any(|sd| {
+                    sd["side_data_type"]
+                        .as_str()
+                        .is_some_and(|t| t.contains("SMPTE2094-40") || t.contains("HDR10+"))
+                })
+            })
+        })
     })
 }
 
@@ -518,6 +556,17 @@ async fn packet_count_bitrate(file_path: &str, sink: &dyn EventSink) -> f64 {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn frames_json_detects_hdr10plus() {
+        let yes = r#"{"frames":[{"side_data_list":[{"side_data_type":"Mastering display metadata"},{"side_data_type":"HDR Dynamic Metadata SMPTE2094-40 (HDR10+)","application_version":1}]}]}"#;
+        let no =
+            r#"{"frames":[{"side_data_list":[{"side_data_type":"Mastering display metadata"}]}]}"#;
+        assert!(frames_json_has_hdr10plus(yes));
+        assert!(!frames_json_has_hdr10plus(no));
+        assert!(!frames_json_has_hdr10plus(r#"{"frames":[{}]}"#));
+        assert!(!frames_json_has_hdr10plus(""));
+    }
 
     // ── parse_duration_tag ────────────────────────────────────────
 

@@ -1944,6 +1944,7 @@ dependencies = [
  "dolby_vision",
  "futures-util",
  "hdr10plus",
+ "hevc_parser",
  "indicatif",
  "proptest",
  "regex",

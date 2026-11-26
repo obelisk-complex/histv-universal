@@ -1504,6 +1504,41 @@ mod download_tests {
             assert_eq!(*hits.lock().unwrap(), vec!["/a.tar.gz"]);
         }
 
+        /// Network test: downloads the published histv release (about 40 MB).
+        /// Run with `cargo test --lib -- --ignored live_download`.
+        #[cfg(target_arch = "x86_64")]
+        #[tokio::test]
+        #[ignore = "network: downloads the published ffmpeg release"]
+        async fn live_download_uses_pinned_histv_release() {
+            use std::os::unix::fs::PermissionsExt;
+            let target = tempfile::tempdir().unwrap();
+            let sink = RecordingSink::new();
+            download_to_dir(target.path(), &sink).await.unwrap();
+
+            // A fallback attempt or a skipped pin would leave a log line.
+            let logs = sink.take_logs();
+            assert!(
+                !logs
+                    .iter()
+                    .any(|l| l.contains("Mirror") || l.contains("Skipping")),
+                "histv release was not used on the first attempt: {logs:?}"
+            );
+            assert!(leftover_archives(target.path()).is_empty());
+
+            for name in ["ffmpeg", "ffprobe"] {
+                let path = target.path().join(name);
+                let mode = std::fs::metadata(&path).unwrap().permissions().mode();
+                assert_eq!(mode & 0o111, 0o111, "{name} is not executable");
+            }
+            let out = StdCommand::new(target.path().join("ffmpeg"))
+                .arg("-version")
+                .output()
+                .unwrap();
+            let version = String::from_utf8_lossy(&out.stdout);
+            assert!(out.status.success(), "{version}");
+            assert!(version.contains("n8.1.3"), "{version}");
+        }
+
         #[tokio::test]
         async fn candidates_error_when_every_candidate_fails() {
             let (base, _) = serve(vec![]).await;

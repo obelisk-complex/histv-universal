@@ -38,7 +38,7 @@ pub struct CliArgs {
     )]
     pub codec: CodecFamily,
 
-    /// Force a specific encoder (e.g. hevc_nvenc, libx265).
+    /// Force a specific encoder (e.g. hevc_nvenc, hevc_vulkan, hevc_d3d12va, libx265).
     /// Omit to auto-detect best available.
     #[arg(short = 'e', long = "encoder", value_name = "NAME")]
     pub encoder: Option<String>,

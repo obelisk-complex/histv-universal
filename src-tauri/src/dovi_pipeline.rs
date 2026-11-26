@@ -21,7 +21,7 @@ use crate::hevc_utils;
 
 /// Extracted RPU data from a source file, ready for injection after re-encode.
 pub struct ExtractedRpus {
-    /// One RPU per frame, in decode order. Only the RPU payload is stored
+    /// One RPU per frame, in display order. Only the RPU payload is stored
     /// (a few hundred bytes each), not the full video bitstream.
     pub rpus: Vec<Vec<u8>>,
     /// DV profile of the source.
@@ -63,6 +63,10 @@ pub async fn extract_rpus(
         nalu.nal_type == hevc_utils::HEVC_NAL_UNSPEC62
     })
     .map_err(|e| format!("Failed to read bitstream: {e}"))?;
+
+    // RPUs sit in decode order; the encoder reorders pictures its own way,
+    // so they are matched to pictures by display position.
+    let source_order = hevc_utils::display_order(&raw_hevc);
 
     // TempDir dropped here — large demuxed file cleaned up automatically
     drop(temp_dir);
@@ -113,6 +117,23 @@ pub async fn extract_rpus(
         }
     }
 
+    let rpu_payloads = match source_order {
+        Ok(order) => hevc_utils::decode_to_display(rpu_payloads, &order).unwrap_or_else(|p| {
+            sink.log(&format!(
+                "  DV: Warning: {} RPUs for {} pictures - keeping decode order",
+                p.len(),
+                order.len()
+            ));
+            p
+        }),
+        Err(e) => {
+            sink.log(&format!(
+                "  DV: Warning: could not read picture order ({e}) - keeping decode order"
+            ));
+            rpu_payloads
+        }
+    };
+
     let count = rpu_payloads.len();
     sink.log(&format!(
         "  DV: Extracted {} RPU{} (profile {}{})",
@@ -140,7 +161,6 @@ pub async fn extract_rpus(
 #[cfg(feature = "dovi")]
 pub async fn inject_and_package(
     encoded_path: &Path,
-    original_source: &Path,
     final_mp4_path: &Path,
     rpus: &ExtractedRpus,
     sink: &dyn EventSink,
@@ -174,6 +194,27 @@ pub async fn inject_and_package(
     sink.log("  DV: Extracting encoded HEVC bitstream...");
     hevc_utils::demux_to_annexb(encoded_path, &encoded_hevc, sink, "DV inject").await?;
 
+    // The encoded picture order maps each output picture to the RPU of the
+    // same display position.
+    let output_order = match hevc_utils::display_order(&encoded_hevc) {
+        Ok(o) if o.len() == rpus.rpus.len() => Some(o),
+        Ok(o) => {
+            sink.log(&format!(
+                "  DV: Warning: {} pictures for {} RPUs - injecting in decode order",
+                o.len(),
+                rpus.rpus.len()
+            ));
+            None
+        }
+        Err(e) => {
+            sink.log(&format!(
+                "  DV: Warning: could not read picture order ({e}) - injecting in decode order"
+            ));
+            None
+        }
+    };
+    let output_order = output_order.as_deref();
+
     // Step 2: Stream through encoded bitstream, inject RPU NALUs
     //
     // Frame boundaries are detected via `first_slice_segment_in_pic_flag`
@@ -201,7 +242,7 @@ pub async fn inject_and_package(
 
             // Inject RPU at picture boundary (end of previous frame's access unit)
             if (is_new_picture || is_non_vcl_after_vcl) && in_frame && rpu_index < rpus_ref.len() {
-                writer.write_nalu(&rpus_ref[rpu_index])?;
+                writer.write_nalu(&rpus_ref[hevc_utils::display_index(output_order, rpu_index)])?;
                 rpu_index += 1;
                 in_frame = false;
             }
@@ -226,7 +267,9 @@ pub async fn inject_and_package(
             .map_err(|e| format!("Could not append trailing RPU: {e}"))?;
         while rpu_index < rpus_ref.len() {
             f.write_all(&hevc_utils::START_CODE)
-                .and_then(|_| f.write_all(&rpus_ref[rpu_index]))
+                .and_then(|_| {
+                    f.write_all(&rpus_ref[hevc_utils::display_index(output_order, rpu_index)])
+                })
                 .map_err(|e| format!("Write error: {e}"))?;
             rpu_index += 1;
         }
@@ -248,97 +291,44 @@ pub async fn inject_and_package(
     ));
     sink.log(&format!("  DV: NAL types: {}", nal_diag.type_summary()));
 
-    // Step 3: Extract audio from original source
-    let audio_aac = temp_dir.path().join("audio.aac");
-    let audio_output = ffbin::ffmpeg_command()
+    // Step 3: Find the encoded MP4's audio and subtitle tracks. MP4Box imports
+    // them straight from it by track ID, so every track and codec survives
+    // (an ADTS side file accepted only AAC and kept only the first track).
+    let probe = ffbin::ffprobe_command()
         .args([
-            "-y",
-            "-i",
-            &original_source.to_string_lossy(),
-            "-vn",
-            "-sn",
-            "-c:a",
-            "copy",
-            &audio_aac.to_string_lossy(),
+            "-v",
+            "error",
+            "-show_entries",
+            "stream=codec_type,id",
+            "-of",
+            "csv=p=0",
+            &encoded_path.to_string_lossy(),
         ])
-        .stdout(std::process::Stdio::null())
-        .stderr(std::process::Stdio::piped())
-        .spawn();
-    let has_audio = match audio_output {
-        Ok(child) => match child.wait_with_output().await {
-            Ok(o) => {
-                if !o.status.success() {
-                    let stderr = String::from_utf8_lossy(&o.stderr);
-                    sink.log(&format!("  DV audio extract stderr: {stderr}"));
-                }
-                o.status.success()
-            }
-            Err(_) => false,
-        },
-        Err(_) => false,
+        .stdout(std::process::Stdio::piped())
+        .stderr(std::process::Stdio::null())
+        .output()
+        .await;
+    let extra_tracks = match probe {
+        Ok(o) if o.status.success() => non_video_track_ids(&String::from_utf8_lossy(&o.stdout)),
+        _ => {
+            sink.log("  DV: could not list the encoded file's tracks - packaging video only");
+            Vec::new()
+        }
     };
 
     // Step 4: Package with MP4Box
     sink.log("  DV: Packaging with MP4Box (DV container flags)...");
 
-    let (dv_profile_num, dv_compat) = if rpus.converted_to_81 {
-        (8, 1)
-    } else {
-        match rpus.source_profile {
-            5 => (5, 0),
-            7 => (7, 6),
-            8 => (8, 1),
-            _ => (8, 1),
-        }
-    };
-
-    let dv_profile_str = format!("dvhe.{:02}.{:02}", dv_profile_num, dv_compat);
-
-    // GPAC 26.02 syntax: `:dvp=PROFILE.COMPAT` replaces the old
-    // `:dv-profile=` / `:dv-bl-signal-comp-id=` flags.
-    // Do NOT set :bitdepth here — GPAC's :bitdepth sets the per-component
-    // bit depth in the hvcC box. Using :bitdepth=30 (intended as 10×3
-    // channels total) writes 30 bits per channel, causing decoders to
-    // misinterpret 10-bit HEVC as 30-bit and render solid green frames.
-    // GPAC 26.02 reads the correct profile and bit depth from the SPS in
-    // the raw HEVC bitstream, so the override is unnecessary.
-    //
-    // Set :colr to preserve BT.2020/PQ colour metadata. Without this,
-    // MP4Box does not propagate colour information from the SPS VUI to
-    // the container, and DV players see "unknown" colour primaries and
-    // transfer, producing green or red frames.
-    // GPAC :colr syntax: nclc,P,T,M (CICP numeric codes or strings).
-    // 9=bt2020, 16=smpte2084 (PQ), 9=bt2020nc (non-constant luminance).
-    // All DV profiles use BT.2020/PQ colour volume.
-    let dv_colour = "nclc,9,16,9";
-    let mut mp4box_args: Vec<String> = vec![
-        "-add".into(),
-        format!(
-            "{}#video:hdlr=vide:lang=und:group=1:dvp={}.{}:colr={}",
-            injected_hevc.display(),
-            dv_profile_num,
-            dv_compat,
-            dv_colour,
-        ),
-    ];
-
-    if has_audio && audio_aac.exists() {
-        mp4box_args.push("-add".into());
-        mp4box_args.push(format!(
-            "{}#audio:hdlr=soun:lang=und:group=2",
-            audio_aac.display()
-        ));
-    }
-
-    mp4box_args.push("-brand".into());
-    mp4box_args.push("mp42isom".into());
-    mp4box_args.push("-ab".into());
-    mp4box_args.push("dby1".into());
-    mp4box_args.push("-no-iod".into());
-    mp4box_args.push("-enable".into());
-    mp4box_args.push("1".into());
-    mp4box_args.push("-new".into());
-    mp4box_args.push(final_mp4_path.to_string_lossy().to_string());
+    let (dv_profile_num, dv_compat) = dv_profile_mapping(rpus.source_profile, rpus.converted_to_81);
+    let dv_profile_str = dv_profile_string(dv_profile_num, dv_compat);
+    let mp4box_args = mp4box_args(
+        &injected_hevc,
+        encoded_path,
+        &extra_tracks,
+        dv_profile_num,
+        dv_compat,
+        final_mp4_path,
+    );
 
     let mp4box_output = crate::dovi_tools::mp4box_command()
         .args(&mp4box_args)
@@ -381,6 +371,66 @@ pub async fn inject_and_package(
         success: true,
         message: format!("Dolby Vision preserved ({})", dv_profile_str),
     })
+}
+
+/// MP4 track IDs of the non-video streams in ffprobe
+/// `-show_entries stream=codec_type,id -of csv=p=0` output (`audio,0x2`).
+pub fn non_video_track_ids(csv: &str) -> Vec<u32> {
+    csv.lines()
+        .filter_map(|line| {
+            // Lines can carry trailing empty fields ("audio,0x2,").
+            let mut fields = line.trim().split(',');
+            let kind = fields.next()?;
+            if kind == "video" {
+                return None;
+            }
+            let id = fields.next()?.trim();
+            let id = id
+                .strip_prefix("0x")
+                .map_or_else(|| id.parse().ok(), |hex| u32::from_str_radix(hex, 16).ok())?;
+            Some(id)
+        })
+        .collect()
+}
+
+/// MP4Box arguments that package the RPU-injected HEVC as Dolby Vision and
+/// import `extra_track_ids` (audio, subtitles) from the encoded MP4.
+///
+/// GPAC syntax `:dvp=PROFILE.COMPAT` (GPAC >= 2.2). No `:bitdepth`: it sets
+/// the per-component depth in hvcC, and `30` (meant as 10x3) made decoders
+/// render green frames; GPAC reads the depth from the SPS. `:colr` carries
+/// BT.2020/PQ (CICP 9,16,9), which MP4Box does not copy from the VUI;
+/// without it DV players see unknown colour and show green or red frames.
+pub fn mp4box_args(
+    injected_hevc: &Path,
+    encoded_mp4: &Path,
+    extra_track_ids: &[u32],
+    profile: u8,
+    compat: u8,
+    out: &Path,
+) -> Vec<String> {
+    let mut args: Vec<String> = vec![
+        "-add".into(),
+        format!(
+            "{}#video:hdlr=vide:lang=und:group=1:dvp={}.{}:colr=nclc,9,16,9",
+            injected_hevc.display(),
+            profile,
+            compat,
+        ),
+    ];
+    for id in extra_track_ids {
+        args.push("-add".into());
+        args.push(format!("{}#trackID={id}", encoded_mp4.display()));
+    }
+    args.extend(
+        [
+            "-brand", "mp42isom", "-ab", "dby1", "-no-iod", "-enable", "1", "-new",
+        ]
+        .iter()
+        .map(|s| s.to_string()),
+    );
+    args.push(out.to_string_lossy().to_string());
+    args
 }
 
 /// Determine whether a DV profile requires conversion to 8.1.
@@ -492,6 +542,52 @@ mod tests {
     fn test_profile_string_zero_padded() {
         assert_eq!(dv_profile_string(1, 2), "dvhe.01.02");
     }
+    #[test]
+    fn non_video_track_ids_parses_ffprobe_csv() {
+        // Real ffprobe 6.1 output: the audio line has a trailing empty field.
+        let csv = "video,0x1\naudio,0x2,\naudio,0x3\nsubtitle,0x4\n";
+        assert_eq!(non_video_track_ids(csv), vec![2, 3, 4]);
+        assert_eq!(non_video_track_ids("video,0x1\n"), Vec::<u32>::new());
+        assert_eq!(non_video_track_ids("audio,7\ngarbage\n"), vec![7]);
+    }
+
+    #[test]
+    fn mp4box_args_import_audio_from_encoded() {
+        let args = mp4box_args(
+            Path::new("/t/injected.h265"),
+            Path::new("/o/enc.mp4"),
+            &[2, 3],
+            7,
+            6,
+            Path::new("/o/final.mp4"),
+        );
+        assert_eq!(args[2], "-add");
+        assert_eq!(args[3], "/o/enc.mp4#trackID=2");
+        assert_eq!(args[5], "/o/enc.mp4#trackID=3");
+        assert!(!args.iter().any(|a| a.contains(".aac")));
+        assert_eq!(args.last().unwrap(), "/o/final.mp4");
+    }
+
+    #[test]
+    fn mp4box_args_keep_dvp_and_colr() {
+        let args = mp4box_args(
+            Path::new("/t/injected.h265"),
+            Path::new("/o/enc.mp4"),
+            &[],
+            8,
+            1,
+            Path::new("/o/final.mp4"),
+        );
+        assert_eq!(
+            args[1],
+            "/t/injected.h265#video:hdlr=vide:lang=und:group=1:dvp=8.1:colr=nclc,9,16,9"
+        );
+        assert!(!args[1].contains("bitdepth"));
+        for pair in [["-brand", "mp42isom"], ["-ab", "dby1"], ["-enable", "1"]] {
+            assert!(args.windows(2).any(|w| w[0] == pair[0] && w[1] == pair[1]));
+        }
+        assert!(args.iter().any(|a| a == "-no-iod"));
+    }
 }
 
 // ── Stubs for non-dovi builds ─────────────────────────────────────
@@ -509,7 +605,6 @@ pub async fn extract_rpus(
 #[cfg(not(feature = "dovi"))]
 pub async fn inject_and_package(
     _encoded_path: &Path,
-    _original_source: &Path,
     _final_mp4_path: &Path,
     _rpus: &ExtractedRpus,
     _sink: &dyn EventSink,

@@ -120,14 +120,7 @@ fn main() {
     }
 
     // ── Batch execution ───────────────────────────────────────
-    let exit_code = run_batch(
-        &args,
-        &rt,
-        &mut queue_items,
-        &video_encoders,
-        &video_encoder,
-        &sink,
-    );
+    let exit_code = run_batch(&args, &rt, &mut queue_items, &video_encoders, &sink);
 
     std::process::exit(exit_code);
 }
@@ -391,7 +384,7 @@ fn compute_decisions(
                     threads: 0,
                     low_priority: false,
                     force_local: false,
-                    video_encoder: args.encoder.clone().unwrap_or_else(|| "auto".to_string()),
+                    video_encoder: batch_video_encoder(args),
                     codec_family: args.codec.to_string(),
                     audio_encoder: args.audio.to_string(),
                     audio_cap: args.audio_cap,
@@ -573,14 +566,24 @@ fn print_dry_run_plan(
     // DV/HDR10+ pre-flight warnings
     {
         let caps = histv_lib::dovi_tools::capabilities();
-        let dv_count = probed_items
-            .iter()
-            .filter(|item| item.probe.dovi_profile.is_some())
-            .count();
-        let dv5_count = probed_items
-            .iter()
-            .filter(|item| item.probe.dovi_profile == Some(5))
-            .count();
+        let ff_caps = encoder::ffmpeg_caps();
+        let mut dv_no_mp4box = 0usize;
+        let mut dv_no_native = 0usize;
+        for item in probed_items.iter() {
+            let Some(profile) = item.probe.dovi_profile else {
+                continue;
+            };
+            match encoder::dovi_preflight_issue(
+                profile,
+                &ff_caps,
+                caps.can_process_dovi,
+                caps.can_package_dovi_mp4,
+            ) {
+                Some((_, Some(_))) => dv_no_mp4box += 1,
+                Some((_, None)) => dv_no_native += 1,
+                None => {}
+            }
+        }
         let hdr10plus_count = probed_items
             .iter()
             .filter(|item| item.probe.has_hdr10plus)
@@ -588,16 +591,16 @@ fn print_dry_run_plan(
 
         let yellow = if is_tty { "\x1b[33m" } else { "" };
 
-        if dv_count > 0 && !caps.can_package_dovi_mp4 {
+        if dv_no_mp4box > 0 {
             eprintln!(
                 "  {yellow}{}WARNING:{reset} {} Dolby Vision file{} will fall back to HDR10 (MP4Box not found)",
-                bold, dv_count, if dv_count == 1 { "" } else { "s" },
+                bold, dv_no_mp4box, if dv_no_mp4box == 1 { "" } else { "s" },
             );
         }
-        if dv5_count > 0 {
+        if dv_no_native > 0 {
             eprintln!(
-                "  {yellow}{}WARNING:{reset} {} DV Profile 5 file{} will be encoded as HDR10 without mastering metadata",
-                bold, dv5_count, if dv5_count == 1 { "" } else { "s" },
+                "  {yellow}{}WARNING:{reset} {} Dolby Vision file{} will fall back to HDR10 (this ffmpeg has no native Dolby Vision coding)",
+                bold, dv_no_native, if dv_no_native == 1 { "" } else { "s" },
             );
         }
         if hdr10plus_count > 0 && !caps.can_process_hdr10plus {
@@ -808,7 +811,6 @@ fn run_batch(
     rt: &tokio::runtime::Runtime,
     queue_items: &mut [QueueItem],
     detected_encoders: &[EncoderInfo],
-    video_encoder: &str,
     sink: &cli_sink::CliSink,
 ) -> i32 {
     // ── Pre-batch setup ───────────────────────────────────────
@@ -867,7 +869,7 @@ fn run_batch(
         qp_p: args.qp_p,
         crf_val: args.crf,
         rate_control_mode: args.rc.to_string().to_uppercase(),
-        video_encoder: video_encoder.to_string(),
+        video_encoder: batch_video_encoder(args),
         codec_family: args.codec.to_string(),
         audio_encoder: args.audio.to_string(),
         audio_cap: args.audio_cap,
@@ -1018,7 +1020,8 @@ fn run_batch(
 
 // ── Helper functions ───────────────────────────────────────────
 
-/// Resolve which video encoder to use based on args and detected encoders.
+/// The encoder auto mode would pick for the batch's main codec family, for
+/// the dry-run plan and the start-up summary.
 fn resolve_encoder(args: &cli::CliArgs, video_encoders: &[EncoderInfo]) -> String {
     // If the user forced a specific encoder, use it
     if let Some(ref forced) = args.encoder {
@@ -1038,11 +1041,17 @@ fn resolve_encoder(args: &cli::CliArgs, video_encoders: &[EncoderInfo]) -> Strin
         }
     };
 
-    video_encoders
-        .iter()
-        .find(|e| e.codec_family == target_family)
-        .map(|e| e.name.clone())
-        .unwrap_or_else(|| encoder::software_fallback(target_family).to_string())
+    if args.precision_mode {
+        return encoder::software_fallback(target_family).to_string();
+    }
+    encoder::pick_encoder(target_family, video_encoders)
+}
+
+/// The `video_encoder` value handed to the batch: the forced encoder, or
+/// "auto" so each file resolves its own encoder for its own codec family
+/// (the same rule the GUI uses). `resolve_encoder` is for display only.
+fn batch_video_encoder(args: &cli::CliArgs) -> String {
+    args.encoder.clone().unwrap_or_else(|| "auto".to_string())
 }
 
 /// Merge job file settings into CLI args. CLI flags take precedence —
@@ -1615,5 +1624,46 @@ mod tests {
         let result = resolve_encoder(&args, &[]);
         // Should fall back to software encoder
         assert_eq!(result, "libx265");
+    }
+    fn hw_and_sw_encoders() -> Vec<EncoderInfo> {
+        let e = |n: &str, f: &str, hw: bool| EncoderInfo {
+            name: n.into(),
+            codec_family: f.into(),
+            is_hardware: hw,
+        };
+        // Detection order: software inside the table loop, hardware after
+        // its test encode, in table order.
+        vec![
+            e("libx265", "hevc", false),
+            e("libx264", "h264", false),
+            e("hevc_vaapi", "hevc", true),
+            e("hevc_vulkan", "hevc", true),
+            e("h264_vaapi", "h264", true),
+        ]
+    }
+
+    #[test]
+    fn test_resolve_encoder_auto_prefers_first_hw() {
+        let args = cli::CliArgs::parse_from(["histv-cli", "a.mkv"]);
+        assert_eq!(resolve_encoder(&args, &hw_and_sw_encoders()), "hevc_vaapi");
+        let compat = cli::CliArgs::parse_from(["histv-cli", "--compat", "a.mkv"]);
+        assert_eq!(
+            resolve_encoder(&compat, &hw_and_sw_encoders()),
+            "h264_vaapi"
+        );
+    }
+
+    #[test]
+    fn test_resolve_encoder_precision_shows_sw() {
+        let args = cli::CliArgs::parse_from(["histv-cli", "--precision", "a.mkv"]);
+        assert_eq!(resolve_encoder(&args, &hw_and_sw_encoders()), "libx265");
+    }
+
+    #[test]
+    fn cli_auto_does_not_force_sw() {
+        let args = cli::CliArgs::parse_from(["histv-cli", "a.mkv"]);
+        assert_eq!(batch_video_encoder(&args), "auto");
+        let forced = cli::CliArgs::parse_from(["histv-cli", "-e", "hevc_vulkan", "a.mkv"]);
+        assert_eq!(batch_video_encoder(&forced), "hevc_vulkan");
     }
 }

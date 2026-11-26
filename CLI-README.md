@@ -114,7 +114,7 @@ The dry-run table shows each file's source size, estimated output size, resoluti
 | Flag | Default | Description |
 |------|---------|-------------|
 | `-c, --codec <CODEC>` | `auto` | `auto` (preserve source family), `hevc`, or `h264` |
-| `-e, --encoder <n>` | auto | Force a specific encoder (e.g. `hevc_nvenc`, `libx265`, `libsvtav1`) |
+| `-e, --encoder <n>` | auto | Force a specific encoder (e.g. `hevc_nvenc`, `hevc_vulkan`, `hevc_d3d12va`, `libx265`, `libsvtav1`) |
 | `-b, --bitrate <MBPS>` | `4` | Target bitrate in Mbps - files above this get shrunk |
 | `--peak-multiplier <MULT>` | `1.5` | How much bitrate can spike on complex scenes (1.0-3.0) |
 | `--rc <MODE>` | `qp` | Quality mode for below-target files: `qp` (predictable size) or `crf` (better looking) |

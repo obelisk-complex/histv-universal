@@ -370,6 +370,80 @@ where
     Ok(())
 }
 
+// ── Display order ─────────────────────────────────────────────────
+
+/// Bytes of each NAL handed to `hevc_parser`. It reads at most 2048 bytes
+/// of a NAL (slice headers only), so copying more would be wasted.
+#[cfg(feature = "dovi")]
+const PARSE_PREFIX: usize = 4096;
+
+/// For each picture in decode order, its index in display order.
+///
+/// Per-frame metadata (DV RPUs, HDR10+ SEIs) is stored in decode order in
+/// the bitstream, but encoders reorder B-frames differently, so metadata has
+/// to be matched to pictures by display position. Uses `hevc_parser` for
+/// slice headers and POC, streaming one NAL at a time.
+#[cfg(feature = "dovi")]
+pub fn display_order(path: &Path) -> io::Result<Vec<usize>> {
+    let file = std::fs::File::open(path)?;
+    let mut reader = NalReader::new(file);
+    let mut parser = hevc_parser::HevcParser::default();
+    let mut buf: Vec<u8> = Vec::with_capacity(PARSE_PREFIX + 3);
+
+    while let Some(nalu) = reader.next_nalu()? {
+        if nalu.data.len() < 2 {
+            continue;
+        }
+        buf.clear();
+        buf.extend_from_slice(&[0, 0, 1]);
+        buf.extend_from_slice(&nalu.data[..nalu.data.len().min(PARSE_PREFIX)]);
+        parser
+            .split_nals(&buf, &[0], 0, true)
+            .map_err(|e| io::Error::new(io::ErrorKind::InvalidData, e.to_string()))?;
+    }
+    parser.finish();
+
+    let frames = parser.ordered_frames();
+    let mut order = vec![usize::MAX; frames.len()];
+    for f in frames {
+        let (d, p) = (f.decoded_number as usize, f.presentation_number as usize);
+        if d >= order.len() || p >= order.len() || order[d] != usize::MAX {
+            return Err(io::Error::new(
+                io::ErrorKind::InvalidData,
+                "picture order is not a permutation",
+            ));
+        }
+        order[d] = p;
+    }
+    Ok(order)
+}
+
+/// Move decode-order items to display order using `order` from
+/// [`display_order`]. Returns the items unchanged as `Err` when the counts
+/// differ or `order` is not a permutation.
+pub fn decode_to_display<T>(items: Vec<T>, order: &[usize]) -> Result<Vec<T>, Vec<T>> {
+    let mut seen = vec![false; order.len()];
+    let is_perm = order
+        .iter()
+        .all(|&p| p < seen.len() && !std::mem::replace(&mut seen[p], true));
+    if items.len() != order.len() || !is_perm {
+        return Err(items);
+    }
+    let mut slots: Vec<Option<T>> = (0..items.len()).map(|_| None).collect();
+    for (item, &p) in items.into_iter().zip(order) {
+        slots[p] = Some(item);
+    }
+    Ok(slots.into_iter().flatten().collect())
+}
+
+/// Display index of the `decode_index`-th output picture, or the decode
+/// index itself when no order is known.
+pub fn display_index(order: Option<&[usize]>, decode_index: usize) -> usize {
+    order
+        .and_then(|o| o.get(decode_index).copied())
+        .unwrap_or(decode_index)
+}
+
 // ── Pipeline helpers ─────────────────────────────────────────────
 
 /// Demux a video file to raw Annex B HEVC using ffmpeg.
@@ -433,6 +507,73 @@ pub fn make_tempdir(prefix: &str, near: Option<&Path>) -> Result<TempDir, String
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[cfg(feature = "dovi")]
+    fn fixture(name: &str) -> std::path::PathBuf {
+        Path::new(env!("CARGO_MANIFEST_DIR"))
+            .join("tests/fixtures")
+            .join(name)
+    }
+
+    #[cfg(feature = "dovi")]
+    #[test]
+    fn display_order_identity_for_intra_only() {
+        // libx265 keyint=1, three frames.
+        assert_eq!(
+            display_order(&fixture("intra_only.h265")).unwrap(),
+            vec![0, 1, 2]
+        );
+    }
+
+    #[cfg(feature = "dovi")]
+    #[test]
+    fn display_order_matches_known_gop() {
+        // libx265 bframes=3, b-pyramid, closed GOP of 12. Decode-order POCs
+        // from ffmpeg's trace_headers: IDR, then 4 2 1 3 8 6 5 7 11 10 9.
+        assert_eq!(
+            display_order(&fixture("gop_bframes.h265")).unwrap(),
+            vec![0, 4, 2, 1, 3, 8, 6, 5, 7, 11, 10, 9]
+        );
+    }
+
+    #[test]
+    fn decode_to_display_places_items() {
+        let order = [0, 2, 1];
+        assert_eq!(
+            decode_to_display(vec!["a", "c", "b"], &order).unwrap(),
+            vec!["a", "b", "c"]
+        );
+        // Count mismatch and non-permutations hand the input back unchanged.
+        assert_eq!(
+            decode_to_display(vec!["a", "b"], &order).unwrap_err(),
+            vec!["a", "b"]
+        );
+        assert_eq!(
+            decode_to_display(vec!["a", "b", "c"], &[0, 0, 1]).unwrap_err(),
+            vec!["a", "b", "c"]
+        );
+    }
+
+    #[test]
+    fn display_index_falls_back_to_decode_index() {
+        assert_eq!(display_index(Some(&[0, 2, 1]), 1), 2);
+        assert_eq!(display_index(Some(&[0, 2, 1]), 5), 5);
+        assert_eq!(display_index(None, 3), 3);
+    }
+
+    proptest! {
+        #[test]
+        fn reorder_roundtrip(perm in Just((0..40usize).collect::<Vec<_>>()).prop_shuffle()) {
+            // Decode-order item d lands at display slot perm[d]; reading each
+            // decode slot back through display_index gives the item again.
+            let items: Vec<usize> = (0..perm.len()).collect();
+            let shown = decode_to_display(items.clone(), &perm).unwrap();
+            let back: Vec<usize> = (0..perm.len())
+                .map(|d| shown[display_index(Some(&perm), d)])
+                .collect();
+            prop_assert_eq!(back, items);
+        }
+    }
 
     /// Build a minimal Annex B bitstream from raw NAL payloads.
     fn annex_b(nalus: &[&[u8]]) -> Vec<u8> {

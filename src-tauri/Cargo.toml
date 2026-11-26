@@ -41,6 +41,7 @@ dolby_vision = { version = "~3.3.2", optional = true }
 sha2 = "0.10"
 tempfile = "3"
 hdr10plus = { version = "~2.1.5", features = ["hevc", "json"], optional = true }
+hevc_parser = { version = "=0.6.10", optional = true }
 
 [features]
 default = ["custom-protocol", "downloader", "dovi"]
@@ -56,7 +57,7 @@ custom-protocol = [
 ]
 downloader = ["dep:reqwest", "dep:futures-util"]
 cli = ["dep:clap", "dep:indicatif", "dep:ctrlc", "dep:console"]
-dovi = ["dep:dolby_vision", "dep:hdr10plus"]
+dovi = ["dep:dolby_vision", "dep:hdr10plus", "dep:hevc_parser"]
 
 [dev-dependencies]
 proptest = "1"

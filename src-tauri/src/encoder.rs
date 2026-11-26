@@ -31,13 +31,40 @@ pub struct EncoderInfo {
     pub is_hardware: bool,
 }
 
-/// Encoder priority tables per platform (§8.2).
+/// Encoder priority tables per platform (§8.2). Detection tests hardware
+/// encoders in this order and `pick_encoder` takes the first that works, so
+/// vendor APIs come before the generic D3D12 and Vulkan paths.
+///
+/// `av1_vulkan` is left out of the tables, so it is never chosen
+/// automatically: in ffmpeg n8.1.3 it writes the aligned surface size as the
+/// AV1 frame size with no render-size crop (1920x1080 becomes 1920x1088 on
+/// RADV). It still works when forced with `--encoder av1_vulkan`.
 #[cfg(target_os = "windows")]
-const HEVC_PRIORITY: &[&str] = &["hevc_amf", "hevc_nvenc", "hevc_qsv", "libx265"];
+const HEVC_PRIORITY: &[&str] = &[
+    "hevc_amf",
+    "hevc_nvenc",
+    "hevc_qsv",
+    "hevc_d3d12va",
+    "hevc_vulkan",
+    "libx265",
+];
 #[cfg(target_os = "windows")]
-const H264_PRIORITY: &[&str] = &["h264_amf", "h264_nvenc", "h264_qsv", "libx264"];
+const H264_PRIORITY: &[&str] = &[
+    "h264_amf",
+    "h264_nvenc",
+    "h264_qsv",
+    "h264_d3d12va",
+    "h264_vulkan",
+    "libx264",
+];
 #[cfg(target_os = "windows")]
-const AV1_PRIORITY: &[&str] = &["av1_amf", "av1_nvenc", "av1_qsv", "libsvtav1"];
+const AV1_PRIORITY: &[&str] = &[
+    "av1_amf",
+    "av1_nvenc",
+    "av1_qsv",
+    "av1_d3d12va",
+    "libsvtav1",
+];
 
 #[cfg(target_os = "macos")]
 const HEVC_PRIORITY: &[&str] = &["hevc_videotoolbox", "libx265"];
@@ -47,9 +74,21 @@ const H264_PRIORITY: &[&str] = &["h264_videotoolbox", "libx264"];
 const AV1_PRIORITY: &[&str] = &["av1_videotoolbox", "libsvtav1"];
 
 #[cfg(target_os = "linux")]
-const HEVC_PRIORITY: &[&str] = &["hevc_vaapi", "hevc_nvenc", "hevc_qsv", "libx265"];
+const HEVC_PRIORITY: &[&str] = &[
+    "hevc_vaapi",
+    "hevc_nvenc",
+    "hevc_qsv",
+    "hevc_vulkan",
+    "libx265",
+];
 #[cfg(target_os = "linux")]
-const H264_PRIORITY: &[&str] = &["h264_vaapi", "h264_nvenc", "h264_qsv", "libx264"];
+const H264_PRIORITY: &[&str] = &[
+    "h264_vaapi",
+    "h264_nvenc",
+    "h264_qsv",
+    "h264_vulkan",
+    "libx264",
+];
 #[cfg(target_os = "linux")]
 const AV1_PRIORITY: &[&str] = &["av1_vaapi", "av1_nvenc", "av1_qsv", "libsvtav1"];
 
@@ -126,6 +165,22 @@ pub fn vbr_flags(encoder: &str, target: &str, peak: &str) -> Vec<String> {
             "-maxrate".into(),
             peak.into(),
         ],
+        // Vulkan: no -rc_mode. In auto mode a bitrate selects VBR when the
+        // driver offers it and CBR otherwise; an explicit mode the driver
+        // lacks is a hard error.
+        "hevc_vulkan" | "h264_vulkan" | "av1_vulkan" => {
+            vec!["-b:v".into(), target.into(), "-maxrate".into(), peak.into()]
+        }
+        // D3D12: explicit mode, because auto picks QVBR when both a bitrate
+        // and a quality are set.
+        "hevc_d3d12va" | "h264_d3d12va" | "av1_d3d12va" => vec![
+            "-rc_mode".into(),
+            "VBR".into(),
+            "-b:v".into(),
+            target.into(),
+            "-maxrate".into(),
+            peak.into(),
+        ],
         "libx265" | "libx264" => vec![
             "-preset".into(),
             "slow".into(),
@@ -172,7 +227,19 @@ pub fn cqp_flags(encoder: &str, qi: &str, qp: &str) -> Vec<String> {
         "hevc_videotoolbox" | "h264_videotoolbox" | "av1_videotoolbox" => {
             vec!["-q:v".into(), qi.into()]
         }
-        "hevc_vaapi" | "h264_vaapi" | "av1_vaapi" => {
+        "hevc_vaapi" | "h264_vaapi" => {
+            vec!["-rc_mode".into(), "CQP".into(), "-qp".into(), qi.into()]
+        }
+        "av1_vaapi" => vec![
+            "-rc_mode".into(),
+            "CQP".into(),
+            "-qp".into(),
+            av1_qindex_str(qi),
+        ],
+        "hevc_vulkan" | "h264_vulkan" => vec!["-qp".into(), qi.into()],
+        "av1_vulkan" => vec!["-qp".into(), av1_qindex_str(qi)],
+        // D3D12 takes 0-52 for all three codecs, so AV1 is not scaled.
+        "hevc_d3d12va" | "h264_d3d12va" | "av1_d3d12va" => {
             vec!["-rc_mode".into(), "CQP".into(), "-qp".into(), qi.into()]
         }
         "libx265" | "libx264" => vec!["-preset".into(), "slow".into(), "-qp".into(), qi.into()],
@@ -231,6 +298,235 @@ pub fn is_vaapi_encoder(name: &str) -> bool {
 /// Whether the encoder name refers to a QSV hardware encoder.
 pub fn is_qsv_encoder(name: &str) -> bool {
     name.ends_with("_qsv")
+}
+
+/// Whether the encoder name refers to a Vulkan Video hardware encoder.
+pub fn is_vulkan_encoder(name: &str) -> bool {
+    name.ends_with("_vulkan")
+}
+
+/// Whether the encoder name refers to a Direct3D 12 hardware encoder.
+pub fn is_d3d12_encoder(name: &str) -> bool {
+    name.ends_with("_d3d12va")
+}
+
+/// Map the app's QP (the H.264/HEVC scale, 0-51) onto the AV1 q-index
+/// scale (0-255) used by `av1_vaapi` and `av1_vulkan`. Linear, 51 maps to
+/// 255; the defaults 20 and 22 become 100 and 110. Not calibrated for equal
+/// perceptual quality against the HEVC encoders.
+pub fn av1_qindex(qp: u32) -> u32 {
+    qp.saturating_mul(5).clamp(1, 255)
+}
+
+/// `av1_qindex` for a QP that arrives pre-formatted. A value that does not
+/// parse is passed through so ffmpeg reports it.
+fn av1_qindex_str(qp: &str) -> String {
+    qp.parse::<u32>()
+        .map(|q| av1_qindex(q).to_string())
+        .unwrap_or_else(|_| qp.to_string())
+}
+
+/// Choose the encoder for a codec family in auto mode: the first working
+/// hardware encoder in detection order (which is priority-table order),
+/// else the software encoder. Every auto-selection site uses this, so the
+/// backend, the GUI summary and the CLI plan agree.
+pub fn pick_encoder(family: &str, detected: &[EncoderInfo]) -> String {
+    detected
+        .iter()
+        .find(|e| e.codec_family == family && e.is_hardware)
+        .map(|e| e.name.clone())
+        .unwrap_or_else(|| software_fallback(family).to_string())
+}
+
+/// Operating system whose hardware-device arguments to build. Passed
+/// explicitly so the Windows arms can be unit-tested on Linux.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum TargetOs {
+    Linux,
+    Windows,
+    Other,
+}
+
+impl TargetOs {
+    pub const fn current() -> Self {
+        if cfg!(target_os = "linux") {
+            TargetOs::Linux
+        } else if cfg!(target_os = "windows") {
+            TargetOs::Windows
+        } else {
+            TargetOs::Other
+        }
+    }
+}
+
+/// Hardware set-up arguments for one encoder.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct HwArgs {
+    /// Device arguments that must precede `-i`.
+    pub pre_input: Vec<String>,
+    /// Filter that moves frames onto the device (chained after any tonemap).
+    pub upload_filter: Option<String>,
+    /// Whether `-pix_fmt` should be emitted for the encode.
+    pub emit_pix_fmt: bool,
+    /// True when the input is decoded on the VAAPI device (10-bit VAAPI).
+    pub hwaccel_decode: bool,
+}
+
+/// Hardware device and upload arguments for `enc`. Pure: the render node
+/// and OS are passed in. Used for real encodes and for detection test
+/// encodes, so both exercise the same arguments.
+///
+/// - VAAPI (Linux): 10-bit without tonemap decodes on the device
+///   (`-hwaccel vaapi` plus `scale_vaapi=format=p010`), because software
+///   P010 `hwupload` gives corrupt frames on AMD; otherwise `-vaapi_device`
+///   plus `format=nv12,hwupload`.
+/// - QSV (Linux): `qsv=qs` device and `hwupload=extra_hw_frames=64`.
+/// - Vulkan: on Linux derived from the DRM render node so it lands on the
+///   same GPU as VAAPI; on Windows the default device. No `-pix_fmt`,
+///   because the encoder accepts only Vulkan frames.
+/// - D3D12 (Windows): `d3d12va` device, same upload, no `-pix_fmt`.
+///
+/// A missing render node gives a sentinel device path so ffmpeg fails
+/// with a clear message instead of picking an arbitrary device.
+pub fn hw_device_args(
+    enc: &str,
+    pix_fmt: &str,
+    has_tonemap: bool,
+    render_node: Option<&str>,
+    os: TargetOs,
+) -> HwArgs {
+    let s = |v: &[&str]| v.iter().map(|x| x.to_string()).collect::<Vec<String>>();
+    let ten_bit = pix_fmt == "p010le";
+    let mut hw = HwArgs {
+        pre_input: Vec::new(),
+        upload_filter: None,
+        emit_pix_fmt: true,
+        hwaccel_decode: false,
+    };
+
+    if os == TargetOs::Linux && is_vaapi_encoder(enc) {
+        match render_node {
+            Some(node) if ten_bit && !has_tonemap => {
+                hw.pre_input = s(&[
+                    "-hwaccel",
+                    "vaapi",
+                    "-hwaccel_device",
+                    node,
+                    "-hwaccel_output_format",
+                    "vaapi",
+                ]);
+                hw.upload_filter = Some("scale_vaapi=format=p010".into());
+                hw.hwaccel_decode = true;
+                hw.emit_pix_fmt = false;
+            }
+            Some(node) => {
+                hw.pre_input = s(&["-vaapi_device", node]);
+                hw.upload_filter = Some("format=nv12,hwupload".into());
+            }
+            None => {
+                hw.pre_input = s(&["-vaapi_device", "/dev/dri/renderD_missing"]);
+            }
+        }
+    } else if os == TargetOs::Linux && is_qsv_encoder(enc) {
+        hw.pre_input = match render_node {
+            Some(node) => s(&[
+                "-init_hw_device",
+                "qsv=qs",
+                "-filter_hw_device",
+                "qs",
+                "-qsv_device",
+                node,
+            ]),
+            None => s(&["-init_hw_device", "qsv=qs_child_device_missing"]),
+        };
+        hw.upload_filter = Some(if ten_bit {
+            "format=p010le,hwupload=extra_hw_frames=64".into()
+        } else {
+            "format=nv12,hwupload=extra_hw_frames=64".into()
+        });
+    } else if is_vulkan_encoder(enc) && os != TargetOs::Other {
+        hw.pre_input = if os == TargetOs::Linux {
+            let drm = format!(
+                "drm=dr:{}",
+                render_node.unwrap_or("/dev/dri/renderD_missing")
+            );
+            vec![
+                "-init_hw_device".into(),
+                drm,
+                "-init_hw_device".into(),
+                "vulkan=vk@dr".into(),
+                "-filter_hw_device".into(),
+                "vk".into(),
+            ]
+        } else {
+            s(&["-init_hw_device", "vulkan=vk", "-filter_hw_device", "vk"])
+        };
+        hw.upload_filter = Some(upload_filter_for(ten_bit));
+        hw.emit_pix_fmt = false;
+    } else if is_d3d12_encoder(enc) && os == TargetOs::Windows {
+        hw.pre_input = s(&[
+            "-init_hw_device",
+            "d3d12va=d3d12",
+            "-filter_hw_device",
+            "d3d12",
+        ]);
+        hw.upload_filter = Some(upload_filter_for(ten_bit));
+        hw.emit_pix_fmt = false;
+    }
+    hw
+}
+
+fn upload_filter_for(ten_bit: bool) -> String {
+    if ten_bit {
+        "format=p010le,hwupload".into()
+    } else {
+        "format=nv12,hwupload".into()
+    }
+}
+
+/// Arguments for the single-frame detection encode of `encoder_name`, or
+/// `None` when the encoder cannot work at all (VAAPI or QSV on Linux with no
+/// render node). Uses `hw_device_args` so detection and real encodes set up
+/// the device the same way.
+fn test_encode_args(
+    encoder_name: &str,
+    render_node: Option<&str>,
+    os: TargetOs,
+    out_path: &str,
+) -> Option<Vec<String>> {
+    if os == TargetOs::Linux
+        && render_node.is_none()
+        && (is_vaapi_encoder(encoder_name) || is_qsv_encoder(encoder_name))
+    {
+        return None;
+    }
+    let hw = hw_device_args(encoder_name, "nv12", false, render_node, os);
+    let mut args = hw.pre_input;
+    // 256x256 minimum - some HW encoders reject smaller resolutions
+    args.extend(
+        [
+            "-y",
+            "-f",
+            "lavfi",
+            "-i",
+            "color=black:s=256x256:d=0.04:r=25",
+            "-frames:v",
+            "1",
+        ]
+        .iter()
+        .map(|s| s.to_string()),
+    );
+    match hw.upload_filter {
+        Some(f) => args.extend(["-vf".into(), f]),
+        // nv12 - required by most hardware encoders. VAAPI and QSV have
+        // never had it here (they get no upload filter off Linux).
+        None if !is_vaapi_encoder(encoder_name) && !is_qsv_encoder(encoder_name) => {
+            args.extend(["-pix_fmt".into(), "nv12".into()])
+        }
+        None => {}
+    }
+    args.extend(["-c:v".into(), encoder_name.into(), out_path.into()]);
+    Some(args)
 }
 
 // ── Encoding strategy decision ─────────────────────────────────
@@ -308,6 +604,293 @@ pub fn decide_encode_strategy(
             peak_bps,
         }
     }
+}
+
+// ── ffmpeg capability probe ─────────────────────────────────────
+
+/// What the resolved ffmpeg can do beyond listing encoders. Set by
+/// `detect_encoders`; all false until detection has run.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+pub struct FfmpegCaps {
+    /// libx265 has the `dolbyvision` option (native RPU coding).
+    pub dovi_x265: bool,
+    /// libsvtav1 has the `dolbyvision` option.
+    pub dovi_svtav1: bool,
+    /// libx265 was built with HDR10_PLUS, so `dhdr10-info` works.
+    pub x265_hdr10plus: bool,
+}
+
+static FFMPEG_CAPS: std::sync::RwLock<FfmpegCaps> = std::sync::RwLock::new(FfmpegCaps {
+    dovi_x265: false,
+    dovi_svtav1: false,
+    x265_hdr10plus: false,
+});
+
+/// The capabilities found by the last `detect_encoders` run.
+pub fn ffmpeg_caps() -> FfmpegCaps {
+    FFMPEG_CAPS.read().map(|c| *c).unwrap_or_default()
+}
+
+/// Whether `ffmpeg -h encoder=X` output lists the `dolbyvision` option.
+pub fn help_has_dolbyvision(help_stdout: &str) -> bool {
+    help_stdout
+        .lines()
+        .any(|l| l.trim_start().starts_with("-dolbyvision"))
+}
+
+/// Whether an x265 encode's stderr says `dhdr10-info` was ignored because
+/// x265 was built without HDR10_PLUS. x265 still exits 0 in that case.
+pub fn dhdr10_disabled(stderr: &str) -> bool {
+    stderr.contains("dhdr10-info disabled")
+}
+
+/// Smallest valid HDR10+ JSON (one frame), for the `dhdr10-info` probe.
+const HDR10PLUS_PROBE_JSON: &str = r#"{"JSONInfo":{"HDR10plusProfile":"A","Version":"1.0"},"SceneInfo":[{"BezierCurveData":{"Anchors":[256,256,256,256,256,256,256,256,256],"KneePointX":0,"KneePointY":0},"LuminanceParameters":{"AverageRGB":0,"LuminanceDistributions":{"DistributionIndex":[1,5,10,25,50,75,90,95,99],"DistributionValues":[0,0,0,0,0,0,0,0,0]},"MaxScl":[0,0,0]},"NumberOfWindows":1,"TargetedSystemDisplayMaximumLuminance":400}],"SceneInfoSummary":{"SceneFirstFrameIndex":[0],"SceneFrameNumbers":[1]},"ToolInfo":{"Tool":"histv","Version":"probe"}}"#;
+
+async fn ffmpeg_stdout_stderr(args: &[&str]) -> Option<(String, String)> {
+    let out = ffbin::ffmpeg_command()
+        .args(args)
+        .stdout(std::process::Stdio::piped())
+        .stderr(std::process::Stdio::piped())
+        .spawn()
+        .ok()?
+        .wait_with_output()
+        .await
+        .ok()?;
+    Some((
+        String::from_utf8_lossy(&out.stdout).into_owned(),
+        String::from_utf8_lossy(&out.stderr).into_owned(),
+    ))
+}
+
+async fn probe_ffmpeg_caps(has_x265: bool, has_svtav1: bool) -> FfmpegCaps {
+    let mut caps = FfmpegCaps::default();
+    if has_x265 {
+        if let Some((out, _)) =
+            ffmpeg_stdout_stderr(&["-hide_banner", "-h", "encoder=libx265"]).await
+        {
+            caps.dovi_x265 = help_has_dolbyvision(&out);
+        }
+        if let Ok(mut json) = tempfile::Builder::new()
+            .prefix("histv_hdr10p_probe_")
+            .suffix(".json")
+            .tempfile()
+        {
+            use std::io::Write;
+            if json.write_all(HDR10PLUS_PROBE_JSON.as_bytes()).is_ok() {
+                let param = format!(
+                    "dhdr10-info={}",
+                    x265_param_path_escape(&json.path().to_string_lossy())
+                );
+                if let Some((_, err)) = ffmpeg_stdout_stderr(&[
+                    "-hide_banner",
+                    "-f",
+                    "lavfi",
+                    "-i",
+                    "color=black:s=256x256:d=0.04",
+                    "-frames:v",
+                    "1",
+                    "-c:v",
+                    "libx265",
+                    "-pix_fmt",
+                    "yuv420p10le",
+                    "-x265-params",
+                    &param,
+                    "-f",
+                    "null",
+                    "-",
+                ])
+                .await
+                {
+                    caps.x265_hdr10plus = !dhdr10_disabled(&err) && !err.contains("Error");
+                }
+            }
+        }
+    }
+    if has_svtav1 {
+        if let Some((out, _)) =
+            ffmpeg_stdout_stderr(&["-hide_banner", "-h", "encoder=libsvtav1"]).await
+        {
+            caps.dovi_svtav1 = help_has_dolbyvision(&out);
+        }
+    }
+    caps
+}
+
+/// Escape a path for use inside `-x265-params`, whose values are split on
+/// `:` and `=`. A Windows drive letter (`C:/...`) needs `C\:/...`, and
+/// backslash separators become forward slashes, which x265 accepts.
+pub fn x265_param_path_escape(path: &str) -> String {
+    path.replace('\\', "/").replace(':', "\\:")
+}
+
+/// Add `key=value` to the `-x265-params` argument, creating it if absent.
+pub fn add_x265_param(args: &mut Vec<String>, param: &str) {
+    if let Some(i) = args.iter().position(|a| a == "-x265-params") {
+        if let Some(v) = args.get_mut(i + 1) {
+            v.push(':');
+            v.push_str(param);
+            return;
+        }
+    }
+    args.push("-x265-params".into());
+    args.push(param.into());
+}
+
+// ── HDR10+ routing ──────────────────────────────────────────────
+
+/// How an HDR10+ source keeps its dynamic metadata.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Hdr10PlusRoute {
+    /// libx265 codes the metadata from a JSON file (`dhdr10-info`).
+    X265Native,
+    /// The Rust injector writes SEIs into the encoded HEVC afterwards.
+    Injector,
+}
+
+/// HDR10+ routing for one file, or `None` when the output is static HDR10.
+///
+/// Needs the hdr10plus crate (`can_process`), HDR preservation and an HEVC
+/// output. libx265 with `dhdr10-info` codes the metadata itself; any other
+/// HEVC encoder gets the injector. With Dolby Vision kept, only native DV
+/// through libx265 can carry HDR10+ as well (experimental: no sample has
+/// both).
+pub fn hdr10plus_route(
+    has_hdr10plus: bool,
+    can_process: bool,
+    preserve_hdr: bool,
+    encoder: &str,
+    family: &str,
+    dovi: Option<DoviRoute>,
+    caps: &FfmpegCaps,
+) -> Option<Hdr10PlusRoute> {
+    if !has_hdr10plus || !can_process || !preserve_hdr || family != "hevc" {
+        return None;
+    }
+    let x265_native = encoder == "libx265" && caps.x265_hdr10plus;
+    match dovi {
+        Some(r) if r.keeps_dovi() => (matches!(r, DoviRoute::Native { .. }) && x265_native)
+            .then_some(Hdr10PlusRoute::X265Native),
+        _ if x265_native => Some(Hdr10PlusRoute::X265Native),
+        _ => Some(Hdr10PlusRoute::Injector),
+    }
+}
+
+// ── Dolby Vision routing ────────────────────────────────────────
+
+/// How a Dolby Vision source keeps (or loses) its DV metadata.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum DoviRoute {
+    /// ffmpeg codes the RPUs itself (`-dolbyvision 1`). Forces this encoder
+    /// and codec family; RPUs stay attached to their frames.
+    Native {
+        encoder: &'static str,
+        family: &'static str,
+    },
+    /// Rust extract/inject plus MP4Box packaging (profile 7, or an ffmpeg
+    /// without native DV coding). HEVC into MP4 only.
+    RpuPipeline,
+    /// DV is dropped: the HDR10 base layer is kept, or tonemapped when HDR
+    /// preservation is off.
+    Hdr10,
+}
+
+impl DoviRoute {
+    /// Whether the output keeps Dolby Vision.
+    pub fn keeps_dovi(self) -> bool {
+        !matches!(self, DoviRoute::Hdr10)
+    }
+}
+
+/// The single routing decision for a Dolby Vision source.
+///
+/// - HDR preservation off: `Hdr10`.
+/// - Profile 5, 8 or 10 with native libx265 DV: `Native{libx265}`, whatever
+///   encoder auto-selection or `--encoder` chose. Hardware encoders cannot
+///   code RPUs, and an H.264 target cannot carry them, so both switch.
+/// - Profile 8 or 10 with an AV1 target and native libsvtav1 DV:
+///   `Native{libsvtav1}`. Profile 5 has no AV1 form (libsvtav1 rejects it),
+///   so it stays HEVC.
+/// - Profile 7 (dual layer; native coding errors on FEL and guesses MEL
+///   as profile 8), or no native capability: `RpuPipeline` for HEVC-based
+///   profiles when the Rust pipeline and MP4Box are available, else `Hdr10`.
+pub fn dovi_route(
+    profile: u8,
+    target_family: &str,
+    caps: &FfmpegCaps,
+    rpu_pipeline_ok: bool,
+    preserve_hdr: bool,
+) -> DoviRoute {
+    if !preserve_hdr {
+        return DoviRoute::Hdr10;
+    }
+    if matches!(profile, 8 | 10) && target_family == "av1" && caps.dovi_svtav1 {
+        return DoviRoute::Native {
+            encoder: "libsvtav1",
+            family: "av1",
+        };
+    }
+    if matches!(profile, 5 | 8 | 10) && caps.dovi_x265 {
+        return DoviRoute::Native {
+            encoder: "libx265",
+            family: "hevc",
+        };
+    }
+    if matches!(profile, 5 | 7 | 8) && rpu_pipeline_ok {
+        return DoviRoute::RpuPipeline;
+    }
+    DoviRoute::Hdr10
+}
+
+/// Whether the Rust DV pipeline can run: the `dovi` feature is compiled in
+/// and MP4Box supports `:dvp=`.
+fn rpu_pipeline_available() -> bool {
+    let c = crate::dovi_tools::capabilities();
+    c.can_process_dovi && c.can_package_dovi_mp4
+}
+
+/// Extra video arguments for native DV coding, appended after the
+/// rate-control flags in `existing`.
+///
+/// - Always `-dolbyvision 1`.
+/// - libx265 refuses DV without VBV ("Dolby Vision requires VBV settings to
+///   enable HRD"), so `-maxrate`/`-bufsize` are added when missing. An
+///   existing `-maxrate` (VBR, precision mode) wins and only `-bufsize` is
+///   added from it. Otherwise the cap is `threshold x peak multiplier`, or
+///   twice the source bitrate when there is no threshold. Under CQP x265
+///   ignores VBV with a warning; CRF and VBR honour it.
+pub fn dovi_native_args(
+    encoder: &str,
+    existing: &[String],
+    threshold_bps: u64,
+    peak_mult: f64,
+    source_bps: u64,
+) -> Vec<String> {
+    let mut args: Vec<String> = vec!["-dolbyvision".into(), "1".into()];
+    if encoder != "libx265" {
+        return args;
+    }
+    let value_of = |flag: &str| {
+        existing
+            .windows(2)
+            .find(|w| w[0] == flag)
+            .map(|w| w[1].clone())
+    };
+    let maxrate = value_of("-maxrate");
+    let m: u64 = match &maxrate {
+        Some(v) => v.parse().unwrap_or(0),
+        None if threshold_bps > 0 => (threshold_bps as f64 * peak_mult.max(1.0)) as u64,
+        None => source_bps.saturating_mul(2),
+    };
+    // A last resort for a source with no known bitrate and no threshold.
+    let m = if m == 0 { 50_000_000 } else { m };
+    if maxrate.is_none() {
+        args.extend(["-maxrate".into(), m.to_string()]);
+    }
+    if value_of("-bufsize").is_none() {
+        args.extend(["-bufsize".into(), m.saturating_mul(2).to_string()]);
+    }
+    args
 }
 
 // ── Encoder detection (§8) ──────────────────────────────────────
@@ -413,6 +996,21 @@ pub async fn detect_encoders(sink: &dyn EventSink) -> (Vec<EncoderInfo>, Vec<Str
         }
     }
 
+    let caps = probe_ffmpeg_caps(
+        available.contains("libx265"),
+        available.contains("libsvtav1"),
+    )
+    .await;
+    sink.log(&format!(
+        "[detect] Native Dolby Vision: libx265 {}, libsvtav1 {}; x265 HDR10+ (dhdr10-info) {}",
+        if caps.dovi_x265 { "yes" } else { "no" },
+        if caps.dovi_svtav1 { "yes" } else { "no" },
+        if caps.x265_hdr10plus { "yes" } else { "no" },
+    ));
+    if let Ok(mut c) = FFMPEG_CAPS.write() {
+        *c = caps;
+    }
+
     // Check audio encoders
     for &aenc in AUDIO_ENCODERS {
         if available.contains(aenc) {
@@ -454,64 +1052,18 @@ async fn test_encode(encoder_name: &str) -> bool {
     };
     let tmp_str = tmp_file.path().to_string_lossy().to_string();
 
-    let mut args: Vec<String> = Vec::new();
-
-    // Hardware device initialisation - required before -i for VAAPI/QSV.
-    // NVENC auto-detects the GPU but benefits from explicit init on some
-    // multi-GPU systems.
     #[cfg(target_os = "linux")]
-    if is_vaapi_encoder(encoder_name) {
-        if let Some(render_node) = find_dri_render_node() {
-            args.extend(["-vaapi_device".into(), render_node]);
-        } else {
-            return false;
-        }
-    }
-    #[cfg(target_os = "linux")]
-    if is_qsv_encoder(encoder_name) {
-        if let Some(render_node) = find_dri_render_node() {
-            args.extend([
-                "-init_hw_device".into(),
-                "qsv=qs".into(),
-                "-filter_hw_device".into(),
-                "qs".into(),
-                "-qsv_device".into(),
-                render_node,
-            ]);
-        } else {
-            return false;
-        }
-    }
-
-    // 256x256 minimum - some HW encoders reject smaller resolutions
-    // nv12 pixel format - required by most hardware encoders
-    args.extend([
-        "-y".into(),
-        "-f".into(),
-        "lavfi".into(),
-        "-i".into(),
-        "color=black:s=256x256:d=0.04:r=25".into(),
-        "-frames:v".into(),
-        "1".into(),
-    ]);
-
-    // VAAPI needs frames uploaded to the hardware device
-    #[cfg(target_os = "linux")]
-    if is_vaapi_encoder(encoder_name) {
-        args.extend(["-vf".into(), "format=nv12,hwupload".into()]);
-    }
-    #[cfg(target_os = "linux")]
-    if is_qsv_encoder(encoder_name) {
-        args.extend([
-            "-vf".into(),
-            "format=nv12,hwupload=extra_hw_frames=64".into(),
-        ]);
-    }
-    if !is_vaapi_encoder(encoder_name) && !is_qsv_encoder(encoder_name) {
-        args.extend(["-pix_fmt".into(), "nv12".into()]);
-    }
-
-    args.extend(["-c:v".into(), encoder_name.into(), tmp_str]);
+    let render_node = find_dri_render_node();
+    #[cfg(not(target_os = "linux"))]
+    let render_node: Option<String> = None;
+    let Some(args) = test_encode_args(
+        encoder_name,
+        render_node.as_deref(),
+        TargetOs::current(),
+        &tmp_str,
+    ) else {
+        return false;
+    };
 
     let result = ffbin::ffmpeg_command()
         .args(&args)
@@ -530,23 +1082,27 @@ async fn test_encode(encoder_name: &str) -> bool {
 }
 
 #[cfg(target_os = "linux")]
-/// Find the first available DRI render node in `dir` (e.g.
-/// `renderD128`). Returns the full path as a string, or `None` if no
-/// render node is found or the directory cannot be read.
+/// Find the lowest-numbered DRI render node in `dir` (e.g. `renderD128`).
+/// Returns the full path as a string, or `None` if no render node is found
+/// or the directory cannot be read.
+///
+/// The lowest number is taken rather than the first `read_dir` entry,
+/// whose order is arbitrary: on a machine with a discrete GPU at
+/// renderD128 and an iGPU at renderD129, directory order picked the iGPU,
+/// which has no AV1 VAAPI encode and no Vulkan encode queue.
 ///
 /// Split from the public wrapper so tests can pass a temporary
 /// directory instead of requiring `/dev/dri` to exist.
 fn find_dri_render_node_in(dir: &std::path::Path) -> Option<String> {
-    std::fs::read_dir(dir).ok()?.find_map(|entry| {
-        let entry = entry.ok()?;
-        let name = entry.file_name();
-        let name = name.to_string_lossy();
-        if name.starts_with("renderD") {
-            Some(format!("{}/{name}", dir.display()))
-        } else {
-            None
-        }
-    })
+    std::fs::read_dir(dir)
+        .ok()?
+        .filter_map(|entry| {
+            let name = entry.ok()?.file_name().to_string_lossy().into_owned();
+            let num: u32 = name.strip_prefix("renderD")?.parse().ok()?;
+            Some((num, name))
+        })
+        .min()
+        .map(|(_, name)| format!("{}/{name}", dir.display()))
 }
 
 /// Find the first available DRI render node (e.g. /dev/dri/renderD128).
@@ -615,17 +1171,16 @@ pub struct ResolvedFileSettings {
 ///
 /// Three layers of logic:
 /// 1. **Auto resolution** - when `container_setting` is "auto", derive from source extension.
-/// 2. **DV override** - when `is_dovi_tier1` is true, force MP4 (DV requires MP4 container).
+/// 2. **MP4 override** - when `force_mp4` is true (the Dolby Vision RPU pipeline), force MP4.
 /// 3. **Explicit** - when "mkv" or "mp4", use that directly.
 ///
 /// Deterministic, no I/O - safe to call from display code.
 pub fn resolve_container(
     source_path: &str,
     container_setting: &str,
-    is_dovi_tier1: bool,
+    force_mp4: bool,
 ) -> &'static str {
-    // DV Tier 1 always forces MP4
-    if is_dovi_tier1 {
+    if force_mp4 {
         return "mp4";
     }
 
@@ -648,24 +1203,54 @@ pub fn resolve_container(
 }
 
 /// Resolve the final output container extension for a file, applying the exact
-/// rules `encode_single_file` uses: Dolby Vision Tier 1 and compatibility mode
-/// both force MP4, otherwise the container is derived from the configured
-/// setting / source extension. Centralised so the encode path and every
+/// rules `encode_single_file` uses: the Dolby Vision RPU pipeline (MP4Box)
+/// and compatibility mode both force MP4, otherwise the container is derived
+/// from the configured setting / source extension. Native DV coding keeps the
+/// configured container. Centralised so the encode path and every
 /// remote-staging back-copy path resolve the extension identically and cannot
 /// drift apart (the back-copy must look for the file the encode actually wrote).
 pub fn resolve_output_ext(
     source_path: &str,
+    source_video_codec: &str,
     dovi_profile: Option<u8>,
     settings: &BatchSettings,
     preserve_hdr: bool,
 ) -> &'static str {
-    let caps = crate::dovi_tools::capabilities();
-    let is_dovi_tier1 = dovi_profile.is_some()
-        && caps.can_process_dovi
-        && caps.can_package_dovi_mp4
-        && preserve_hdr;
-    if is_dovi_tier1 || settings.compatibility_mode {
+    resolve_output_ext_with(
+        source_path,
+        source_video_codec,
+        dovi_profile,
+        settings,
+        preserve_hdr,
+        &ffmpeg_caps(),
+        rpu_pipeline_available(),
+    )
+}
+
+/// `resolve_output_ext` with the capabilities passed in.
+fn resolve_output_ext_with(
+    source_path: &str,
+    source_video_codec: &str,
+    dovi_profile: Option<u8>,
+    settings: &BatchSettings,
+    preserve_hdr: bool,
+    caps: &FfmpegCaps,
+    rpu_pipeline_ok: bool,
+) -> &'static str {
+    if settings.compatibility_mode {
         return "mp4";
+    }
+    if let Some(profile) = dovi_profile {
+        let ext = std::path::Path::new(source_path)
+            .extension()
+            .map(|e| e.to_string_lossy().to_lowercase())
+            .unwrap_or_default();
+        let family = resolve_file_settings(source_video_codec, &ext, settings, &[]).codec_family;
+        if dovi_route(profile, &family, caps, rpu_pipeline_ok, preserve_hdr)
+            == DoviRoute::RpuPipeline
+        {
+            return "mp4";
+        }
     }
     resolve_container(source_path, &settings.output_container, false)
 }
@@ -700,15 +1285,7 @@ pub fn resolve_file_settings(
             if settings.precision_mode {
                 software_fallback(codec_family).to_string()
             } else {
-                // Prefer HW encoders over SW for the same codec family.
-                // The detection list may contain both (HW added after test
-                // encodes, SW added as immediate fallbacks).
-                detected_encoders
-                    .iter()
-                    .filter(|e| e.codec_family == codec_family)
-                    .max_by_key(|e| e.is_hardware as u8)
-                    .map(|e| e.name.clone())
-                    .unwrap_or_else(|| software_fallback(codec_family).to_string())
+                pick_encoder(codec_family, detected_encoders)
             }
         }
         forced => forced.to_string(),
@@ -762,9 +1339,33 @@ pub struct PreflightWarning {
     pub missing_tool: Option<String>,
 }
 
+/// Why a Dolby Vision source will lose DV, if it will. `None` when DV is kept.
+/// Assumes HDR preservation is on and an HEVC target (the route's outcome
+/// does not depend on the family when libx265 has native DV).
+pub fn dovi_preflight_issue(
+    profile: u8,
+    caps: &FfmpegCaps,
+    rust_dovi: bool,
+    mp4box_dvp: bool,
+) -> Option<(&'static str, Option<&'static str>)> {
+    let route = |rpu_ok| dovi_route(profile, "hevc", caps, rpu_ok, true);
+    if route(rust_dovi && mp4box_dvp).keeps_dovi() {
+        return None;
+    }
+    if rust_dovi && route(true) == DoviRoute::RpuPipeline {
+        Some(("HDR10 fallback (MP4Box not found)", Some("MP4Box")))
+    } else {
+        Some((
+            "HDR10 fallback (this ffmpeg has no native Dolby Vision coding)",
+            None,
+        ))
+    }
+}
+
 /// Scan the queue and report files that will be degraded due to missing tools.
 pub fn preflight_scan(queue: &[QueueItem]) -> Vec<PreflightWarning> {
     let caps = crate::dovi_tools::capabilities();
+    let ff_caps = ffmpeg_caps();
     let mut warnings = Vec::new();
 
     for item in queue {
@@ -772,21 +1373,21 @@ pub fn preflight_scan(queue: &[QueueItem]) -> Vec<PreflightWarning> {
             continue;
         }
 
-        // Dolby Vision files without MP4Box
         if let Some(profile) = item.probe.dovi_profile {
-            if !caps.can_package_dovi_mp4 {
-                let source_type = format!("Dolby Vision Profile {}", profile);
-                let actual = "HDR10 fallback".to_string();
-                let best = "Full DV preservation".to_string();
+            if let Some((actual, tool)) = dovi_preflight_issue(
+                profile,
+                &ff_caps,
+                caps.can_process_dovi,
+                caps.can_package_dovi_mp4,
+            ) {
                 warnings.push(PreflightWarning {
                     file_name: item.file_name.clone(),
-                    source_type,
-                    best_possible: best,
-                    actual_outcome: actual,
-                    missing_tool: Some("MP4Box".to_string()),
+                    source_type: format!("Dolby Vision Profile {}", profile),
+                    best_possible: "Full DV preservation".to_string(),
+                    actual_outcome: actual.to_string(),
+                    missing_tool: tool.map(str::to_string),
                 });
             }
-            // Profile 5 with tools available: auto-converted to 8.1, no warning needed
         }
 
         // HDR10+ without the crate (only if feature not compiled)
@@ -1012,14 +1613,7 @@ async fn handle_post_encode(
             // logic (size check, replace rename) works unchanged.
             let dv_staging = temp_output_file.with_extension("histv-dv.mp4");
 
-            match dovi_pipeline::inject_and_package(
-                temp_output_file,
-                temp_output_file, // audio source: use encoded audio, not original
-                &dv_staging,
-                rpus,
-                sink,
-            )
-            .await
+            match dovi_pipeline::inject_and_package(temp_output_file, &dv_staging, rpus, sink).await
             {
                 Ok(result) if result.success => {
                     sink.log(&format!("  {}", result.message));
@@ -1168,6 +1762,10 @@ async fn handle_post_encode(
                 ]);
             }
             remux_args.extend(audio_codec);
+            if ext == "mp4" && queue[idx].probe.dovi_profile.is_some() {
+                // Keep the source's DV configuration record (movenc drops it otherwise).
+                remux_args.extend(["-strict".into(), "unofficial".into()]);
+            }
             remux_args.push(output_str.into());
 
             let remux_refs: Vec<&str> = remux_args.iter().map(|s| s.as_str()).collect();
@@ -1369,24 +1967,9 @@ async fn encode_single_file(
     let is_animated_webp =
         item_video_codec == "webp" && item_full_path.to_lowercase().ends_with(".webp");
 
-    // ── DV/HDR10+ tier determination (Phase DV) ──────────────
+    // ── DV/HDR10+ route determination ─────────────────────────
     let item_dovi_profile = queue[idx].probe.dovi_profile;
     let caps = crate::dovi_tools::capabilities();
-
-    // Tier 1: DV source + MP4Box available → full DV preservation
-    let is_dovi_tier1 = item_dovi_profile.is_some()
-        && caps.can_process_dovi
-        && caps.can_package_dovi_mp4
-        && preserve_hdr;
-
-    // Tier 2: HDR10+ source + crate available → full metadata preservation
-    #[cfg(feature = "dovi")]
-    let item_dovi_bl_compat_id = queue[idx].probe.dovi_bl_compat_id;
-    #[cfg(feature = "dovi")]
-    let is_hdr10plus_tier2 = queue[idx].probe.has_hdr10plus
-        && caps.can_process_hdr10plus
-        && preserve_hdr
-        && !is_dovi_tier1;
 
     // Per-file codec/encoder/container resolution (§2.4.0)
     let source_ext = std::path::Path::new(&item_full_path)
@@ -1395,51 +1978,83 @@ async fn encode_single_file(
         .unwrap_or_default();
     let mut resolved =
         resolve_file_settings(&item_video_codec, &source_ext, settings, detected_encoders);
-    // DV Tier 1 requires HEVC output — the RPU inject pipeline only works with
-    // HEVC bitstreams. If the source has an H.264 base layer (DV Profile 8
-    // with HDR10 compat), force the codec family to HEVC and re-resolve the
-    // encoder name.
-    if is_dovi_tier1 && resolved.codec_family != "hevc" {
-        resolved.codec_family = "hevc".to_string();
-        resolved.encoder_name = detected_encoders
-            .iter()
-            .filter(|e| e.codec_family == "hevc")
-            .max_by_key(|e| e.is_hardware as u8)
-            .map(|e| e.name.clone())
-            .unwrap_or_else(|| software_fallback("hevc").to_string());
-        sink.log("  Dolby Vision requires HEVC output - forcing HEVC encoder");
-    }
-    // AMD VAAPI 10-bit HEVC encoding previously produced visible artifacts
-    // (green bar, halos). The green bar is fixable via hevc_metadata BSF
-    // crop_bottom; the VUI/profile issues are resolved in ffmpeg >= 6.1.
-    // Fall back to libx265 unless HISTV_ALLOW_VAAPI_DV=1 is set, which
-    // permits VAAPI for DV tier 1 (for testing the full DV pipeline).
-    #[cfg(target_os = "linux")]
-    if is_dovi_tier1 && is_vaapi_encoder(&resolved.encoder_name) {
-        let allow_vaapi_dv = std::env::var("HISTV_ALLOW_VAAPI_DV")
-            .map(|v| v == "1")
-            .unwrap_or(false);
-        if allow_vaapi_dv {
-            sink.log(
-                "  Dolby Vision: HISTV_ALLOW_VAAPI_DV=1 - keeping VAAPI encoder for DV (test mode)",
-            );
-        } else {
-            let sw = software_fallback("hevc").to_string();
-            sink.log(&format!(
-                "  Dolby Vision: VAAPI 10-bit encoding unreliable - falling back to {} (set HISTV_ALLOW_VAAPI_DV=1 to test VAAPI DV)",
-                sw,
-            ));
-            resolved.encoder_name = sw;
+
+    // Dolby Vision: one routing decision (see `dovi_route`). Compatibility
+    // mode tonemaps to SDR H.264, so it never keeps DV.
+    let dovi_route_kind = item_dovi_profile.map(|profile| {
+        dovi_route(
+            profile,
+            &resolved.codec_family,
+            &ffmpeg_caps(),
+            caps.can_process_dovi && caps.can_package_dovi_mp4,
+            preserve_hdr && !settings.compatibility_mode,
+        )
+    });
+    let is_dovi_native = matches!(dovi_route_kind, Some(DoviRoute::Native { .. }));
+    let is_dovi_rpu_pipeline = dovi_route_kind == Some(DoviRoute::RpuPipeline);
+    let keeps_dovi = dovi_route_kind.is_some_and(DoviRoute::keeps_dovi);
+    match dovi_route_kind {
+        Some(DoviRoute::Native { encoder, family }) => {
+            if resolved.encoder_name != encoder {
+                sink.log(&format!(
+                    "  Dolby Vision: native RPU coding needs {encoder} - switching from {}",
+                    resolved.encoder_name
+                ));
+            }
+            resolved.codec_family = family.to_string();
+            resolved.encoder_name = encoder.to_string();
         }
+        Some(DoviRoute::RpuPipeline) => {
+            // The RPU inject pipeline only works with HEVC bitstreams.
+            if resolved.codec_family != "hevc" {
+                resolved.codec_family = "hevc".to_string();
+                resolved.encoder_name = pick_encoder("hevc", detected_encoders);
+                sink.log("  Dolby Vision requires HEVC output - forcing HEVC encoder");
+            }
+            // AMD VAAPI 10-bit HEVC is unreliable for RPU injection.
+            if is_vaapi_encoder(&resolved.encoder_name) {
+                let sw = software_fallback("hevc").to_string();
+                sink.log(&format!(
+                    "  Dolby Vision: VAAPI 10-bit encoding unreliable - falling back to {sw}"
+                ));
+                resolved.encoder_name = sw;
+            }
+        }
+        Some(DoviRoute::Hdr10) if preserve_hdr && !settings.compatibility_mode => {
+            sink.log(
+                "  Dolby Vision cannot be kept with this ffmpeg and tool set - output is HDR10",
+            );
+        }
+        _ => {}
     }
+
+    // Tier 2: HDR10+ source + crate available → full metadata preservation
+    #[cfg(feature = "dovi")]
+    let item_dovi_bl_compat_id = queue[idx].probe.dovi_bl_compat_id;
+    #[cfg(feature = "dovi")]
+    let hdr10p_route = hdr10plus_route(
+        queue[idx].probe.has_hdr10plus,
+        caps.can_process_hdr10plus,
+        preserve_hdr,
+        &resolved.encoder_name,
+        &resolved.codec_family,
+        dovi_route_kind,
+        &ffmpeg_caps(),
+    );
+
     let file_encoder = &resolved.encoder_name;
     let file_codec_family = &resolved.codec_family;
-    // Override container for DV Tier 1. DV requires MP4 container for
-    // proper signaling. For copies this is typically a no-op (DV sources
-    // are already MP4). For re-encodes, MP4Box will set the DV flags.
-    let file_ext =
-        resolve_output_ext(&item_full_path, item_dovi_profile, settings, preserve_hdr).to_string();
-    if is_dovi_tier1 && file_ext != resolved.container_ext {
+    // The RPU pipeline forces MP4 (MP4Box sets the DV flags); native DV
+    // coding keeps the configured container.
+    let file_ext = resolve_output_ext(
+        &item_full_path,
+        &item_video_codec,
+        item_dovi_profile,
+        settings,
+        preserve_hdr,
+    )
+    .to_string();
+    if is_dovi_rpu_pipeline && file_ext != resolved.container_ext {
         sink.log("  Dolby Vision requires MP4 container - output set to MP4 for this file");
     }
     let sw_fallback = software_fallback(file_codec_family).to_string();
@@ -1449,11 +2064,12 @@ async fn encode_single_file(
     // Per-file pixel format and optional tonemap filter (#1, #2).
     // Compatibility mode forces SDR output — H.264 "compat" targets devices
     // that don't support 10-bit/HDR, so tonemap regardless of preserve_hdr.
-    // DV Tier 1 always requires 10-bit output — the RPU pipeline only works
-    // with Main 10 HEVC, so override regardless of probe's colour-transfer
-    // detection (some DV containers omit smpte2084 from container-level metadata).
+    // Kept Dolby Vision always requires 10-bit output (Main 10 HEVC for the RPU
+    // pipeline; native coding refuses other formats), so override regardless of
+    // the probe's colour-transfer detection (some DV containers omit smpte2084
+    // from container-level metadata).
     let force_sdr = settings.compatibility_mode;
-    let (file_pix_fmt, tonemap_filter): (&str, Option<&'static str>) = if is_dovi_tier1 {
+    let (file_pix_fmt, tonemap_filter): (&str, Option<&'static str>) = if keeps_dovi {
         if !item_is_hdr {
             sink.log("  Dolby Vision requires 10-bit output - forcing p010le (source container omitted HDR colour metadata)");
         }
@@ -1644,7 +2260,7 @@ async fn encode_single_file(
     let is_copy = matches!(decision, EncodeDecision::Copy);
 
     #[cfg(feature = "dovi")]
-    let extracted_rpus = if is_dovi_tier1 && !is_copy {
+    let extracted_rpus = if is_dovi_rpu_pipeline && !is_copy {
         let profile = item_dovi_profile.unwrap();
         sink.log(&format!(
             "  Dolby Vision Profile {} detected - extracting RPU data for preservation",
@@ -1673,12 +2289,48 @@ async fn encode_single_file(
     #[cfg(not(feature = "dovi"))]
     let extracted_rpus: Option<()> = None;
 
+    // libx265 reads the metadata from a JSON file during the encode; it is
+    // deleted when this function returns.
     #[cfg(feature = "dovi")]
-    let extracted_hdr10plus = if is_hdr10plus_tier2 && !is_copy {
+    let mut hdr10plus_json: Option<tempfile::TempPath> = None;
+    #[cfg(feature = "dovi")]
+    let extracted_hdr10plus = if let (Some(route), false) = (hdr10p_route, is_copy) {
         sink.log("  HDR10+ detected - extracting dynamic metadata for preservation");
+        if keeps_dovi {
+            sink.log("  HDR10+ with Dolby Vision: experimental");
+        }
         match hdr10plus_pipeline::extract_hdr10plus(std::path::Path::new(&item_full_path), sink)
             .await
         {
+            Ok(meta) if route == Hdr10PlusRoute::X265Native => {
+                let json = temp_output_file
+                    .parent()
+                    .map_or_else(
+                        || tempfile::Builder::new().suffix(".json").tempfile(),
+                        |dir| {
+                            tempfile::Builder::new()
+                                .prefix("histv_hdr10p_")
+                                .suffix(".json")
+                                .tempfile_in(dir)
+                        },
+                    )
+                    .map(tempfile::NamedTempFile::into_temp_path)
+                    .map_err(|e| format!("Could not create HDR10+ JSON: {e}"))
+                    .and_then(|p| hdr10plus_pipeline::write_x265_json(&meta, &p).map(|()| p));
+                match json {
+                    Ok(p) => {
+                        hdr10plus_json = Some(p);
+                        None
+                    }
+                    Err(e) => {
+                        // The libx265 output is HEVC, so the injector still works.
+                        sink.log(&format!(
+                            "  HDR10+: {e} - injecting after the encode instead"
+                        ));
+                        Some(meta)
+                    }
+                }
+            }
             Ok(meta) => Some(meta),
             Err(e) => {
                 sink.log(&format!(
@@ -1875,6 +2527,37 @@ async fn encode_single_file(
         write_log(log_writer, &mode_desc);
     }
 
+    // Native Dolby Vision: RPU coding plus the VBV that x265 requires.
+    let is_copy_decision = matches!(decision, EncodeDecision::Copy);
+    if is_dovi_native && !is_copy_decision {
+        let extra = dovi_native_args(
+            file_encoder,
+            &video_args,
+            (settings.threshold * 1_000_000.0) as u64,
+            settings.peak_multiplier,
+            queue[idx].probe.video_bitrate_bps as u64,
+        );
+        sink.log(&format!(
+            "  Dolby Vision: native RPU coding ({})",
+            extra.join(" ")
+        ));
+        video_args.extend(extra);
+    }
+    #[cfg(feature = "dovi")]
+    if let Some(ref json) = hdr10plus_json {
+        let param = format!(
+            "dhdr10-info={}",
+            x265_param_path_escape(&json.to_string_lossy())
+        );
+        sink.log(&format!("  HDR10+: coded by libx265 ({param})"));
+        add_x265_param(&mut video_args, &param);
+    }
+    // DV reaches the ffmpeg output through native coding or a stream copy
+    // (the RPU pipeline adds it later with MP4Box).
+    let dovi_in_output = file_ext == "mp4"
+        && ((is_dovi_native && !is_copy_decision)
+            || (is_copy_decision && item_dovi_profile.is_some()));
+
     // Build audio args (skipped for image sources like GIF)
     let (audio_map_args, audio_codec_args) = if is_image_source {
         (Vec::new(), Vec::new())
@@ -1959,9 +2642,9 @@ async fn encode_single_file(
         let uses_vaapi_hwaccel_decode =
             is_vaapi_encoder(file_encoder) && file_pix_fmt == "p010le" && tonemap_filter.is_none();
         let colour_metadata = if uses_vaapi_hwaccel_decode
-            && (is_dovi_tier1 || (item_is_hdr && preserve_hdr && !force_sdr))
+            && (keeps_dovi || (item_is_hdr && preserve_hdr && !force_sdr))
         {
-            let colour_primaries = if is_dovi_tier1 {
+            let colour_primaries = if keeps_dovi {
                 "bt2020" // DV always uses BT.2020
             } else {
                 match queue[idx].probe.color_transfer.as_str() {
@@ -1970,7 +2653,7 @@ async fn encode_single_file(
                     _ => "bt709",               // fallback
                 }
             };
-            let colour_trc = if is_dovi_tier1 {
+            let colour_trc = if keeps_dovi {
                 "smpte2084" // DV Profile 5→8.1 always uses PQ
             } else {
                 match queue[idx].probe.color_transfer.as_str() {
@@ -2018,6 +2701,10 @@ async fn encode_single_file(
             codec_family: target_codec,
             colour_metadata,
             vaapi_hevc_bsf,
+            dovi_in_output,
+            dovi_p5: dovi_in_output && item_dovi_profile == Some(5),
+            keep_source_tag: is_copy_decision
+                && matches!(source_ext.as_str(), "mp4" | "m4v" | "mov"),
         });
 
         let cmd_line = format!("ffmpeg {}", ffmpeg_args.join(" "));
@@ -2261,6 +2948,10 @@ async fn encode_single_file(
                         codec_family: target_codec,
                         colour_metadata: None, // SW encode propagates from input
                         vaapi_hevc_bsf: None,  // SW encode doesn't need VAAPI crop fix
+                        // Never native DV here: native routes are software already.
+                        dovi_in_output: false,
+                        dovi_p5: false,
+                        keep_source_tag: false,
                     });
 
                     let sw_cmd = format!("ffmpeg {}", sw_args.join(" "));
@@ -2671,6 +3362,7 @@ pub async fn run_encode_loop(
                 // Tier-1 / compatibility-mode MP4 override.
                 let ext = resolve_output_ext(
                     &original_path,
+                    &queue[idx].probe.video_codec,
                     queue[idx].probe.dovi_profile,
                     settings,
                     preserve_hdr,
@@ -2777,6 +3469,7 @@ pub async fn run_encode_loop(
                     // and the replace/beside back-copy (DV Tier-1 / compat → MP4).
                     let ext = resolve_output_ext(
                         &original_path,
+                        &queue[idx].probe.video_codec,
                         queue[idx].probe.dovi_profile,
                         settings,
                         preserve_hdr,
@@ -3347,6 +4040,7 @@ pub async fn probe_crf_viability(
 }
 
 /// Component parts for assembling an ffmpeg command line.
+#[derive(Default)]
 struct FfmpegAssemblyParts<'a> {
     input_path: &'a str,
     output_path: &'a str,
@@ -3369,6 +4063,16 @@ struct FfmpegAssemblyParts<'a> {
     /// with crop_bottom=8 patches the SPS to declare the correct crop.
     /// Only set for hevc_vaapi on Linux; other encoders don't have this issue.
     vaapi_hevc_bsf: Option<&'a str>,
+    /// The output stream carries Dolby Vision (native coding or a stream
+    /// copy). MP4 then needs `-strict unofficial`, without which movenc
+    /// drops the dvcC/dvvC record.
+    dovi_in_output: bool,
+    /// Dolby Vision profile 5 kept in MP4: sample entry `dvh1`, not `hvc1`.
+    dovi_p5: bool,
+    /// Stream copy from an MP4/MOV source: keep the source's sample entry.
+    /// Forcing `hvc1` onto a copied `hev1` stream (parameter sets in-band)
+    /// writes a file ffmpeg itself cannot open.
+    keep_source_tag: bool,
 }
 
 /// Colour metadata to embed in the ffmpeg output. Only needed for
@@ -3387,6 +4091,20 @@ struct ColourMetadata {
 /// Used by both the primary encode and the software-fallback path
 /// to avoid duplicating the invocation pattern.
 fn assemble_ffmpeg_args(parts: &FfmpegAssemblyParts<'_>) -> Vec<String> {
+    #[cfg(target_os = "linux")]
+    let render_node = find_dri_render_node();
+    #[cfg(not(target_os = "linux"))]
+    let render_node: Option<String> = None;
+    assemble_ffmpeg_args_for(parts, render_node.as_deref(), TargetOs::current())
+}
+
+/// `assemble_ffmpeg_args` with the render node and OS passed in, so the
+/// hardware arms are testable without a GPU or on another platform.
+fn assemble_ffmpeg_args_for(
+    parts: &FfmpegAssemblyParts<'_>,
+    render_node: Option<&str>,
+    os: TargetOs,
+) -> Vec<String> {
     // A tonemap filter requires an encode — ffmpeg cannot apply `-vf`
     // when the video stream is being copied (`-c:v copy -vf ...` fails
     // with EINVAL, exit 234). The caller must rewrite the decision to
@@ -3409,97 +4127,15 @@ fn assemble_ffmpeg_args(parts: &FfmpegAssemblyParts<'_>) -> Vec<String> {
         .find(|w| w[0] == "-c:v")
         .map(|w| w[1]);
 
-    let mut hw_device_init: Vec<String> = Vec::new();
-    let mut hw_upload_filter: Option<String> = None;
-    // When true, decode the input on the VAAPI device and keep frames on
-    // the GPU, avoiding the broken software→hwupload path for 10-bit.
-    let mut vaapi_hwaccel_decode = false;
-
-    if let Some(enc) = encoder_name {
-        #[cfg(target_os = "linux")]
-        if is_vaapi_encoder(enc) {
-            if let Some(render_node) = find_dri_render_node() {
-                // 10-bit (HDR/DV preservation): the software-decode +
-                // format=p010le,hwupload path silently produces green or
-                // corrupt frames on AMD VAAPI because hwupload cannot
-                // correctly create a P010 VAAPI surface from a software
-                // p010le frame. Instead, decode on the VAAPI device with
-                // -hwaccel vaapi and keep frames on the GPU throughout.
-                // This requires the input codec to be VAAPI-decodable
-                // (HEVC Main 10 is supported on AMD).
-                //
-                // 8-bit (SDR): the format=nv12,hwupload path works
-                // correctly because NV12 is the standard VAAPI surface
-                // format. Use -vaapi_device + hwupload as before.
-                //
-                // When a tonemap filter is present, frames must come back
-                // to CPU for the tonemap. In that case hwaccel decode
-                // can't keep frames on GPU, so use hwupload after the
-                // tonemap filter (but only for 8-bit; 10-bit VAAPI encode
-                // with a tonemap is unreliable - fall back to software).
-                if parts.pix_fmt == "p010le" && parts.tonemap_filter.is_none() {
-                    hw_device_init = vec![
-                        "-hwaccel".into(),
-                        "vaapi".into(),
-                        "-hwaccel_device".into(),
-                        render_node,
-                        "-hwaccel_output_format".into(),
-                        "vaapi".into(),
-                    ];
-                    vaapi_hwaccel_decode = true;
-                    // AMD VAAPI requires an explicit scale_vaapi filter to
-                    // force the P010 surface format between decoder and
-                    // encoder. Without it, the encoder may receive surfaces
-                    // in an unexpected format and produce green/corrupt
-                    // frames despite the container reporting Main 10.
-                    hw_upload_filter = Some("scale_vaapi=format=p010".into());
-                } else {
-                    hw_device_init = vec!["-vaapi_device".into(), render_node];
-                    hw_upload_filter = Some("format=nv12,hwupload".into());
-                }
-            } else {
-                // No render node found - VAAPI cannot work without one.
-                // test_encode() already gates encoder detection on this, so
-                // reaching here means the queue was built when a GPU was
-                // present but it has since disappeared (hot-unplug, driver
-                // reload). Emit an explicit marker so the failure is
-                // diagnosable from ffmpeg stderr; ffmpeg will fail quickly
-                // because `-c:v hevc_vaapi` without `-vaapi_device` errors
-                // out immediately.
-                hw_device_init = vec!["-vaapi_device".into(), "/dev/dri/renderD_missing".into()];
-            }
-        }
-        #[cfg(target_os = "linux")]
-        if is_qsv_encoder(enc) {
-            // QSV needs an Intel GPU. Use find_dri_render_node() to locate
-            // a DRI render node; on multi-GPU systems this is typically the
-            // Intel iGPU (renderD128). Specifying -qsv_device avoids MFX
-            // session creation failures when multiple GPUs are present.
-            if let Some(render_node) = find_dri_render_node() {
-                hw_device_init = vec![
-                    "-init_hw_device".into(),
-                    "qsv=qs".into(),
-                    "-filter_hw_device".into(),
-                    "qs".into(),
-                    "-qsv_device".into(),
-                    render_node,
-                ];
-            } else {
-                // No render node - QSV cannot work without an Intel GPU.
-                // Emit a sentinel so ffmpeg fails with a clear message.
-                hw_device_init = vec![
-                    "-init_hw_device".into(),
-                    "qsv=qs_child_device_missing".into(),
-                ];
-            }
-            let upload_fmt = if parts.pix_fmt == "p010le" {
-                "format=p010le,hwupload=extra_hw_frames=64"
-            } else {
-                "format=nv12,hwupload=extra_hw_frames=64"
-            };
-            hw_upload_filter = Some(upload_fmt.into());
-        }
-    }
+    let hw = hw_device_args(
+        encoder_name.unwrap_or(""),
+        parts.pix_fmt,
+        parts.tonemap_filter.is_some(),
+        render_node,
+        os,
+    );
+    let hw_device_init = hw.pre_input;
+    let hw_upload_filter = hw.upload_filter;
 
     let mut args: Vec<String> = vec![
         "-err_detect".into(),
@@ -3560,10 +4196,11 @@ fn assemble_ffmpeg_args(parts: &FfmpegAssemblyParts<'_>) -> Vec<String> {
         } else if let Some(hw_filter) = &hw_upload_filter {
             args.extend(vec!["-vf".into(), hw_filter.clone()]);
         }
-        if !vaapi_hwaccel_decode {
-            // When using hwaccel decode, the encoder receives frames in
-            // VAAPI surface format and auto-negotiates; setting -pix_fmt
-            // would force an incorrect software→hw format conversion.
+        if hw.emit_pix_fmt {
+            // Not set for VAAPI hwaccel decode (the encoder receives VAAPI
+            // surfaces and auto-negotiates; -pix_fmt would force a wrong
+            // software-to-hardware conversion) nor for Vulkan and D3D12,
+            // which accept only their own hardware frames.
             args.extend(vec!["-pix_fmt".into(), parts.pix_fmt.to_string()]);
         }
         args.extend_from_slice(parts.audio_codec_args);
@@ -3599,8 +4236,12 @@ fn assemble_ffmpeg_args(parts: &FfmpegAssemblyParts<'_>) -> Vec<String> {
         // Android/MediaCodec, NVIDIA Shield, and Chrome on Windows via DXVA.
         // hvc1 is de facto standard for universal hardware compatibility.
         // Only apply when the codec is actually HEVC to avoid tag mismatches.
-        if parts.codec_family == "hevc" {
-            args.extend(vec!["-tag:v".into(), "hvc1".into()]);
+        if parts.codec_family == "hevc" && !parts.keep_source_tag {
+            let tag = if parts.dovi_p5 { "dvh1" } else { "hvc1" };
+            args.extend(vec!["-tag:v".into(), tag.into()]);
+        }
+        if parts.dovi_in_output {
+            args.extend(vec!["-strict".into(), "unofficial".into()]);
         }
     }
 
@@ -5077,6 +5718,9 @@ mod tests {
             codec_family: "hevc",
             colour_metadata: None,
             vaapi_hevc_bsf: None,
+            dovi_in_output: false,
+            dovi_p5: false,
+            keep_source_tag: false,
         });
         assert!(args.contains(&"-tag:v".to_string()));
         assert!(args.contains(&"hvc1".to_string()));
@@ -5099,6 +5743,9 @@ mod tests {
             codec_family: "h264",
             colour_metadata: None,
             vaapi_hevc_bsf: None,
+            dovi_in_output: false,
+            dovi_p5: false,
+            keep_source_tag: false,
         });
         assert!(!args.contains(&"-tag:v".to_string()));
         assert!(!args.contains(&"hvc1".to_string()));
@@ -5122,6 +5769,9 @@ mod tests {
             codec_family: "hevc",
             colour_metadata: None,
             vaapi_hevc_bsf: None,
+            dovi_in_output: false,
+            dovi_p5: false,
+            keep_source_tag: false,
         });
         assert!(!args.contains(&"-tag:v".to_string()));
         assert!(!args.contains(&"hvc1".to_string()));
@@ -5144,6 +5794,9 @@ mod tests {
             codec_family: "hevc",
             colour_metadata: None,
             vaapi_hevc_bsf: None,
+            dovi_in_output: false,
+            dovi_p5: false,
+            keep_source_tag: false,
         });
         assert!(args.contains(&"-c:s".to_string()));
         assert!(args.contains(&"mov_text".to_string()));
@@ -5174,6 +5827,9 @@ mod tests {
             codec_family: "hevc",
             colour_metadata: None,
             vaapi_hevc_bsf: None,
+            dovi_in_output: false,
+            dovi_p5: false,
+            keep_source_tag: false,
         });
         assert!(args.contains(&"-c:s".to_string()));
         assert!(args.contains(&"copy".to_string()));
@@ -5200,6 +5856,9 @@ mod tests {
             codec_family: "hevc",
             colour_metadata: None,
             vaapi_hevc_bsf: None,
+            dovi_in_output: false,
+            dovi_p5: false,
+            keep_source_tag: false,
         });
         assert!(args.contains(&"-vf".to_string()));
         assert!(args.iter().any(|a| a.contains("tonemap=hable")));
@@ -5231,6 +5890,9 @@ mod tests {
             codec_family: "h264",
             colour_metadata: None,
             vaapi_hevc_bsf: None,
+            dovi_in_output: false,
+            dovi_p5: false,
+            keep_source_tag: false,
         });
     }
 
@@ -5525,12 +6187,10 @@ mod tests {
         let tmp = tempfile::tempdir().unwrap();
         std::fs::File::create(tmp.path().join("renderD129")).unwrap();
         std::fs::File::create(tmp.path().join("renderD128")).unwrap();
+        std::fs::File::create(tmp.path().join("renderD130")).unwrap();
         let result = find_dri_render_node_in(tmp.path());
-        // read_dir order is not guaranteed, but the result must be
-        // one of the two render nodes
-        assert!(result.is_some());
-        let path = result.unwrap();
-        assert!(path.ends_with("renderD128") || path.ends_with("renderD129"));
+        // The lowest number wins whatever the read_dir order.
+        assert_eq!(result, Some(format!("{}/renderD128", tmp.path().display())));
     }
 
     #[cfg(target_os = "linux")]
@@ -5605,6 +6265,9 @@ mod tests {
             codec_family: "hevc",
             colour_metadata: None,
             vaapi_hevc_bsf: None,
+            dovi_in_output: false,
+            dovi_p5: false,
+            keep_source_tag: false,
         });
 
         // hw_device_init args must precede -i
@@ -5644,6 +6307,9 @@ mod tests {
             codec_family: "hevc",
             colour_metadata: None,
             vaapi_hevc_bsf: None,
+            dovi_in_output: false,
+            dovi_p5: false,
+            keep_source_tag: false,
         });
         assert!(
             args.iter().any(|a| a == "-init_hw_device"),
@@ -5684,6 +6350,9 @@ mod tests {
             codec_family: "hevc",
             colour_metadata: None,
             vaapi_hevc_bsf: None,
+            dovi_in_output: false,
+            dovi_p5: false,
+            keep_source_tag: false,
         });
 
         // -vaapi_device must precede -i
@@ -5723,6 +6392,9 @@ mod tests {
             codec_family: "hevc",
             colour_metadata: None,
             vaapi_hevc_bsf: None,
+            dovi_in_output: false,
+            dovi_p5: false,
+            keep_source_tag: false,
         });
 
         // VAAPI must always have -vaapi_device in args. If the render
@@ -5759,6 +6431,9 @@ mod tests {
             codec_family: "hevc",
             colour_metadata: None,
             vaapi_hevc_bsf: None,
+            dovi_in_output: false,
+            dovi_p5: false,
+            keep_source_tag: false,
         });
 
         // When tonemap is present, can't use hwaccel decode (tonemap is CPU)
@@ -5795,6 +6470,9 @@ mod tests {
             codec_family: "hevc",
             colour_metadata: None,
             vaapi_hevc_bsf: None,
+            dovi_in_output: false,
+            dovi_p5: false,
+            keep_source_tag: false,
         });
 
         assert!(!args.iter().any(|a| a == "-vaapi_device"));
@@ -5821,6 +6499,9 @@ mod tests {
             codec_family: "hevc",
             colour_metadata: None,
             vaapi_hevc_bsf: None,
+            dovi_in_output: false,
+            dovi_p5: false,
+            keep_source_tag: false,
         });
 
         assert!(!args.iter().any(|a| a == "-vaapi_device"));
@@ -5853,6 +6534,9 @@ mod tests {
             codec_family: "hevc",
             colour_metadata: None,
             vaapi_hevc_bsf: None,
+            dovi_in_output: false,
+            dovi_p5: false,
+            keep_source_tag: false,
         });
 
         let vf_pos = args.iter().position(|a| a == "-vf").unwrap();
@@ -5895,6 +6579,9 @@ mod tests {
             codec_family: "hevc",
             colour_metadata: None,
             vaapi_hevc_bsf: None,
+            dovi_in_output: false,
+            dovi_p5: false,
+            keep_source_tag: false,
         });
 
         let vf_pos = args.iter().position(|a| a == "-vf").unwrap();
@@ -5939,6 +6626,9 @@ mod tests {
             codec_family: "hevc",
             colour_metadata: None,
             vaapi_hevc_bsf: None,
+            dovi_in_output: false,
+            dovi_p5: false,
+            keep_source_tag: false,
         });
 
         // Must use hwaccel decode for 10-bit VAAPI
@@ -6000,6 +6690,9 @@ mod tests {
             codec_family: "hevc",
             colour_metadata: None,
             vaapi_hevc_bsf: None,
+            dovi_in_output: false,
+            dovi_p5: false,
+            keep_source_tag: false,
         });
 
         let vf_pos = args.iter().position(|a| a == "-vf").unwrap();
@@ -6034,6 +6727,9 @@ mod tests {
             codec_family: "hevc",
             colour_metadata: None,
             vaapi_hevc_bsf: None,
+            dovi_in_output: false,
+            dovi_p5: false,
+            keep_source_tag: false,
         });
 
         let vf_pos = args.iter().position(|a| a == "-vf").unwrap();
@@ -6072,6 +6768,9 @@ mod tests {
             codec_family: "hevc",
             colour_metadata: None,
             vaapi_hevc_bsf: None,
+            dovi_in_output: false,
+            dovi_p5: false,
+            keep_source_tag: false,
         });
 
         let vf_pos = args.iter().position(|a| a == "-vf").unwrap();
@@ -6114,6 +6813,9 @@ mod tests {
                 range: "tv",
             }),
             vaapi_hevc_bsf: None,
+            dovi_in_output: false,
+            dovi_p5: false,
+            keep_source_tag: false,
         });
 
         assert!(
@@ -6153,6 +6855,9 @@ mod tests {
             codec_family: "hevc",
             colour_metadata: None,
             vaapi_hevc_bsf: None,
+            dovi_in_output: false,
+            dovi_p5: false,
+            keep_source_tag: false,
         });
 
         assert!(
@@ -6193,6 +6898,9 @@ mod tests {
             codec_family: "hevc",
             colour_metadata: None,
             vaapi_hevc_bsf: None,
+            dovi_in_output: false,
+            dovi_p5: false,
+            keep_source_tag: false,
         });
 
         assert!(
@@ -6220,6 +6928,9 @@ mod tests {
             codec_family: "hevc",
             colour_metadata: None,
             vaapi_hevc_bsf: Some("hevc_metadata=crop_bottom=8"),
+            dovi_in_output: false,
+            dovi_p5: false,
+            keep_source_tag: false,
         });
 
         assert!(
@@ -6250,11 +6961,1066 @@ mod tests {
             codec_family: "hevc",
             colour_metadata: None,
             vaapi_hevc_bsf: None,
+            dovi_in_output: false,
+            dovi_p5: false,
+            keep_source_tag: false,
         });
 
         assert!(
             !args.iter().any(|a| a == "-bsf:v"),
             "software encode must not include VAAPI crop BSF"
         );
+    }
+    // ══════════════════════════════════════════════════════════════
+    //  Encoder selection, Vulkan and D3D12 (phase A)
+    // ══════════════════════════════════════════════════════════════
+
+    fn enc(name: &str, family: &str, hw: bool) -> EncoderInfo {
+        EncoderInfo {
+            name: name.into(),
+            codec_family: family.into(),
+            is_hardware: hw,
+        }
+    }
+
+    fn strs(v: &[&str]) -> Vec<String> {
+        v.iter().map(|s| s.to_string()).collect()
+    }
+
+    #[test]
+    fn pick_encoder_prefers_first_hw_in_table_order() {
+        let detected = vec![
+            enc("libx265", "hevc", false),
+            enc("hevc_vaapi", "hevc", true),
+            enc("hevc_vulkan", "hevc", true),
+        ];
+        assert_eq!(pick_encoder("hevc", &detected), "hevc_vaapi");
+    }
+
+    #[test]
+    fn pick_encoder_ignores_other_families() {
+        let detected = vec![
+            enc("h264_vaapi", "h264", true),
+            enc("libx265", "hevc", false),
+        ];
+        assert_eq!(pick_encoder("hevc", &detected), "libx265");
+    }
+
+    #[test]
+    fn pick_encoder_falls_back_to_sw() {
+        assert_eq!(pick_encoder("hevc", &[]), "libx265");
+        assert_eq!(pick_encoder("h264", &[]), "libx264");
+        assert_eq!(
+            pick_encoder("av1", &[enc("libsvtav1", "av1", false)]),
+            "libsvtav1"
+        );
+    }
+
+    #[test]
+    fn resolve_file_settings_auto_uses_first_hw() {
+        let settings = default_settings();
+        let detected = vec![
+            enc("libx265", "hevc", false),
+            enc("hevc_vaapi", "hevc", true),
+            enc("hevc_vulkan", "hevc", true),
+        ];
+        let r = resolve_file_settings(
+            "h264",
+            "mkv",
+            &{
+                let mut s = settings.clone();
+                s.codec_family = "hevc".into();
+                s
+            },
+            &detected,
+        );
+        assert_eq!(r.encoder_name, "hevc_vaapi");
+    }
+
+    #[test]
+    fn priority_tables_vendor_before_generic() {
+        for table in [HEVC_PRIORITY, H264_PRIORITY, AV1_PRIORITY] {
+            let pos = |pred: fn(&str) -> bool| table.iter().position(|e| pred(e));
+            let generic = [pos(is_vulkan_encoder), pos(is_d3d12_encoder)];
+            let vendor = table
+                .iter()
+                .enumerate()
+                .filter(|(_, e)| {
+                    ["_vaapi", "_nvenc", "_qsv", "_amf", "_videotoolbox"]
+                        .iter()
+                        .any(|v| e.ends_with(v))
+                })
+                .map(|(i, _)| i)
+                .max();
+            for g in generic.into_iter().flatten() {
+                if let Some(v) = vendor {
+                    assert!(v < g, "{table:?}: vendor API after generic at {g}");
+                }
+            }
+            // Software is last.
+            assert!(table.last().unwrap().starts_with("lib"));
+            // D3D12 ahead of Vulkan where both exist.
+            if let (Some(d), Some(v)) = (pos(is_d3d12_encoder), pos(is_vulkan_encoder)) {
+                assert!(d < v);
+            }
+            // av1_vulkan pads the frame size, so it is never auto-selected.
+            assert!(!table.contains(&"av1_vulkan"));
+        }
+    }
+
+    #[cfg(target_os = "linux")]
+    #[test]
+    fn priority_tables_linux_include_vulkan() {
+        assert_eq!(
+            HEVC_PRIORITY,
+            &[
+                "hevc_vaapi",
+                "hevc_nvenc",
+                "hevc_qsv",
+                "hevc_vulkan",
+                "libx265"
+            ]
+        );
+        assert_eq!(
+            H264_PRIORITY,
+            &[
+                "h264_vaapi",
+                "h264_nvenc",
+                "h264_qsv",
+                "h264_vulkan",
+                "libx264"
+            ]
+        );
+    }
+
+    #[test]
+    fn is_vulkan_encoder_matches() {
+        assert!(is_vulkan_encoder("hevc_vulkan"));
+        assert!(is_vulkan_encoder("av1_vulkan"));
+        assert!(!is_vulkan_encoder("hevc_vaapi"));
+        assert!(!is_vulkan_encoder("libx265"));
+    }
+
+    #[test]
+    fn is_d3d12_encoder_matches() {
+        assert!(is_d3d12_encoder("h264_d3d12va"));
+        assert!(is_d3d12_encoder("av1_d3d12va"));
+        assert!(!is_d3d12_encoder("hevc_amf"));
+        assert!(!is_d3d12_encoder("d3d12va"));
+    }
+
+    #[test]
+    fn test_vbr_flags_vulkan() {
+        for e in ["hevc_vulkan", "h264_vulkan", "av1_vulkan"] {
+            assert_eq!(
+                vbr_flags(e, "4000000", "6000000"),
+                strs(&["-b:v", "4000000", "-maxrate", "6000000"]),
+                "{e}"
+            );
+        }
+    }
+
+    #[test]
+    fn test_vbr_flags_d3d12() {
+        for e in ["hevc_d3d12va", "h264_d3d12va", "av1_d3d12va"] {
+            assert_eq!(
+                vbr_flags(e, "4000000", "6000000"),
+                strs(&["-rc_mode", "VBR", "-b:v", "4000000", "-maxrate", "6000000"]),
+                "{e}"
+            );
+        }
+    }
+
+    #[test]
+    fn test_cqp_flags_vulkan() {
+        assert_eq!(cqp_flags("hevc_vulkan", "20", "22"), strs(&["-qp", "20"]));
+        assert_eq!(cqp_flags("h264_vulkan", "20", "22"), strs(&["-qp", "20"]));
+    }
+
+    #[test]
+    fn test_cqp_flags_d3d12() {
+        for e in ["hevc_d3d12va", "h264_d3d12va", "av1_d3d12va"] {
+            assert_eq!(
+                cqp_flags(e, "20", "22"),
+                strs(&["-rc_mode", "CQP", "-qp", "20"]),
+                "{e}"
+            );
+        }
+    }
+
+    #[test]
+    fn test_cqp_flags_av1_vulkan_scaled() {
+        assert_eq!(cqp_flags("av1_vulkan", "20", "22"), strs(&["-qp", "100"]));
+    }
+
+    #[test]
+    fn test_cqp_flags_av1_vaapi_scaled() {
+        assert_eq!(
+            cqp_flags("av1_vaapi", "20", "22"),
+            strs(&["-rc_mode", "CQP", "-qp", "100"])
+        );
+        // HEVC VAAPI keeps the unscaled QP.
+        assert_eq!(
+            cqp_flags("hevc_vaapi", "20", "22"),
+            strs(&["-rc_mode", "CQP", "-qp", "20"])
+        );
+    }
+
+    #[test]
+    fn test_crf_flags_vulkan_falls_back_to_cqp() {
+        assert_eq!(
+            crf_flags("hevc_vulkan", "20", "20", "22"),
+            strs(&["-qp", "20"])
+        );
+    }
+
+    #[test]
+    fn av1_qindex_maps_defaults() {
+        assert_eq!(av1_qindex(20), 100);
+        assert_eq!(av1_qindex(22), 110);
+        assert_eq!(av1_qindex(51), 255);
+    }
+
+    #[test]
+    fn av1_qindex_clamps() {
+        assert_eq!(av1_qindex(0), 1);
+        assert_eq!(av1_qindex(60), 255);
+        assert_eq!(av1_qindex(u32::MAX), 255);
+    }
+
+    #[test]
+    fn hw_args_vulkan_linux_derives_from_drm() {
+        let hw = hw_device_args(
+            "hevc_vulkan",
+            "yuv420p",
+            false,
+            Some("/dev/dri/renderD128"),
+            TargetOs::Linux,
+        );
+        assert_eq!(
+            hw.pre_input,
+            strs(&[
+                "-init_hw_device",
+                "drm=dr:/dev/dri/renderD128",
+                "-init_hw_device",
+                "vulkan=vk@dr",
+                "-filter_hw_device",
+                "vk"
+            ])
+        );
+        assert_eq!(hw.upload_filter.as_deref(), Some("format=nv12,hwupload"));
+        assert!(!hw.emit_pix_fmt);
+        assert!(!hw.hwaccel_decode);
+    }
+
+    #[test]
+    fn hw_args_vulkan_linux_missing_node_sentinel() {
+        let hw = hw_device_args("h264_vulkan", "yuv420p", false, None, TargetOs::Linux);
+        assert_eq!(hw.pre_input[1], "drm=dr:/dev/dri/renderD_missing");
+    }
+
+    #[test]
+    fn hw_args_vulkan_10bit_uploads_p010() {
+        let hw = hw_device_args(
+            "hevc_vulkan",
+            "p010le",
+            false,
+            Some("/dev/dri/renderD128"),
+            TargetOs::Linux,
+        );
+        assert_eq!(hw.upload_filter.as_deref(), Some("format=p010le,hwupload"));
+        assert!(!hw.emit_pix_fmt);
+    }
+
+    #[test]
+    fn hw_args_vulkan_windows() {
+        let hw = hw_device_args("hevc_vulkan", "p010le", false, None, TargetOs::Windows);
+        assert_eq!(
+            hw.pre_input,
+            strs(&["-init_hw_device", "vulkan=vk", "-filter_hw_device", "vk"])
+        );
+        assert_eq!(hw.upload_filter.as_deref(), Some("format=p010le,hwupload"));
+        assert!(!hw.emit_pix_fmt);
+    }
+
+    #[test]
+    fn hw_args_d3d12_windows() {
+        let hw = hw_device_args("av1_d3d12va", "yuv420p", false, None, TargetOs::Windows);
+        assert_eq!(
+            hw.pre_input,
+            strs(&[
+                "-init_hw_device",
+                "d3d12va=d3d12",
+                "-filter_hw_device",
+                "d3d12"
+            ])
+        );
+        assert_eq!(hw.upload_filter.as_deref(), Some("format=nv12,hwupload"));
+        assert!(!hw.emit_pix_fmt);
+    }
+
+    #[test]
+    fn hw_args_windows_vendor_encoders_unchanged() {
+        // AMF, NVENC and QSV on Windows have never had device arguments.
+        for e in ["hevc_amf", "hevc_nvenc", "hevc_qsv"] {
+            let hw = hw_device_args(e, "p010le", false, None, TargetOs::Windows);
+            assert!(hw.pre_input.is_empty(), "{e}");
+            assert!(hw.upload_filter.is_none(), "{e}");
+            assert!(hw.emit_pix_fmt, "{e}");
+        }
+    }
+
+    #[test]
+    fn hw_args_vaapi_unchanged() {
+        let node = Some("/dev/dri/renderD128");
+        let ten = hw_device_args("hevc_vaapi", "p010le", false, node, TargetOs::Linux);
+        assert_eq!(
+            ten.pre_input,
+            strs(&[
+                "-hwaccel",
+                "vaapi",
+                "-hwaccel_device",
+                "/dev/dri/renderD128",
+                "-hwaccel_output_format",
+                "vaapi"
+            ])
+        );
+        assert_eq!(
+            ten.upload_filter.as_deref(),
+            Some("scale_vaapi=format=p010")
+        );
+        assert!(ten.hwaccel_decode && !ten.emit_pix_fmt);
+
+        let eight = hw_device_args("hevc_vaapi", "yuv420p", false, node, TargetOs::Linux);
+        assert_eq!(
+            eight.pre_input,
+            strs(&["-vaapi_device", "/dev/dri/renderD128"])
+        );
+        assert_eq!(eight.upload_filter.as_deref(), Some("format=nv12,hwupload"));
+        assert!(eight.emit_pix_fmt && !eight.hwaccel_decode);
+
+        // 10-bit with a tonemap uses hwupload, not hwaccel decode.
+        let tm = hw_device_args("hevc_vaapi", "p010le", true, node, TargetOs::Linux);
+        assert_eq!(
+            tm.pre_input,
+            strs(&["-vaapi_device", "/dev/dri/renderD128"])
+        );
+
+        let missing = hw_device_args("hevc_vaapi", "yuv420p", false, None, TargetOs::Linux);
+        assert_eq!(
+            missing.pre_input,
+            strs(&["-vaapi_device", "/dev/dri/renderD_missing"])
+        );
+        assert!(missing.upload_filter.is_none());
+    }
+
+    #[test]
+    fn hw_args_qsv_unchanged() {
+        let hw = hw_device_args(
+            "hevc_qsv",
+            "p010le",
+            false,
+            Some("/dev/dri/renderD128"),
+            TargetOs::Linux,
+        );
+        assert_eq!(
+            hw.pre_input,
+            strs(&[
+                "-init_hw_device",
+                "qsv=qs",
+                "-filter_hw_device",
+                "qs",
+                "-qsv_device",
+                "/dev/dri/renderD128"
+            ])
+        );
+        assert_eq!(
+            hw.upload_filter.as_deref(),
+            Some("format=p010le,hwupload=extra_hw_frames=64")
+        );
+        assert!(hw.emit_pix_fmt);
+        let missing = hw_device_args("hevc_qsv", "yuv420p", false, None, TargetOs::Linux);
+        assert_eq!(
+            missing.pre_input,
+            strs(&["-init_hw_device", "qsv=qs_child_device_missing"])
+        );
+    }
+
+    #[test]
+    fn hw_args_software_has_none() {
+        let hw = hw_device_args(
+            "libx265",
+            "p010le",
+            false,
+            Some("/dev/dri/renderD128"),
+            TargetOs::Linux,
+        );
+        assert_eq!(
+            hw,
+            HwArgs {
+                pre_input: vec![],
+                upload_filter: None,
+                emit_pix_fmt: true,
+                hwaccel_decode: false
+            }
+        );
+    }
+
+    #[test]
+    fn hw_args_tonemap_then_upload() {
+        let empty: &[String] = &[];
+        let args = assemble_ffmpeg_args_for(
+            &FfmpegAssemblyParts {
+                input_path: "in.mkv",
+                output_path: "out.mkv",
+                video_args: &["-c:v", "hevc_vulkan", "-qp", "20"],
+                pix_fmt: "yuv420p",
+                audio_map_args: empty,
+                audio_codec_args: empty,
+                tonemap_filter: Some(TONEMAP_HABLE),
+                codec_family: "hevc",
+                ..Default::default()
+            },
+            Some("/dev/dri/renderD128"),
+            TargetOs::Linux,
+        );
+        let vf = args.iter().position(|a| a == "-vf").unwrap();
+        assert_eq!(
+            args[vf + 1],
+            format!("{TONEMAP_HABLE},format=nv12,hwupload")
+        );
+        assert!(!args.iter().any(|a| a == "-pix_fmt"));
+        let init = args.iter().position(|a| a == "-init_hw_device").unwrap();
+        assert!(init < args.iter().position(|a| a == "-i").unwrap());
+    }
+
+    #[test]
+    fn assemble_vulkan_10bit_no_pix_fmt() {
+        let args = assemble_ffmpeg_args_for(
+            &FfmpegAssemblyParts {
+                input_path: "in.mkv",
+                output_path: "out.mkv",
+                video_args: &["-c:v", "hevc_vulkan", "-qp", "20"],
+                pix_fmt: "p010le",
+                codec_family: "hevc",
+                ..Default::default()
+            },
+            Some("/dev/dri/renderD128"),
+            TargetOs::Linux,
+        );
+        let vf = args.iter().position(|a| a == "-vf").unwrap();
+        assert_eq!(args[vf + 1], "format=p010le,hwupload");
+        assert!(!args.iter().any(|a| a == "-pix_fmt"));
+    }
+
+    #[test]
+    fn assemble_d3d12_windows() {
+        let args = assemble_ffmpeg_args_for(
+            &FfmpegAssemblyParts {
+                input_path: "C:\\in.mkv",
+                output_path: "C:\\out.mp4",
+                video_args: &["-c:v", "hevc_d3d12va", "-rc_mode", "CQP", "-qp", "20"],
+                pix_fmt: "p010le",
+                codec_family: "hevc",
+                ..Default::default()
+            },
+            None,
+            TargetOs::Windows,
+        );
+        let i = args.iter().position(|a| a == "-i").unwrap();
+        assert_eq!(
+            &args[i - 4..i],
+            &strs(&[
+                "-init_hw_device",
+                "d3d12va=d3d12",
+                "-filter_hw_device",
+                "d3d12"
+            ])[..]
+        );
+        let vf = args.iter().position(|a| a == "-vf").unwrap();
+        assert_eq!(args[vf + 1], "format=p010le,hwupload");
+        assert!(!args.iter().any(|a| a == "-pix_fmt"));
+    }
+
+    #[test]
+    fn assemble_vaapi_8bit_byte_identical() {
+        // Pinned from the pre-refactor assembly for hevc_vaapi 8-bit.
+        let args = assemble_ffmpeg_args_for(
+            &FfmpegAssemblyParts {
+                input_path: "in.mkv",
+                output_path: "out.mkv",
+                video_args: &["-c:v", "hevc_vaapi", "-rc_mode", "CQP", "-qp", "20"],
+                pix_fmt: "yuv420p",
+                codec_family: "hevc",
+                ..Default::default()
+            },
+            Some("/dev/dri/renderD128"),
+            TargetOs::Linux,
+        );
+        assert_eq!(
+            args,
+            strs(&[
+                "-err_detect",
+                "ignore_err",
+                "-probesize",
+                "100M",
+                "-analyzeduration",
+                "100M",
+                "-y",
+                "-vaapi_device",
+                "/dev/dri/renderD128",
+                "-i",
+                "in.mkv",
+                "-map",
+                "0:v:0",
+                "-c:v",
+                "hevc_vaapi",
+                "-rc_mode",
+                "CQP",
+                "-qp",
+                "20",
+                "-vf",
+                "format=nv12,hwupload",
+                "-pix_fmt",
+                "yuv420p",
+                "-map",
+                "0:s?",
+                "-c:s",
+                "copy",
+                "-disposition:s:0",
+                "default",
+                "out.mkv"
+            ])
+        );
+    }
+
+    #[test]
+    fn test_encode_args_vulkan() {
+        let args = test_encode_args(
+            "hevc_vulkan",
+            Some("/dev/dri/renderD128"),
+            TargetOs::Linux,
+            "/tmp/t.mp4",
+        )
+        .unwrap();
+        assert_eq!(
+            args,
+            strs(&[
+                "-init_hw_device",
+                "drm=dr:/dev/dri/renderD128",
+                "-init_hw_device",
+                "vulkan=vk@dr",
+                "-filter_hw_device",
+                "vk",
+                "-y",
+                "-f",
+                "lavfi",
+                "-i",
+                "color=black:s=256x256:d=0.04:r=25",
+                "-frames:v",
+                "1",
+                "-vf",
+                "format=nv12,hwupload",
+                "-c:v",
+                "hevc_vulkan",
+                "/tmp/t.mp4"
+            ])
+        );
+    }
+
+    #[test]
+    fn test_encode_args_d3d12_windows() {
+        let args = test_encode_args("h264_d3d12va", None, TargetOs::Windows, "t.mp4").unwrap();
+        assert_eq!(
+            &args[..4],
+            &strs(&[
+                "-init_hw_device",
+                "d3d12va=d3d12",
+                "-filter_hw_device",
+                "d3d12"
+            ])[..]
+        );
+        assert!(args
+            .windows(2)
+            .any(|w| w[0] == "-vf" && w[1] == "format=nv12,hwupload"));
+        assert!(!args.iter().any(|a| a == "-pix_fmt"));
+    }
+
+    #[test]
+    fn test_encode_args_vaapi_and_qsv_unchanged() {
+        let node = Some("/dev/dri/renderD128");
+        let v = test_encode_args("hevc_vaapi", node, TargetOs::Linux, "t.mp4").unwrap();
+        assert_eq!(
+            &v[..2],
+            &strs(&["-vaapi_device", "/dev/dri/renderD128"])[..]
+        );
+        assert!(v
+            .windows(2)
+            .any(|w| w[0] == "-vf" && w[1] == "format=nv12,hwupload"));
+        assert!(!v.iter().any(|a| a == "-pix_fmt"));
+        let q = test_encode_args("hevc_qsv", node, TargetOs::Linux, "t.mp4").unwrap();
+        assert!(q
+            .windows(2)
+            .any(|w| w[0] == "-vf" && w[1] == "format=nv12,hwupload=extra_hw_frames=64"));
+        // No render node: VAAPI and QSV cannot work, so detection skips them.
+        assert!(test_encode_args("hevc_vaapi", None, TargetOs::Linux, "t.mp4").is_none());
+        assert!(test_encode_args("hevc_qsv", None, TargetOs::Linux, "t.mp4").is_none());
+        // Windows QSV and NVENC: neither -vf nor device args, as before.
+        let wq = test_encode_args("hevc_qsv", None, TargetOs::Windows, "t.mp4").unwrap();
+        assert!(!wq.iter().any(|a| a == "-vf" || a == "-pix_fmt"));
+        let wn = test_encode_args("hevc_nvenc", None, TargetOs::Windows, "t.mp4").unwrap();
+        assert!(wn.windows(2).any(|w| w[0] == "-pix_fmt" && w[1] == "nv12"));
+    }
+    // ══════════════════════════════════════════════════════════════
+    //  Dolby Vision routing and native coding (phase B)
+    // ══════════════════════════════════════════════════════════════
+
+    const CAPS_ALL: FfmpegCaps = FfmpegCaps {
+        dovi_x265: true,
+        dovi_svtav1: true,
+        x265_hdr10plus: true,
+    };
+    const CAPS_NONE: FfmpegCaps = FfmpegCaps {
+        dovi_x265: false,
+        dovi_svtav1: false,
+        x265_hdr10plus: false,
+    };
+
+    #[test]
+    fn parse_help_has_dolbyvision() {
+        let yes = "libx265 AVOptions:\n  -x265-params       <dictionary> E..V....... set the x265 configuration\n  -dolbyvision       <boolean>    E..V....... Enable Dolby Vision RPU coding (default auto)\n     auto                         E..V.......\n";
+        let no = "libx265 AVOptions:\n  -crf               <float>      E..V....... set the x265 crf\n  -udu_sei           <boolean>    E..V....... Use user data unregistered SEI\n";
+        assert!(help_has_dolbyvision(yes));
+        assert!(!help_has_dolbyvision(no));
+        // A mention in a description is not the option itself.
+        assert!(!help_has_dolbyvision(
+            "  -foo  <int>  E..V.... like dolbyvision\n"
+        ));
+    }
+
+    #[test]
+    fn parse_dhdr10_disabled_warning() {
+        assert!(dhdr10_disabled(
+            "x265 [warning]: --dhdr10-info disabled. Enable HDR10_PLUS in cmake.\n"
+        ));
+        assert!(!dhdr10_disabled(
+            "x265 [info]: tools: b-intra strong-intra-smoothing deblock sao dhdr10-info\n"
+        ));
+    }
+
+    #[test]
+    fn x265_param_path_escape_windows_drive() {
+        assert_eq!(
+            x265_param_path_escape("C:\\Users\\me\\AppData\\Local\\Temp\\m.json"),
+            "C\\:/Users/me/AppData/Local/Temp/m.json"
+        );
+        assert_eq!(x265_param_path_escape("/tmp/m.json"), "/tmp/m.json");
+    }
+
+    #[test]
+    fn hdr10p_native_args_x265() {
+        let mut args = strs(&["-c:v", "libx265", "-b:v", "4000000"]);
+        let p = format!(
+            "dhdr10-info={}",
+            x265_param_path_escape("C:\\out\\histv_hdr10p_1.json")
+        );
+        add_x265_param(&mut args, &p);
+        assert_eq!(
+            &args[4..],
+            strs(&["-x265-params", "dhdr10-info=C\\:/out/histv_hdr10p_1.json"])
+        );
+        // An existing -x265-params is extended, not duplicated.
+        add_x265_param(&mut args, "hdr10-opt=1");
+        assert_eq!(args.iter().filter(|a| *a == "-x265-params").count(), 1);
+        assert_eq!(
+            args.last().unwrap(),
+            "dhdr10-info=C\\:/out/histv_hdr10p_1.json:hdr10-opt=1"
+        );
+    }
+
+    #[test]
+    fn hdr10p_hw_uses_injector() {
+        use Hdr10PlusRoute::*;
+        for enc in ["hevc_vaapi", "hevc_vulkan", "hevc_nvenc", "hevc_d3d12va"] {
+            assert_eq!(
+                hdr10plus_route(true, true, true, enc, "hevc", None, &CAPS_ALL),
+                Some(Injector),
+                "{enc}"
+            );
+        }
+        assert_eq!(
+            hdr10plus_route(true, true, true, "libx265", "hevc", None, &CAPS_ALL),
+            Some(X265Native)
+        );
+    }
+
+    #[test]
+    fn hdr10p_requires_cap() {
+        use Hdr10PlusRoute::*;
+        // Without dhdr10-info, libx265 falls back to the injector.
+        assert_eq!(
+            hdr10plus_route(true, true, true, "libx265", "hevc", None, &CAPS_NONE),
+            Some(Injector)
+        );
+        // No crate, no HDR preservation, no HDR10+ or a non-HEVC output: static.
+        let r = |has, crate_ok, preserve, enc, fam| {
+            hdr10plus_route(has, crate_ok, preserve, enc, fam, None, &CAPS_ALL)
+        };
+        assert_eq!(r(true, false, true, "libx265", "hevc"), None);
+        assert_eq!(r(true, true, false, "libx265", "hevc"), None);
+        assert_eq!(r(false, true, true, "libx265", "hevc"), None);
+        assert_eq!(r(true, true, true, "libsvtav1", "av1"), None);
+        assert_eq!(r(true, true, true, "libx264", "h264"), None);
+    }
+
+    #[test]
+    fn hdr10p_with_dovi_only_through_native_x265() {
+        use Hdr10PlusRoute::*;
+        let native = Some(DoviRoute::Native {
+            encoder: "libx265",
+            family: "hevc",
+        });
+        assert_eq!(
+            hdr10plus_route(true, true, true, "libx265", "hevc", native, &CAPS_ALL),
+            Some(X265Native)
+        );
+        assert_eq!(
+            hdr10plus_route(true, true, true, "libx265", "hevc", native, &CAPS_NONE),
+            None
+        );
+        assert_eq!(
+            hdr10plus_route(
+                true,
+                true,
+                true,
+                "libx265",
+                "hevc",
+                Some(DoviRoute::RpuPipeline),
+                &CAPS_ALL
+            ),
+            None
+        );
+        // DV dropped to HDR10: HDR10+ routes as for a plain source.
+        assert_eq!(
+            hdr10plus_route(
+                true,
+                true,
+                true,
+                "hevc_vaapi",
+                "hevc",
+                Some(DoviRoute::Hdr10),
+                &CAPS_ALL
+            ),
+            Some(Injector)
+        );
+    }
+
+    /// Every combination of profile, target, encoder, capability, MP4Box and
+    /// preserve-HDR. The resolved encoder never changes the route.
+    #[test]
+    fn dovi_route_matrix() {
+        use DoviRoute::*;
+        const X265: DoviRoute = Native {
+            encoder: "libx265",
+            family: "hevc",
+        };
+        const SVT: DoviRoute = Native {
+            encoder: "libsvtav1",
+            family: "av1",
+        };
+        for profile in [5u8, 7, 8, 10] {
+            for (family, _encoder) in [
+                ("hevc", "libx265"),
+                ("hevc", "hevc_nvenc"),
+                ("hevc", "hevc_vaapi"),
+                ("h264", "h264_vaapi"),
+                ("av1", "libsvtav1"),
+            ] {
+                for caps in [CAPS_ALL, CAPS_NONE] {
+                    for mp4box in [true, false] {
+                        for preserve in [true, false] {
+                            let got = dovi_route(profile, family, &caps, mp4box, preserve);
+                            let want = if !preserve {
+                                Hdr10
+                            } else if caps.dovi_x265 {
+                                match (profile, family) {
+                                    (8 | 10, "av1") => SVT,
+                                    (5 | 8 | 10, _) => X265,
+                                    (7, _) if mp4box => RpuPipeline,
+                                    _ => Hdr10,
+                                }
+                            } else if mp4box && profile != 10 {
+                                RpuPipeline
+                            } else {
+                                Hdr10
+                            };
+                            assert_eq!(
+                                got, want,
+                                "profile {profile} family {family} caps {caps:?} mp4box {mp4box} preserve {preserve}"
+                            );
+                        }
+                    }
+                }
+            }
+        }
+    }
+
+    #[test]
+    fn dovi_route_av1_needs_svtav1_cap() {
+        let x265_only = FfmpegCaps {
+            dovi_x265: true,
+            ..CAPS_NONE
+        };
+        assert_eq!(
+            dovi_route(10, "av1", &x265_only, false, true),
+            DoviRoute::Native {
+                encoder: "libx265",
+                family: "hevc"
+            }
+        );
+        // Profile 5 never goes to AV1.
+        assert_eq!(
+            dovi_route(5, "av1", &CAPS_ALL, false, true),
+            DoviRoute::Native {
+                encoder: "libx265",
+                family: "hevc"
+            }
+        );
+    }
+
+    fn dv_settings(container: &str) -> BatchSettings {
+        let mut s = default_settings();
+        s.output_container = container.into();
+        s
+    }
+
+    #[test]
+    fn resolve_output_ext_native_dv_keeps_mkv() {
+        let ext = resolve_output_ext_with(
+            "/v/p81.mkv",
+            "hevc",
+            Some(8),
+            &dv_settings("auto"),
+            true,
+            &CAPS_ALL,
+            true,
+        );
+        assert_eq!(ext, "mkv");
+        let forced = resolve_output_ext_with(
+            "/v/p81.mp4",
+            "hevc",
+            Some(8),
+            &dv_settings("mkv"),
+            true,
+            &CAPS_ALL,
+            true,
+        );
+        assert_eq!(forced, "mkv");
+    }
+
+    #[test]
+    fn resolve_output_ext_rpu_pipeline_forces_mp4() {
+        // Profile 7 always uses the pipeline; so does any profile without native coding.
+        for (profile, caps) in [(7, CAPS_ALL), (8, CAPS_NONE)] {
+            let ext = resolve_output_ext_with(
+                "/v/a.mkv",
+                "hevc",
+                Some(profile),
+                &dv_settings("mkv"),
+                true,
+                &caps,
+                true,
+            );
+            assert_eq!(ext, "mp4", "profile {profile}");
+        }
+        // Without MP4Box the route is HDR10, which keeps the configured container.
+        let ext = resolve_output_ext_with(
+            "/v/a.mkv",
+            "hevc",
+            Some(7),
+            &dv_settings("mkv"),
+            true,
+            &CAPS_ALL,
+            false,
+        );
+        assert_eq!(ext, "mkv");
+    }
+
+    #[test]
+    fn preflight_no_mp4box_warning_for_native_route() {
+        // Native coding needs no MP4Box.
+        assert_eq!(dovi_preflight_issue(8, &CAPS_ALL, true, false), None);
+        assert_eq!(dovi_preflight_issue(5, &CAPS_ALL, true, false), None);
+        // Profile 7 still needs it.
+        assert_eq!(
+            dovi_preflight_issue(7, &CAPS_ALL, true, false).map(|i| i.1),
+            Some(Some("MP4Box"))
+        );
+        // Profile 10 without native coding cannot use the HEVC pipeline.
+        assert_eq!(
+            dovi_preflight_issue(10, &CAPS_NONE, true, true).map(|i| i.1),
+            Some(None)
+        );
+        assert_eq!(dovi_preflight_issue(7, &CAPS_NONE, true, true), None);
+    }
+
+    #[test]
+    fn native_dv_x265_cqp_vbv_from_threshold() {
+        let existing = strs(&["-c:v", "libx265", "-preset", "slow", "-qp", "20"]);
+        assert_eq!(
+            dovi_native_args("libx265", &existing, 4_000_000, 1.5, 9_000_000),
+            strs(&[
+                "-dolbyvision",
+                "1",
+                "-maxrate",
+                "6000000",
+                "-bufsize",
+                "12000000"
+            ])
+        );
+        // No threshold: twice the source bitrate.
+        assert_eq!(
+            dovi_native_args("libx265", &existing, 0, 1.5, 9_000_000)[3],
+            "18000000"
+        );
+    }
+
+    #[test]
+    fn native_dv_x265_vbr_uses_peak_for_vbv() {
+        let existing = strs(&[
+            "-c:v", "libx265", "-preset", "slow", "-b:v", "2000000", "-maxrate", "3000000",
+        ]);
+        assert_eq!(
+            dovi_native_args("libx265", &existing, 2_000_000, 1.5, 9_000_000),
+            strs(&["-dolbyvision", "1", "-bufsize", "6000000"])
+        );
+    }
+
+    #[test]
+    fn native_dv_no_duplicate_maxrate_in_precision() {
+        let existing = strs(&[
+            "-c:v", "libx265", "-crf", "20", "-maxrate", "7500000", "-bufsize", "15000000",
+        ]);
+        assert_eq!(
+            dovi_native_args("libx265", &existing, 5_000_000, 1.5, 9_000_000),
+            strs(&["-dolbyvision", "1"])
+        );
+    }
+
+    #[test]
+    fn native_dv_svtav1_no_vbv() {
+        let existing = strs(&["-c:v", "libsvtav1", "-preset", "6", "-crf", "20"]);
+        assert_eq!(
+            dovi_native_args("libsvtav1", &existing, 4_000_000, 1.5, 9_000_000),
+            strs(&["-dolbyvision", "1"])
+        );
+    }
+
+    fn dv_parts<'a>(
+        output: &'a str,
+        video: &'a [&'a str],
+        in_out: bool,
+        p5: bool,
+    ) -> FfmpegAssemblyParts<'a> {
+        FfmpegAssemblyParts {
+            input_path: "in.mp4",
+            output_path: output,
+            video_args: video,
+            pix_fmt: "p010le",
+            codec_family: "hevc",
+            dovi_in_output: in_out,
+            dovi_p5: p5,
+            ..Default::default()
+        }
+    }
+
+    fn arg_after(args: &[String], flag: &str) -> Option<String> {
+        args.windows(2).find(|w| w[0] == flag).map(|w| w[1].clone())
+    }
+
+    #[test]
+    fn native_dv_x265_mp4_strict_vbv() {
+        let video = [
+            "-c:v",
+            "libx265",
+            "-dolbyvision",
+            "1",
+            "-maxrate",
+            "6000000",
+            "-bufsize",
+            "12000000",
+        ];
+        let args = assemble_ffmpeg_args_for(
+            &dv_parts("out.mp4", &video, true, false),
+            None,
+            TargetOs::Linux,
+        );
+        assert_eq!(arg_after(&args, "-strict").as_deref(), Some("unofficial"));
+        assert_eq!(arg_after(&args, "-dolbyvision").as_deref(), Some("1"));
+        assert_eq!(args.last().unwrap(), "out.mp4");
+    }
+
+    #[test]
+    fn native_dv_mkv_no_strict() {
+        let video = ["-c:v", "libx265", "-dolbyvision", "1"];
+        let args = assemble_ffmpeg_args_for(
+            &dv_parts("out.mkv", &video, false, false),
+            None,
+            TargetOs::Linux,
+        );
+        assert!(arg_after(&args, "-strict").is_none());
+    }
+
+    #[test]
+    fn assemble_dv_p5_mp4_uses_dvh1() {
+        let video = ["-c:v", "libx265"];
+        let args = assemble_ffmpeg_args_for(
+            &dv_parts("out.mp4", &video, true, true),
+            None,
+            TargetOs::Linux,
+        );
+        assert_eq!(arg_after(&args, "-tag:v").as_deref(), Some("dvh1"));
+    }
+
+    #[test]
+    fn assemble_dv_p8_mp4_uses_hvc1() {
+        let video = ["-c:v", "libx265"];
+        let args = assemble_ffmpeg_args_for(
+            &dv_parts("out.mp4", &video, true, false),
+            None,
+            TargetOs::Linux,
+        );
+        assert_eq!(arg_after(&args, "-tag:v").as_deref(), Some("hvc1"));
+    }
+
+    #[test]
+    fn copy_dv_mp4_has_strict() {
+        let video = ["-c:v", "copy"];
+        let args = assemble_ffmpeg_args_for(
+            &dv_parts("out.mp4", &video, true, false),
+            None,
+            TargetOs::Linux,
+        );
+        assert_eq!(arg_after(&args, "-strict").as_deref(), Some("unofficial"));
+    }
+
+    #[test]
+    fn copy_non_dv_mp4_no_strict() {
+        let video = ["-c:v", "copy"];
+        let args = assemble_ffmpeg_args_for(
+            &dv_parts("out.mp4", &video, false, false),
+            None,
+            TargetOs::Linux,
+        );
+        assert!(arg_after(&args, "-strict").is_none());
+    }
+    #[test]
+    fn copy_from_mp4_keeps_source_tag() {
+        let video = ["-c:v", "copy"];
+        let mut parts = dv_parts("out.mp4", &video, true, false);
+        parts.keep_source_tag = true;
+        let args = assemble_ffmpeg_args_for(&parts, None, TargetOs::Linux);
+        assert!(arg_after(&args, "-tag:v").is_none());
+        assert_eq!(arg_after(&args, "-strict").as_deref(), Some("unofficial"));
     }
 }
