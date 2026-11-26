@@ -298,6 +298,7 @@ pub fn synthetic_probe(
         dovi_bl_compat_id: None,
         has_hdr10plus: false,
         hdr10plus_profile: String::new(),
+        video_rotation: 0,
         video_fps: 23.976,
         subtitle_stream_count: 0,
     }

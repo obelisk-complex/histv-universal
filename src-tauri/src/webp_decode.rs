@@ -393,6 +393,66 @@ impl Canvas {
 
 // ── Decode + encode pipeline ───────────────────────────────────
 
+/// Inputs for the encoder command of the animated WebP pipeline.
+pub(crate) struct WebpEncodeArgs<'a> {
+    pub video_args: &'a [String],
+    pub threads: u32,
+    /// Padded (even) canvas size of the piped RGBA frames.
+    pub width: u32,
+    pub height: u32,
+    pub fps: f64,
+    pub output_path: &'a str,
+    /// Device and upload arguments for the encoder (`hw_device_args`).
+    pub hw: &'a crate::encoder::HwArgs,
+    /// `hevc_vaapi_size_bsf` for this encode.
+    pub size_bsf: Option<&'a str>,
+}
+
+/// ffmpeg arguments for the encoder that reads RGBA frames from stdin.
+/// Hardware encoders get the same device and upload arguments as the
+/// main encode path.
+pub(crate) fn webp_encoder_args(a: &WebpEncodeArgs<'_>) -> Vec<String> {
+    let mut args: Vec<String> = vec!["-y".into()];
+    args.extend(a.hw.pre_input.iter().cloned());
+    args.extend([
+        "-f".into(),
+        "rawvideo".into(),
+        "-pix_fmt".into(),
+        "rgba".into(),
+        "-s".into(),
+        format!("{}x{}", a.width, a.height),
+        "-r".into(),
+        format!("{:.0}", a.fps),
+        "-i".into(),
+        "pipe:0".into(),
+        "-an".into(),
+        "-sn".into(),
+    ]);
+    if a.threads > 0 {
+        args.push("-threads".into());
+        args.push(a.threads.to_string());
+    }
+    args.extend(a.video_args.iter().cloned());
+    if let Some(up) = &a.hw.upload_filter {
+        args.push("-vf".into());
+        args.push(up.clone());
+    }
+    if a.hw.emit_pix_fmt {
+        args.push("-pix_fmt".into());
+        args.push("yuv420p".into());
+    }
+    if let Some(bsf) = a.size_bsf {
+        args.push("-bsf:v".into());
+        args.push(bsf.into());
+    }
+    if a.output_path.ends_with(".mp4") {
+        args.push("-movflags".into());
+        args.push("+faststart".into());
+    }
+    args.push(a.output_path.to_string());
+    args
+}
+
 /// Decode an animated WebP file and encode it to a video file.
 ///
 /// Uses two ffmpeg processes:
@@ -466,33 +526,28 @@ pub async fn transcode_animated_webp(
         })?;
 
     // ── Spawn the output encoder ──
-    let mut enc_args: Vec<String> = vec![
-        "-y".into(),
-        "-f".into(),
-        "rawvideo".into(),
-        "-pix_fmt".into(),
-        "rgba".into(),
-        "-s".into(),
-        format!("{}x{}", padded_w, padded_h),
-        "-r".into(),
-        format!("{:.0}", base_fps),
-        "-i".into(),
-        "pipe:0".into(),
-        "-an".into(),
-        "-sn".into(),
-    ];
-    if threads > 0 {
-        enc_args.push("-threads".into());
-        enc_args.push(threads.to_string());
-    }
-    enc_args.extend(video_args.iter().cloned());
-    enc_args.push("-pix_fmt".into());
-    enc_args.push("yuv420p".into());
-    if output_path.ends_with(".mp4") {
-        enc_args.push("-movflags".into());
-        enc_args.push("+faststart".into());
-    }
-    enc_args.push(output_path.to_string());
+    let encoder = video_args
+        .windows(2)
+        .find(|w| w[0] == "-c:v")
+        .map(|w| w[1].as_str())
+        .unwrap_or("");
+    let hw = crate::encoder::hw_device_args(
+        encoder,
+        "yuv420p",
+        false,
+        crate::encoder::render_node_for(encoder).as_deref(),
+        crate::encoder::TargetOs::current(),
+    );
+    let enc_args = webp_encoder_args(&WebpEncodeArgs {
+        video_args,
+        threads,
+        width: padded_w,
+        height: padded_h,
+        fps: base_fps,
+        output_path,
+        hw: &hw,
+        size_bsf: crate::encoder::hevc_vaapi_size_bsf(encoder, padded_w, padded_h).as_deref(),
+    });
 
     let mut enc_cmd = crate::ffmpeg::ffmpeg_command();
     enc_cmd
@@ -730,6 +785,86 @@ pub struct TranscodeResult {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::encoder::{hw_device_args, TargetOs};
+
+    fn enc_args(enc: &str, bsf: Option<&str>) -> Vec<String> {
+        let video_args: Vec<String> = ["-c:v", enc].iter().map(|s| s.to_string()).collect();
+        let hw = hw_device_args(
+            enc,
+            "yuv420p",
+            false,
+            Some("/dev/dri/renderD128"),
+            TargetOs::Linux,
+        );
+        webp_encoder_args(&WebpEncodeArgs {
+            video_args: &video_args,
+            threads: 0,
+            width: 322,
+            height: 242,
+            fps: 50.0,
+            output_path: "/o/out.mkv",
+            hw: &hw,
+            size_bsf: bsf,
+        })
+    }
+
+    #[test]
+    fn webp_encoder_args_upload_for_vaapi() {
+        let a = enc_args("hevc_vaapi", Some("hevc_metadata=width=322:height=242"));
+        let dev = a.iter().position(|x| x == "-vaapi_device").unwrap();
+        assert!(dev < a.iter().position(|x| x == "-f").unwrap());
+        assert!(a
+            .windows(2)
+            .any(|w| w[0] == "-vf" && w[1] == "format=nv12,hwupload"));
+        assert!(a.windows(2).any(|w| w[0] == "-s" && w[1] == "322x242"));
+        assert!(a
+            .windows(2)
+            .any(|w| w[0] == "-bsf:v" && w[1] == "hevc_metadata=width=322:height=242"));
+        assert_eq!(a.last().unwrap(), "/o/out.mkv");
+    }
+
+    #[test]
+    fn webp_encoder_args_software_unchanged() {
+        let a = enc_args("libx265", None);
+        let want: Vec<String> = [
+            "-y",
+            "-f",
+            "rawvideo",
+            "-pix_fmt",
+            "rgba",
+            "-s",
+            "322x242",
+            "-r",
+            "50",
+            "-i",
+            "pipe:0",
+            "-an",
+            "-sn",
+            "-c:v",
+            "libx265",
+            "-pix_fmt",
+            "yuv420p",
+            "/o/out.mkv",
+        ]
+        .iter()
+        .map(|s| s.to_string())
+        .collect();
+        assert_eq!(a, want);
+    }
+
+    #[test]
+    fn webp_encoder_args_vulkan_no_pix_fmt() {
+        let a = enc_args("hevc_vulkan", None);
+        assert!(a.iter().any(|x| x == "-init_hw_device"));
+        assert!(a
+            .windows(2)
+            .any(|w| w[0] == "-vf" && w[1] == "format=nv12,hwupload"));
+        assert_eq!(
+            a.iter().filter(|x| *x == "-pix_fmt").count(),
+            1,
+            "only the rgba input"
+        );
+    }
 
     #[test]
     fn test_canvas_new_overflow_returns_err() {

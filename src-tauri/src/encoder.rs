@@ -1267,6 +1267,41 @@ fn select_render_node(nodes: &[(u32, String, Option<u16>)], vendor: Option<u16>)
         .or_else(|| lowest(None))
 }
 
+/// Bitstream filter that sets the HEVC conformance window to the picture
+/// size, for `hevc_vaapi` only.
+///
+/// Mesa radeonsi (25.2.8, RX 7900 XTX) codes the picture at its own
+/// alignment (width to 64, height to 16) and writes that size into the
+/// in-band SPS while keeping ffmpeg's crop offsets, so decoders show the
+/// padding: 1920x1080 decodes as 1920x1088, 640x360 as 640x368, 1000x562 as
+/// 1024x570. ffmpeg's out-of-band SPS (hvcC) has the right size. A fixed
+/// `crop_bottom` is wrong for one of the two SPSs and for heights that need
+/// no padding; `width`/`height` make the BSF compute each SPS's crop from
+/// its own coded size (libavcodec/bsf/h265_metadata.c:203-258), so a stream
+/// that is already right is left unchanged. `width` and `height` are the
+/// encoded picture size; odd sizes cannot be expressed in 4:2:0 crop units.
+pub fn hevc_vaapi_size_bsf(encoder: &str, width: u32, height: u32) -> Option<String> {
+    (encoder == "hevc_vaapi"
+        && width > 0
+        && height > 0
+        && width.is_multiple_of(2)
+        && height.is_multiple_of(2))
+    .then(|| format!("hevc_metadata=width={width}:height={height}"))
+}
+
+/// Render node for an encode on this platform (Linux only).
+pub(crate) fn render_node_for(encoder: &str) -> Option<String> {
+    #[cfg(target_os = "linux")]
+    {
+        find_dri_render_node_for(encoder)
+    }
+    #[cfg(not(target_os = "linux"))]
+    {
+        let _ = encoder;
+        None
+    }
+}
+
 /// Render node for `encoder`: an Intel GPU for QSV, the lowest node for
 /// everything else (VAAPI, Vulkan).
 #[cfg(target_os = "linux")]
@@ -2890,21 +2925,21 @@ async fn encode_single_file(
             None
         };
 
-        // VAAPI 10-bit HEVC: AMD VCN pads 1080-line content to 1088 lines
-        // without setting a conformance window crop in the SPS, producing a
-        // green bar at the bottom. The hevc_metadata BSF patches the SPS to
-        // declare crop_bottom=8 (8 pixels for 4:2:0 chroma = 4 luma rows,
-        // but ffmpeg's BSF parameter is in luma samples, so 8 is correct).
-        // Also required for DV: without the crop, the 1088-line HEVC
-        // bitstream has mismatched dimensions that corrupt RPU injection.
-        #[cfg(target_os = "linux")]
-        let vaapi_hevc_bsf = if uses_vaapi_hwaccel_decode && target_codec == "hevc" {
-            Some("hevc_metadata=crop_bottom=8")
+        // hevc_vaapi: restore the picture size in the in-band SPS, which
+        // AMD VCN writes with its padded coded size (green rows at the
+        // bottom, extra columns on the right). Also required for DV: the
+        // padded size corrupts RPU injection. See `hevc_vaapi_size_bsf`.
+        let (out_w, out_h) = if is_image_source {
+            ((item_video_width + 1) & !1, (item_video_height + 1) & !1)
         } else {
-            None
+            crate::probe::displayed_size(
+                item_video_width,
+                item_video_height,
+                queue[idx].probe.video_rotation,
+            )
         };
-        #[cfg(not(target_os = "linux"))]
-        let vaapi_hevc_bsf: Option<&str> = None;
+        let vaapi_hevc_bsf_owned = hevc_vaapi_size_bsf(file_encoder, out_w, out_h);
+        let vaapi_hevc_bsf = vaapi_hevc_bsf_owned.as_deref();
 
         let ffmpeg_args = assemble_ffmpeg_args(&FfmpegAssemblyParts {
             input_path: &item_full_path,
@@ -4277,11 +4312,8 @@ struct FfmpegAssemblyParts<'a> {
     /// for the VAAPI hwaccel decode path; other paths propagate
     /// automatically and explicit flags cause haloing on PQ content.
     colour_metadata: Option<ColourMetadata>,
-    /// HEVC bitstream filter for VAAPI 10-bit encode. AMD VCN pads 1080-line
-    /// content to 1088 lines without setting a conformance window crop in the
-    /// SPS, producing a visible green bar at the bottom. The hevc_metadata BSF
-    /// with crop_bottom=8 patches the SPS to declare the correct crop.
-    /// Only set for hevc_vaapi on Linux; other encoders don't have this issue.
+    /// `hevc_metadata` BSF that restores the picture size in the SPS of a
+    /// `hevc_vaapi` encode (`hevc_vaapi_size_bsf`). None for other encoders.
     vaapi_hevc_bsf: Option<&'a str>,
     /// The output stream carries Dolby Vision (native coding or a stream
     /// copy). MP4 then needs `-strict unofficial`, without which movenc
@@ -4311,11 +4343,7 @@ struct ColourMetadata {
 /// Used by both the primary encode and the software-fallback path
 /// to avoid duplicating the invocation pattern.
 fn assemble_ffmpeg_args(parts: &FfmpegAssemblyParts<'_>) -> Vec<String> {
-    #[cfg(target_os = "linux")]
-    let render_node =
-        find_dri_render_node_for(parts.video_args.get(1).copied().unwrap_or_default());
-    #[cfg(not(target_os = "linux"))]
-    let render_node: Option<String> = None;
+    let render_node = render_node_for(parts.video_args.get(1).copied().unwrap_or_default());
     assemble_ffmpeg_args_for(parts, render_node.as_deref(), TargetOs::current())
 }
 
@@ -4348,9 +4376,14 @@ fn assemble_ffmpeg_args_for(
         .find(|w| w[0] == "-c:v")
         .map(|w| w[1]);
 
+    // Image sources are decoded to RGB and converted to 8-bit 4:2:0 below.
     let hw = hw_device_args(
         encoder_name.unwrap_or(""),
-        parts.pix_fmt,
+        if parts.is_image_source {
+            "yuv420p"
+        } else {
+            parts.pix_fmt
+        },
         parts.tonemap_filter.is_some(),
         render_node,
         os,
@@ -4385,15 +4418,19 @@ fn assemble_ffmpeg_args_for(
 
     if parts.is_image_source {
         // GIF/APNG: no audio or subtitle streams, pad odd dimensions,
-        // force yuv420p (GIF decodes to rgb24/rgba).
+        // force yuv420p (GIF decodes to rgb24/rgba). Hardware encoders get
+        // the same upload filter as video sources.
         args.extend(vec!["-an".into(), "-sn".into()]);
         args.extend(parts.video_args.iter().map(|s| s.to_string()));
-        args.extend(vec![
-            "-vf".into(),
-            "pad=ceil(iw/2)*2:ceil(ih/2)*2".into(),
-            "-pix_fmt".into(),
-            "yuv420p".into(),
-        ]);
+        let pad = "pad=ceil(iw/2)*2:ceil(ih/2)*2";
+        let vf = match &hw_upload_filter {
+            Some(up) => format!("{pad},{up}"),
+            None => pad.to_string(),
+        };
+        args.extend(vec!["-vf".into(), vf]);
+        if hw.emit_pix_fmt {
+            args.extend(vec!["-pix_fmt".into(), "yuv420p".into()]);
+        }
     } else {
         // Normal video: per-stream audio maps + subtitle passthrough
         args.extend_from_slice(parts.audio_map_args);
@@ -4486,9 +4523,7 @@ fn assemble_ffmpeg_args_for(
         ]);
     }
 
-    // VAAPI 10-bit HEVC: patch the conformance window in the SPS to crop
-    // the 8-pixel green bar that AMD VCN produces at the bottom of 1080-line
-    // content (it encodes to 1088 lines without declaring a crop window).
+    // hevc_vaapi: conformance window from the picture size.
     if let Some(bsf) = parts.vaapi_hevc_bsf {
         args.extend(vec!["-bsf:v".into(), bsf.into()]);
     }
@@ -6492,6 +6527,200 @@ mod tests {
         assert!(failures.is_empty(), "{failures:#?}");
     }
 
+    /// Runs `ffmpeg` and returns (exit ok, stderr).
+    #[cfg(target_os = "linux")]
+    fn run_ff(ffmpeg: &str, args: &[String]) -> (bool, String) {
+        let o = std::process::Command::new(ffmpeg)
+            .args(args)
+            .stdin(std::process::Stdio::null())
+            .output()
+            .unwrap();
+        (
+            o.status.success(),
+            String::from_utf8_lossy(&o.stderr).into_owned(),
+        )
+    }
+
+    /// Size of the first decoded frame (`frame`) or of the stream as the
+    /// container reports it (`stream`).
+    #[cfg(target_os = "linux")]
+    fn probed_size(ffmpeg: &str, path: &std::path::Path, what: &str) -> String {
+        let probe = std::path::Path::new(ffmpeg).with_file_name("ffprobe");
+        let o = std::process::Command::new(probe)
+            .args([
+                "-v",
+                "error",
+                "-select_streams",
+                "v:0",
+                "-read_intervals",
+                "%+#1",
+            ])
+            .args([
+                "-show_entries",
+                &format!("{what}=width,height"),
+                "-of",
+                "csv=p=0",
+            ])
+            .arg(path)
+            .output()
+            .unwrap();
+        String::from_utf8_lossy(&o.stdout)
+            .trim()
+            .trim_end_matches(',')
+            .to_string()
+    }
+
+    /// Needs `HISTV_TEST_FFMPEG` (ffprobe beside it) and a VAAPI render node.
+    /// hevc_vaapi with the size BSF decodes at the source size, in both
+    /// MKV (hvcC plus in-band SPS) and raw HEVC. Then the "driver already
+    /// right" branch: a libx265 stream with a conformance window passes
+    /// through the BSF byte for byte.
+    #[cfg(target_os = "linux")]
+    #[test]
+    #[ignore]
+    fn hevc_vaapi_size_bsf_real_ffmpeg() {
+        let ffmpeg = std::env::var("HISTV_TEST_FFMPEG").expect("set HISTV_TEST_FFMPEG");
+        let dir = tempfile::tempdir().unwrap();
+        let node = find_dri_render_node_for("hevc_vaapi").expect("render node");
+        let mut failures = Vec::new();
+        for (w, h, pix) in [
+            (1920, 1080, "p010"),
+            (640, 360, "nv12"),
+            (1000, 562, "nv12"),
+        ] {
+            for ext in ["mkv", "h265"] {
+                let out = dir.path().join(format!("{w}x{h}.{ext}"));
+                let mut args = strs(&["-v", "error", "-y", "-vaapi_device", &node, "-f", "lavfi"]);
+                args.extend(strs(&["-i", &format!("testsrc2=s={w}x{h}:d=0.2")]));
+                args.extend(strs(&[
+                    "-vf",
+                    &format!("format={pix},hwupload"),
+                    "-c:v",
+                    "hevc_vaapi",
+                ]));
+                args.extend(strs(&[
+                    "-bsf:v",
+                    &hevc_vaapi_size_bsf("hevc_vaapi", w, h).unwrap(),
+                ]));
+                args.push(out.to_string_lossy().into_owned());
+                let (ok, err) = run_ff(&ffmpeg, &args);
+                let want = format!("{w},{h}");
+                let frame = probed_size(&ffmpeg, &out, "frame");
+                let stream = probed_size(&ffmpeg, &out, "stream");
+                if !ok || frame != want || stream != want {
+                    failures.push(format!(
+                        "{w}x{h} {pix} {ext}: frame {frame} stream {stream} {err}"
+                    ));
+                }
+            }
+        }
+        let x265 = dir.path().join("x265.h265");
+        let mut args = strs(&[
+            "-v",
+            "error",
+            "-y",
+            "-f",
+            "lavfi",
+            "-i",
+            "testsrc2=s=1000x562:d=0.2",
+        ]);
+        args.extend(strs(&[
+            "-c:v",
+            "libx265",
+            "-x265-params",
+            "log-level=error",
+        ]));
+        args.push(x265.to_string_lossy().into_owned());
+        assert!(run_ff(&ffmpeg, &args).0);
+        let copied = dir.path().join("copied.h265");
+        let mut args = strs(&[
+            "-v",
+            "error",
+            "-y",
+            "-i",
+            &x265.to_string_lossy(),
+            "-c",
+            "copy",
+        ]);
+        args.extend(strs(&[
+            "-bsf:v",
+            &hevc_vaapi_size_bsf("hevc_vaapi", 1000, 562).unwrap(),
+        ]));
+        args.push(copied.to_string_lossy().into_owned());
+        assert!(run_ff(&ffmpeg, &args).0);
+        if std::fs::read(&x265).unwrap() != std::fs::read(&copied).unwrap() {
+            failures.push("BSF changed a stream whose window was already right".into());
+        }
+        assert!(failures.is_empty(), "{failures:#?}");
+    }
+
+    #[test]
+    fn hevc_vaapi_size_bsf_decision() {
+        assert_eq!(
+            hevc_vaapi_size_bsf("hevc_vaapi", 1920, 1080).as_deref(),
+            Some("hevc_metadata=width=1920:height=1080")
+        );
+        assert_eq!(
+            hevc_vaapi_size_bsf("hevc_vaapi", 360, 640).as_deref(),
+            Some("hevc_metadata=width=360:height=640")
+        );
+        // Other encoders and sizes that 4:2:0 crop units cannot express.
+        for enc in [
+            "hevc_vulkan",
+            "h264_vaapi",
+            "av1_vaapi",
+            "libx265",
+            "hevc_qsv",
+        ] {
+            assert_eq!(hevc_vaapi_size_bsf(enc, 1920, 1080), None, "{enc}");
+        }
+        assert_eq!(hevc_vaapi_size_bsf("hevc_vaapi", 321, 240), None);
+        assert_eq!(hevc_vaapi_size_bsf("hevc_vaapi", 320, 241), None);
+        assert_eq!(hevc_vaapi_size_bsf("hevc_vaapi", 0, 0), None);
+    }
+
+    #[test]
+    fn assemble_image_source_uploads_for_hardware() {
+        let empty: &[String] = &[];
+        let parts = |enc: &'static [&'static str]| FfmpegAssemblyParts {
+            input_path: "in.gif",
+            output_path: "out.mkv",
+            video_args: enc,
+            pix_fmt: "yuv420p",
+            audio_map_args: empty,
+            audio_codec_args: empty,
+            is_image_source: true,
+            codec_family: "hevc",
+            vaapi_hevc_bsf: Some("hevc_metadata=width=322:height=242"),
+            ..Default::default()
+        };
+        let node = Some("/dev/dri/renderD128");
+        let vf = |a: &[String]| a[a.iter().position(|x| x == "-vf").unwrap() + 1].clone();
+
+        let a = assemble_ffmpeg_args_for(&parts(&["-c:v", "hevc_vaapi"]), node, TargetOs::Linux);
+        assert_eq!(vf(&a), "pad=ceil(iw/2)*2:ceil(ih/2)*2,format=nv12,hwupload");
+        assert!(a
+            .windows(2)
+            .any(|w| w[0] == "-vaapi_device" && w[1] == "/dev/dri/renderD128"));
+        assert!(a
+            .windows(2)
+            .any(|w| w[0] == "-bsf:v" && w[1].contains("width=322")));
+        assert!(a.iter().any(|x| x == "-an"));
+
+        let a = assemble_ffmpeg_args_for(&parts(&["-c:v", "hevc_vulkan"]), node, TargetOs::Linux);
+        assert_eq!(vf(&a), "pad=ceil(iw/2)*2:ceil(ih/2)*2,format=nv12,hwupload");
+        assert!(!a.iter().any(|x| x == "-pix_fmt"));
+
+        let a = assemble_ffmpeg_args_for(&parts(&["-c:v", "libx265"]), node, TargetOs::Linux);
+        assert_eq!(vf(&a), "pad=ceil(iw/2)*2:ceil(ih/2)*2");
+        assert!(a
+            .windows(2)
+            .any(|w| w[0] == "-pix_fmt" && w[1] == "yuv420p"));
+        assert!(!a
+            .iter()
+            .any(|x| x == "-vaapi_device" || x == "-init_hw_device"));
+    }
+
     #[test]
     fn select_render_node_qsv_prefers_intel() {
         let nodes = vec![
@@ -7255,8 +7484,7 @@ mod tests {
         );
     }
 
-    /// VAAPI 10-bit HEVC encode must include the conformance window crop BSF
-    /// to fix the 1088-line green bar on AMD VCN.
+    /// The size BSF reaches the command line.
     #[cfg(target_os = "linux")]
     #[test]
     fn test_vaapi_hevc_bsf_crop_for_10bit() {
@@ -7273,21 +7501,16 @@ mod tests {
             tonemap_filter: None,
             codec_family: "hevc",
             colour_metadata: None,
-            vaapi_hevc_bsf: Some("hevc_metadata=crop_bottom=8"),
+            vaapi_hevc_bsf: Some("hevc_metadata=width=1920:height=1080"),
             dovi_in_output: false,
             dovi_p5: false,
             keep_source_tag: false,
         });
 
-        assert!(
-            args.iter().any(|a| a == "-bsf:v"),
-            "VAAPI 10-bit HEVC must include -bsf:v for conformance window crop"
-        );
-        assert!(
-            args.windows(2)
-                .any(|w| w[0] == "-bsf:v" && w[1].contains("crop_bottom=8")),
-            "VAAPI 10-bit HEVC BSF must include crop_bottom=8"
-        );
+        assert!(args
+            .windows(2)
+            .any(|w| w[0] == "-bsf:v" && w[1] == "hevc_metadata=width=1920:height=1080"));
+        assert_eq!(args.last().unwrap(), "output.mp4");
     }
 
     /// Non-VAAPI encoders must NOT include the VAAPI crop BSF.

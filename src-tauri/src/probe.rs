@@ -23,6 +23,10 @@ pub struct ProbeResult {
     /// empty when unknown.
     #[serde(default)]
     pub hdr10plus_profile: String,
+    /// Display-matrix rotation of the video stream in degrees (0 when
+    /// none). ffmpeg rotates on decode, so 90/270 swap the output size.
+    #[serde(default)]
+    pub video_rotation: i32,
     pub video_fps: f64,
     pub subtitle_stream_count: u32,
 }
@@ -105,6 +109,7 @@ pub async fn probe_file(file_path: &str, sink: &dyn EventSink) -> Result<ProbeRe
                 dovi_bl_compat_id: None,
                 has_hdr10plus: false,
                 hdr10plus_profile: String::new(),
+                video_rotation: 0,
                 video_fps: if duration > 0.0 {
                     info.frame_count as f64 / duration
                 } else {
@@ -152,6 +157,7 @@ pub async fn probe_file(file_path: &str, sink: &dyn EventSink) -> Result<ProbeRe
     let mut dovi_bl_compat_id: Option<u8> = None;
     let mut has_hdr10plus = false;
     let mut hdr10plus_profile = String::new();
+    let mut video_rotation: i32 = 0;
     let mut video_fps: f64 = 0.0;
     let mut subtitle_stream_count: u32 = 0;
 
@@ -184,6 +190,7 @@ pub async fn probe_file(file_path: &str, sink: &dyn EventSink) -> Result<ProbeRe
                         }
                     }
                 }
+                video_rotation = stream_rotation(s);
                 video_codec = s["codec_name"].as_str().unwrap_or("").to_string();
                 video_width = s["width"].as_u64().unwrap_or(0) as u32;
                 video_height = s["height"].as_u64().unwrap_or(0) as u32;
@@ -418,6 +425,7 @@ pub async fn probe_file(file_path: &str, sink: &dyn EventSink) -> Result<ProbeRe
         dovi_bl_compat_id,
         has_hdr10plus,
         hdr10plus_profile,
+        video_rotation,
         video_fps,
         subtitle_stream_count,
     })
@@ -428,6 +436,32 @@ pub async fn probe_file(file_path: &str, sink: &dyn EventSink) -> Result<ProbeRe
 /// `None` when no frame has any. Mirrors the hdr10plus crate: "A" has no
 /// target display luminance and no tone mapping, "B" has both a target and
 /// a Bezier curve, anything else is "N/A".
+/// Display-matrix rotation of an ffprobe stream object, in degrees.
+pub fn stream_rotation(stream: &serde_json::Value) -> i32 {
+    // "DisplayMatrix" in ffprobe 8, "Display Matrix" in older releases.
+    stream["side_data_list"]
+        .as_array()
+        .into_iter()
+        .flatten()
+        .find(|sd| {
+            sd["side_data_type"]
+                .as_str()
+                .is_some_and(|t| t.replace(' ', "") == "DisplayMatrix")
+        })
+        .and_then(|sd| sd["rotation"].as_f64())
+        .map(|r| r.round() as i32)
+        .unwrap_or(0)
+}
+
+/// Picture size after ffmpeg's automatic rotation.
+pub fn displayed_size(width: u32, height: u32, rotation: i32) -> (u32, u32) {
+    if rotation.rem_euclid(180) == 90 {
+        (height, width)
+    } else {
+        (width, height)
+    }
+}
+
 pub fn frames_json_hdr10plus_profile(json: &str) -> Option<&'static str> {
     let v: serde_json::Value = serde_json::from_str(json).unwrap_or(serde_json::Value::Null);
     let sd = v["frames"].as_array()?.iter().find_map(|f| {
@@ -595,6 +629,26 @@ async fn packet_count_bitrate(file_path: &str, sink: &dyn EventSink) -> f64 {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn rotation_from_display_matrix() {
+        let s: serde_json::Value = serde_json::from_str(
+            r#"{"width":640,"height":360,"side_data_list":[{"side_data_type":"DisplayMatrix","rotation":90}]}"#,
+        )
+        .unwrap();
+        assert_eq!(stream_rotation(&s), 90);
+        let old: serde_json::Value = serde_json::from_str(
+            r#"{"side_data_list":[{"side_data_type":"Display Matrix","rotation":-90}]}"#,
+        )
+        .unwrap();
+        assert_eq!(stream_rotation(&old), -90);
+        assert_eq!(stream_rotation(&serde_json::json!({"width": 1})), 0);
+        assert_eq!(displayed_size(640, 360, 90), (360, 640));
+        assert_eq!(displayed_size(640, 360, -90), (360, 640));
+        assert_eq!(displayed_size(640, 360, 270), (360, 640));
+        assert_eq!(displayed_size(640, 360, 180), (640, 360));
+        assert_eq!(displayed_size(640, 360, 0), (640, 360));
+    }
 
     #[test]
     fn frames_json_detects_hdr10plus_profile() {
