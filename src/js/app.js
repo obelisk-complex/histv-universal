@@ -188,7 +188,7 @@
         // js/ui-style.js applied the last known style before first paint; the
         // config is authoritative. loadThemes then derives the theme for it.
         selUiStyle.value = normaliseUiStyle(cfg.uiStyle);
-        applyUiStyle(selUiStyle.value);
+        switchUiStyle(selUiStyle.value);
         numBitrate.value = cfg.targetBitrate || 4;
         setPeakMultiplier(cfg.peakMultiplier || 1.5);
         numQpI.value = cfg.qpI ?? 20;
@@ -711,12 +711,27 @@
       scheduleConfigSave();
     });
 
-    // Interface style: swap the stylesheets (applyUiStyle, js/ui-style.js),
-    // then re-derive the theme for the new style. The theme is unchanged.
+    // Interface style: swap the stylesheets once the new ones have loaded
+    // (applyUiStyle, js/ui-style.js), then re-derive the theme for the new
+    // style in the same step. The theme is unchanged. If a stylesheet does
+    // not load, the old style stays and the control goes back to it.
+    function switchUiStyle(style, onSwitched) {
+      const previous = normaliseUiStyle(document.documentElement.dataset.uiStyle);
+      applyUiStyle(style, (failedHref) => {
+        if (failedHref) {
+          selUiStyle.value = previous;
+          const msg = `Style: ${style === 'classic' ? 'Classic' : 'Doublet'} did not load (${failedHref})`;
+          appendLog(msg);
+          announceStatus(msg);
+          return;
+        }
+        applyTheme(selTheme.value);
+        if (onSwitched) onSwitched();
+      });
+    }
+
     selUiStyle.addEventListener('change', () => {
-      applyUiStyle(normaliseUiStyle(selUiStyle.value));
-      applyTheme(selTheme.value);
-      scheduleConfigSave();
+      switchUiStyle(normaliseUiStyle(selUiStyle.value), scheduleConfigSave);
     });
 
     // ═══════════════════════════════════════════════════════════════
