@@ -8,42 +8,81 @@
 #
 # Feature set + recipe come from bakeoff/qa/ffmpeg-custom-build-plan.md:
 # "curated GPL static" - x264 + x265 (multilib 8/10/12-bit for HDR) + SVT-AV1 +
-# zimg (zscale tonemap) + HW accel, with network/devices/ffplay stripped. No
-# Dolby Vision in ffmpeg (histv does DV/HDR10+ in Rust). No source patches.
+# dav1d (software AV1 decode) + zimg (zscale tonemap) + opus/vorbis/lame audio +
+# HW accel, with network/devices/ffplay stripped (lavfi kept: histv's encoder
+# detection reads `-f lavfi`). No Dolby Vision in ffmpeg (histv does DV/HDR10+
+# in Rust). No source patches.
 #
-# Output is published to the `ffmpeg-experimental` prerelease for test builds.
+# tools/ffmpeg/verify.sh is the conformance check every job runs against the
+# stripped binaries before packaging; tools/ffmpeg/package.sh writes the
+# archives (flat: ffmpeg, ffprobe, SHA256SUMS, LICENSE.txt, BUILDINFO.txt).
+#
+# Publishing: `experimental` (default, and every push) refreshes the moving
+# `ffmpeg-experimental` prerelease. `release` (dispatch only) creates the
+# immutable tag ffmpeg-${FFMPEG_TAG}-histv.${HISTV_FFMPEG_REV}; bump
+# HISTV_FFMPEG_REV for every new release of the same ffmpeg version.
 name: Build ffmpeg (custom)
 
 on:
   workflow_dispatch:
     inputs:
       publish:
-        description: "Publish built binaries to the ffmpeg-experimental prerelease"
+        description: "Publish the built archives"
         type: boolean
         default: true
-  # Rebuild whenever this workflow itself changes (so we can iterate on the build
-  # from a feature branch without it being on the default branch for dispatch, and
-  # without running on unrelated pushes).
+      channel:
+        description: "experimental: refresh the ffmpeg-experimental prerelease. release: create the versioned, immutable release"
+        type: choice
+        options: [experimental, release]
+        default: experimental
+  # Rebuild whenever the build itself changes (so we can iterate from a feature
+  # branch without it being on the default branch for dispatch, and without
+  # running on unrelated pushes).
   push:
-    branches: [revamp-rail, "preview/**"]
-    paths: [".github/workflows/build-ffmpeg.yml"]
+    branches: ["ci/ffmpeg-**", "preview/**"]
+    paths: [".github/workflows/build-ffmpeg.yml", "tools/ffmpeg/**"]
 
 permissions:
   contents: read
 
 concurrency:
-  group: build-ffmpeg
-  cancel-in-progress: true
+  # Releases get their own group and are never cancelled mid-publish.
+  group: build-ffmpeg-${{ inputs.channel || 'experimental' }}
+  cancel-in-progress: ${{ inputs.channel != 'release' }}
 
 env:
-  # Source pins (verified to exist at authoring time; recorded with SHA256 in
-  # the build log). Bump deliberately, never to a floating branch/latest.
+  # Bump for every published release of the same FFMPEG_TAG.
+  HISTV_FFMPEG_REV: "1"
+  # Source pins (verified to exist at authoring time; tarballs are checked
+  # against the SHA-256 below and recorded in each archive's BUILDINFO.txt).
+  # Bump deliberately, never to a floating branch/latest.
   FFMPEG_TAG: "n8.1.1"
   X264_COMMIT: "b35605ace3ddf7c1a5d67a2eb553f034aef41d55" # videolan/x264 stable
   X265_VER: "4.2" # videolan release tarball; 4.2 CMakeLists is CMake-4.x clean (4.1 set removed policies to OLD)
   X265_SHA256: "40b1ea0453e0309f0eba934e0ddf533f8f6295966679e8894e8f1c1c8d5e1210"
   SVTAV1_TAG: "v3.1.2"
   ZIMG_TAG: "release-3.0.5"
+  # Software AV1 decode: ffmpeg's native av1 decoder is hwaccel-only.
+  DAV1D_URL: "https://downloads.videolan.org/pub/videolan/dav1d/1.5.5/dav1d-1.5.5.tar.xz"
+  DAV1D_SHA256: "ca96b1d0ba3f01f55de7231d775892b64994ba061aaeeaaa4f662a390b3abf9e"
+  # Audio encoders histv emits: libopus, libvorbis, and "mp3" (resolves to libmp3lame).
+  OPUS_URL: "https://downloads.xiph.org/releases/opus/opus-1.6.1.tar.gz"
+  OPUS_SHA256: "6ffcb593207be92584df15b32466ed64bbec99109f007c82205f0194572411a1"
+  OGG_URL: "https://downloads.xiph.org/releases/ogg/libogg-1.3.6.tar.gz"
+  OGG_SHA256: "83e6704730683d004d20e21b8f7f55dcb3383cdf84c0daedf30bde175f774638"
+  VORBIS_URL: "https://downloads.xiph.org/releases/vorbis/libvorbis-1.3.7.tar.gz"
+  VORBIS_SHA256: "0e982409a9c3fc82ee06e08205b1355e5c6aa4c36bca58146ef399621b0ce5ab"
+  LAME_URL: "https://downloads.sourceforge.net/project/lame/lame/3.100/lame-3.100.tar.gz"
+  LAME_SHA256: "ddfe36cab873794038ae2c1210557ad34857a4b6bdc515785d1da9e175b1da1e"
+  # Linux only: linked statically so the binary needs nothing beyond glibc.
+  ZLIB_URL: "https://github.com/madler/zlib/releases/download/v1.3.2/zlib-1.3.2.tar.gz"
+  ZLIB_SHA256: "bb329a0a2cd0274d05519d61c667c062e06990d72e125ee2dfa8de64f0119d16"
+  LIBDRM_URL: "https://dri.freedesktop.org/libdrm/libdrm-2.4.134.tar.xz"
+  LIBDRM_SHA256: "ac5e74d157830eb8bee44c6a6bf3ad49774ef0dd2a72bdad74a8f20308b52a95"
+  # Static libva loads the system's VA drivers (dlopen) and accepts drivers
+  # built against this libva version or older. Keep it at the newest release.
+  LIBVA_URL: "https://github.com/intel/libva/releases/download/2.24.1/libva-2.24.1.tar.bz2"
+  LIBVA_SHA256: "eec6050b52876f229bd35e9df17cd31a06785e18e6f7990c445b584628483d67"
   NVHEADERS_TAG: "n12.2.72.0"
   # AMD HW encode (h264/hevc/av1_amf). Header-only: ffmpeg's configure requires
   # AMF_VERSION >= 0x0001000400240000 (= 1.4.36); the runtime lib is the user's
@@ -57,22 +96,31 @@ jobs:
   linux:
     runs-on: ubuntu-22.04
     steps:
+      - name: Check out build scripts
+        uses: actions/checkout@df4cb1c069e1874edd31b4311f1884172cec0e10 # v6.0.3
+        with:
+          persist-credentials: false
+
       - name: Install build tooling
         run: |
           set -euo pipefail
           sudo apt-get update
           sudo apt-get install -y \
             nasm cmake ninja-build meson pkg-config build-essential git \
-            autoconf automake libtool \
-            libva-dev libdrm-dev
+            autoconf automake libtool curl ca-certificates xz-utils bzip2
           echo "PREFIX=$HOME/ffbuild/prefix" >> "$GITHUB_ENV"
           echo "SRC=$HOME/ffbuild/src" >> "$GITHUB_ENV"
+          echo "TOOLS=$GITHUB_WORKSPACE/tools/ffmpeg" >> "$GITHUB_ENV"
 
       - name: Prepare prefix
         run: |
           set -euo pipefail
           mkdir -p "$PREFIX/lib/pkgconfig" "$PREFIX/include" "$SRC"
           echo "PKG_CONFIG_PATH=$PREFIX/lib/pkgconfig" >> "$GITHUB_ENV"
+          # x265, libvpl and ffmpeg's --extra-libs all ask for -lstdc++. With only
+          # the static archive in the first -L directory, that resolves to
+          # libstdc++.a and the binary does not need libstdc++.so at run time.
+          ln -sf "$(g++ -print-file-name=libstdc++.a)" "$PREFIX/lib/libstdc++.a"
 
       - name: Build x264 (static, pic, 8+10-bit)
         run: |
@@ -98,14 +146,14 @@ jobs:
           # 12-bit (Main12)
           cmake -S . -B 12bit -G Ninja \
             -DCMAKE_INSTALL_PREFIX="$PREFIX" \
-            -DHIGH_BIT_DEPTH=ON -DMAIN12=ON -DEXPORT_C_API=OFF \
+            -DHIGH_BIT_DEPTH=ON -DMAIN12=ON -DEXPORT_C_API=OFF -DENABLE_LIBNUMA=OFF \
             -DENABLE_SHARED=OFF -DENABLE_CLI=OFF -DENABLE_HDR10_PLUS=OFF
           ninja -C 12bit
 
           # 10-bit (Main10)
           cmake -S . -B 10bit -G Ninja \
             -DCMAKE_INSTALL_PREFIX="$PREFIX" \
-            -DHIGH_BIT_DEPTH=ON -DEXPORT_C_API=OFF \
+            -DHIGH_BIT_DEPTH=ON -DEXPORT_C_API=OFF -DENABLE_LIBNUMA=OFF \
             -DENABLE_SHARED=OFF -DENABLE_CLI=OFF -DENABLE_HDR10_PLUS=OFF
           ninja -C 10bit
 
@@ -113,7 +161,7 @@ jobs:
           ln -sf ../10bit/libx265.a 8bit/libx265_main10.a
           ln -sf ../12bit/libx265.a 8bit/libx265_main12.a
           cmake -S . -B 8bit -G Ninja \
-            -DCMAKE_INSTALL_PREFIX="$PREFIX" \
+            -DCMAKE_INSTALL_PREFIX="$PREFIX" -DENABLE_LIBNUMA=OFF \
             -DENABLE_SHARED=OFF -DENABLE_CLI=OFF -DENABLE_HDR10_PLUS=OFF \
             -DEXTRA_LIB="x265_main10.a;x265_main12.a" \
             -DEXTRA_LINK_FLAGS=-L. -DLINKED_10BIT=ON -DLINKED_12BIT=ON
@@ -133,6 +181,10 @@ jobs:
           EOF
           ranlib libx265.a
           cp -f libx265.a "$PREFIX/lib/libx265.a"
+          # x265.pc lists the compiler's implicit libs, including -lgcc_s, which
+          # would make libgcc_s.so.1 a run-time dependency. ffmpeg links with
+          # -static-libgcc, which supplies the unwinder statically instead.
+          sed -i 's/-lgcc_s//g' "$PREFIX/lib/pkgconfig/x265.pc"
 
       - name: Build SVT-AV1 (static, no LTO)
         run: |
@@ -144,6 +196,16 @@ jobs:
             -DBUILD_SHARED_LIBS=OFF -DENABLE_AVX512=ON -DSVT_AV1_LTO=OFF
           ninja -C SVT-AV1/Build install
 
+      - name: Build dav1d (static)
+        run: |
+          set -euo pipefail
+          cd "$SRC"
+          bash "$TOOLS/fetch.sh" "$DAV1D_URL" "$DAV1D_SHA256" dav1d
+          meson setup dav1d/build dav1d --prefix="$PREFIX" --libdir=lib \
+            --buildtype=release --default-library=static \
+            -Denable_tools=false -Denable_tests=false
+          ninja -C dav1d/build install
+
       - name: Build zimg (static)
         run: |
           set -euo pipefail
@@ -154,6 +216,78 @@ jobs:
           ./configure --prefix="$PREFIX" --enable-static --disable-shared --with-pic
           make -j"$(nproc)"
           make install
+
+      - name: Build libopus, libogg, libvorbis (static)
+        run: |
+          set -euo pipefail
+          cd "$SRC"
+          bash "$TOOLS/fetch.sh" "$OPUS_URL" "$OPUS_SHA256" opus
+          bash "$TOOLS/fetch.sh" "$OGG_URL" "$OGG_SHA256" ogg
+          bash "$TOOLS/fetch.sh" "$VORBIS_URL" "$VORBIS_SHA256" vorbis
+          # CMake rather than autotools: libvorbis 1.3.7's configure adds
+          # -force_cpusubtype_ALL on Darwin; using one recipe on every platform.
+          for lib in opus ogg vorbis; do
+            cmake -S "$lib" -B "$lib/build" -G Ninja -DCMAKE_POLICY_VERSION_MINIMUM=3.5 \
+              -DCMAKE_INSTALL_PREFIX="$PREFIX" -DCMAKE_INSTALL_LIBDIR=lib \
+              -DCMAKE_PREFIX_PATH="$PREFIX" -DCMAKE_BUILD_TYPE=Release \
+              -DBUILD_SHARED_LIBS=OFF -DBUILD_TESTING=OFF \
+              -DOPUS_BUILD_TESTING=OFF -DOPUS_BUILD_PROGRAMS=OFF
+            ninja -C "$lib/build" install
+          done
+
+      - name: Build libmp3lame (static)
+        run: |
+          set -euo pipefail
+          cd "$SRC"
+          bash "$TOOLS/fetch.sh" "$LAME_URL" "$LAME_SHA256" lame
+          cd lame
+          ./configure --prefix="$PREFIX" --enable-static --disable-shared \
+            --disable-frontend --disable-decoder --disable-gtktest
+          make -j"$(nproc)"
+          make install
+
+      - name: Build zlib (static)
+        run: |
+          set -euo pipefail
+          cd "$SRC"
+          bash "$TOOLS/fetch.sh" "$ZLIB_URL" "$ZLIB_SHA256" zlib
+          cd zlib
+          ./configure --prefix="$PREFIX" --static
+          make -j"$(nproc)"
+          make install
+
+      - name: Build libdrm + libva (static, DRM only)
+        run: |
+          set -euo pipefail
+          cd "$SRC"
+          # Only libdrm's core API is used (device probing for VAAPI); the
+          # per-vendor KMS helpers are not.
+          bash "$TOOLS/fetch.sh" "$LIBDRM_URL" "$LIBDRM_SHA256" libdrm
+          meson setup libdrm/build libdrm --prefix="$PREFIX" --libdir=lib \
+            --buildtype=release --default-library=static \
+            -Dintel=disabled -Dradeon=disabled -Damdgpu=disabled -Dnouveau=disabled \
+            -Dvmwgfx=disabled -Domap=disabled -Dexynos=disabled -Dfreedreno=disabled \
+            -Dtegra=disabled -Dvc4=disabled -Detnaviv=disabled \
+            -Dcairo-tests=disabled -Dman-pages=disabled -Dvalgrind=disabled \
+            -Dtests=false -Dudev=false
+          ninja -C libdrm/build install
+
+          # libva: DRM backend only (no X11/Wayland/GLX), so nothing links
+          # libX11/libxcb. Autotools because libva's meson build is shared-only.
+          # The driver search path covers Debian/Ubuntu, Fedora/openSUSE and
+          # Arch layouts; LIBVA_DRIVERS_PATH still overrides it at run time.
+          bash "$TOOLS/fetch.sh" "$LIBVA_URL" "$LIBVA_SHA256" libva
+          cd libva
+          ./configure --prefix="$PREFIX" --sysconfdir=/etc \
+            --enable-static --disable-shared --enable-drm \
+            --disable-x11 --disable-glx --disable-wayland --disable-docs \
+            --with-drivers-path="/usr/lib/x86_64-linux-gnu/dri:/usr/lib64/dri:/usr/lib/dri:/usr/local/lib/dri"
+          make -j"$(nproc)"
+          make install
+          # Upstream libva-drm.pc assumes shared libs and omits libdrm. Without
+          # it ffmpeg's static link test for vaGetDisplayDRM fails, vaapi_drm is
+          # silently disabled, and VAAPI cannot open a render node.
+          echo "Requires.private: libdrm" >> "$PREFIX/lib/pkgconfig/libva-drm.pc"
 
       - name: Install nv-codec-headers (nvenc)
         run: |
@@ -182,7 +316,7 @@ jobs:
           # ffmpeg binary stays self-contained. Installs lib/pkgconfig/vpl.pc,
           # which ffmpeg --enable-libvpl probes for (needs vpl >= 2.6).
           cmake -S libvpl -B libvpl/_build -G Ninja \
-            -DCMAKE_INSTALL_PREFIX="$PREFIX" -DCMAKE_BUILD_TYPE=Release \
+            -DCMAKE_INSTALL_PREFIX="$PREFIX" -DCMAKE_INSTALL_LIBDIR=lib -DCMAKE_BUILD_TYPE=Release \
             -DBUILD_SHARED_LIBS=OFF -DBUILD_TESTS=OFF -DBUILD_TOOLS=OFF -DBUILD_EXAMPLES=OFF
           ninja -C libvpl/_build
           ninja -C libvpl/_build install
@@ -193,57 +327,52 @@ jobs:
           cd "$SRC"
           git clone --depth 1 -b "$FFMPEG_TAG" https://github.com/FFmpeg/FFmpeg.git ffmpeg
           cd ffmpeg
+          # --disable-autodetect: only what is named here gets linked, so the
+          # runner's preinstalled -dev packages (X11, xcb, bz2, lzma, ...) cannot
+          # leak in as shared-library dependencies.
           ./configure \
             --prefix="$PREFIX" \
             --pkg-config-flags=--static \
             --extra-cflags="-I$PREFIX/include" \
-            --extra-ldflags="-L$PREFIX/lib" \
+            --extra-ldflags="-L$PREFIX/lib -static-libgcc" \
             --extra-libs="-lstdc++ -lpthread -lm -ldl" \
             --enable-gpl --enable-version3 \
             --enable-static --disable-shared \
+            --disable-autodetect \
             --disable-debug --disable-doc --disable-ffplay --enable-ffprobe \
-            --disable-network --disable-indevs --disable-outdevs \
-            --enable-libx264 --enable-libx265 --enable-libsvtav1 --enable-libzimg \
-            --enable-vaapi --enable-libdrm --enable-ffnvcodec --enable-amf --enable-libvpl \
+            --disable-network --disable-indevs --enable-indev=lavfi --disable-outdevs \
+            --enable-zlib \
+            --enable-libx264 --enable-libx265 --enable-libsvtav1 --enable-libdav1d --enable-libzimg \
+            --enable-libopus --enable-libvorbis --enable-libmp3lame \
+            --enable-vaapi --enable-libdrm \
+            --enable-ffnvcodec --enable-cuda --enable-cuvid --enable-nvdec --enable-nvenc \
+            --enable-amf --enable-libvpl \
             --disable-filter=amf_capture,sr_amf,vpp_amf \
             --enable-runtime-cpudetect
+          # Sub-features that configure drops silently when a link test fails;
+          # the encoders still list, so verify.sh's name checks cannot see it.
+          for def in CONFIG_VAAPI HAVE_VAAPI_DRM CONFIG_LIBDRM CONFIG_NVENC CONFIG_LIBVPL CONFIG_AMF CONFIG_ZLIB; do
+            grep -q "^#define $def 1\$" config.h || { echo "::error::configure did not enable $def (see ffbuild/config.log)"; exit 1; }
+          done
           make -j"$(nproc)"
+
+      - name: Stage binaries
+        run: |
+          set -euo pipefail
+          mkdir -p out
+          cp "$SRC/ffmpeg/ffmpeg" "$SRC/ffmpeg/ffprobe" out/
+          strip out/ffmpeg out/ffprobe
+          ls -l out
 
       - name: Verify feature set
         run: |
           set -euo pipefail
-          cd "$SRC/ffmpeg"
-          ./ffmpeg -hide_banner -version
-          echo "--- encoders ---"
-          ./ffmpeg -hide_banner -encoders | grep -E 'libx264|libx265|libsvtav1|nvenc|vaapi' || { echo "MISSING expected encoder"; exit 1; }
-          # AMD (amf) + Intel (qsv) HW encoders: assert they compiled in. No
-          # runtime encode - the CI runner has no AMD/Intel GPU, so these only
-          # need to be *listed* (compile-time proof), not executed.
-          ./ffmpeg -hide_banner -encoders | grep -q hevc_amf || { echo "MISSING amf (AMD) encoder"; exit 1; }
-          ./ffmpeg -hide_banner -encoders | grep -q hevc_qsv || { echo "MISSING qsv (Intel) encoder"; exit 1; }
-          echo "--- filters ---"
-          ./ffmpeg -hide_banner -filters | grep -E 'zscale|tonemap' || { echo "MISSING zscale/tonemap"; exit 1; }
-          echo "--- bsfs ---"
-          ./ffmpeg -hide_banner -bsfs | grep -E 'hevc_mp4toannexb|hevc_metadata' || { echo "MISSING hevc bsf"; exit 1; }
-          echo "--- smoke encode (x264 + x265 8/10-bit) ---"
-          # lavfi is an input *device*, which we --disable-indevs (histv only reads
-          # real files), so synthesise raw frames from /dev/zero via the rawvideo
-          # demuxer instead of testsrc.
-          ./ffmpeg -hide_banner -y -f rawvideo -pix_fmt yuv420p -video_size 192x108 -framerate 5 -i /dev/zero -frames:v 5 -c:v libx264 -preset ultrafast /tmp/h264.mp4
-          ./ffmpeg -hide_banner -y -f rawvideo -pix_fmt yuv420p -video_size 192x108 -framerate 5 -i /dev/zero -frames:v 5 -c:v libx265 -preset ultrafast /tmp/hevc.mkv
-          ./ffmpeg -hide_banner -y -f rawvideo -pix_fmt yuv420p10le -video_size 192x108 -framerate 5 -i /dev/zero -frames:v 5 -c:v libx265 -preset ultrafast /tmp/hevc10.mkv
-          test -s /tmp/h264.mp4 && test -s /tmp/hevc.mkv && test -s /tmp/hevc10.mkv
+          bash "$TOOLS/verify.sh" out linux
 
-      - name: Collect + checksum
+      - name: Package
         run: |
           set -euo pipefail
-          mkdir -p out
-          cp "$SRC/ffmpeg/ffmpeg" out/ffmpeg
-          cp "$SRC/ffmpeg/ffprobe" out/ffprobe
-          strip out/ffmpeg out/ffprobe || true
-          ( cd out && sha256sum ffmpeg ffprobe | tee SHA256SUMS )
-          tar -C out -czf histv-ffmpeg-linux-x64.tar.gz ffmpeg ffprobe SHA256SUMS
-          ls -lh out histv-ffmpeg-linux-x64.tar.gz
+          bash "$TOOLS/package.sh" out "$SRC/ffmpeg" histv-ffmpeg-linux-x64.tar.gz linux
 
       - name: Upload artefact
         uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
@@ -253,14 +382,36 @@ jobs:
           retention-days: 30
 
   macos:
-    runs-on: macos-14 # Apple Silicon (arm64) - native build, fixes the Rosetta defect
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          # Native builds on both architectures, so verify.sh runs the binary it
+          # ships. Labels from the GitHub-hosted runner reference (macos-14 is no
+          # longer listed there).
+          - arch: arm64
+            ffarch: arm64
+            runner: macos-15
+          - arch: x64
+            ffarch: x86_64
+            runner: macos-15-intel
+    runs-on: ${{ matrix.runner }}
+    env:
+      # Without this, clang targets the runner's own macOS version.
+      MACOSX_DEPLOYMENT_TARGET: "11.0"
     steps:
+      - name: Check out build scripts
+        uses: actions/checkout@df4cb1c069e1874edd31b4311f1884172cec0e10 # v6.0.3
+        with:
+          persist-credentials: false
+
       - name: Install build tooling
         run: |
           set -euo pipefail
           brew install nasm cmake ninja meson pkg-config autoconf automake libtool
           echo "PREFIX=$HOME/ffbuild/prefix" >> "$GITHUB_ENV"
           echo "SRC=$HOME/ffbuild/src" >> "$GITHUB_ENV"
+          echo "TOOLS=$GITHUB_WORKSPACE/tools/ffmpeg" >> "$GITHUB_ENV"
 
       - name: Prepare prefix
         run: |
@@ -320,6 +471,16 @@ jobs:
             -DBUILD_SHARED_LIBS=OFF -DSVT_AV1_LTO=OFF
           ninja -C SVT-AV1/Build install
 
+      - name: Build dav1d (static)
+        run: |
+          set -euo pipefail
+          cd "$SRC"
+          bash "$TOOLS/fetch.sh" "$DAV1D_URL" "$DAV1D_SHA256" dav1d
+          meson setup dav1d/build dav1d --prefix="$PREFIX" --libdir=lib \
+            --buildtype=release --default-library=static \
+            -Denable_tools=false -Denable_tests=false
+          ninja -C dav1d/build install
+
       - name: Build zimg (static)
         run: |
           set -euo pipefail
@@ -331,12 +492,42 @@ jobs:
           make -j"$(sysctl -n hw.ncpu)"
           make install
 
+      - name: Build libopus, libogg, libvorbis (static)
+        run: |
+          set -euo pipefail
+          cd "$SRC"
+          bash "$TOOLS/fetch.sh" "$OPUS_URL" "$OPUS_SHA256" opus
+          bash "$TOOLS/fetch.sh" "$OGG_URL" "$OGG_SHA256" ogg
+          bash "$TOOLS/fetch.sh" "$VORBIS_URL" "$VORBIS_SHA256" vorbis
+          for lib in opus ogg vorbis; do
+            cmake -S "$lib" -B "$lib/build" -G Ninja -DCMAKE_POLICY_VERSION_MINIMUM=3.5 \
+              -DCMAKE_INSTALL_PREFIX="$PREFIX" -DCMAKE_INSTALL_LIBDIR=lib \
+              -DCMAKE_PREFIX_PATH="$PREFIX" -DCMAKE_BUILD_TYPE=Release \
+              -DBUILD_SHARED_LIBS=OFF -DBUILD_TESTING=OFF \
+              -DOPUS_BUILD_TESTING=OFF -DOPUS_BUILD_PROGRAMS=OFF
+            ninja -C "$lib/build" install
+          done
+
+      - name: Build libmp3lame (static)
+        run: |
+          set -euo pipefail
+          cd "$SRC"
+          bash "$TOOLS/fetch.sh" "$LAME_URL" "$LAME_SHA256" lame
+          cd lame
+          ./configure --prefix="$PREFIX" --enable-static --disable-shared \
+            --disable-frontend --disable-decoder --disable-gtktest
+          make -j"$(sysctl -n hw.ncpu)"
+          make install
+
       - name: Configure + build ffmpeg
         run: |
           set -euo pipefail
           cd "$SRC"
           git clone --depth 1 -b "$FFMPEG_TAG" https://github.com/FFmpeg/FFmpeg.git ffmpeg
           cd ffmpeg
+          # --disable-autodetect: Homebrew lives in the default search path on
+          # Intel runners (/usr/local), so autodetected xz/iconv/etc. would link
+          # as Homebrew dylibs that users do not have.
           ./configure \
             --prefix="$PREFIX" \
             --pkg-config-flags=--static \
@@ -345,42 +536,39 @@ jobs:
             --extra-libs="-lc++" \
             --enable-gpl --enable-version3 \
             --enable-static --disable-shared \
+            --disable-autodetect \
             --disable-debug --disable-doc --disable-ffplay --enable-ffprobe \
-            --disable-network --disable-indevs --disable-outdevs \
-            --enable-libx264 --enable-libx265 --enable-libsvtav1 --enable-libzimg \
+            --disable-network --disable-indevs --enable-indev=lavfi --disable-outdevs \
+            --enable-zlib \
+            --enable-libx264 --enable-libx265 --enable-libsvtav1 --enable-libdav1d --enable-libzimg \
+            --enable-libopus --enable-libvorbis --enable-libmp3lame \
             --enable-videotoolbox --enable-audiotoolbox \
-            --arch=arm64 --enable-runtime-cpudetect
+            --arch=${{ matrix.ffarch }} --enable-runtime-cpudetect
           make -j"$(sysctl -n hw.ncpu)"
+
+      - name: Stage binaries
+        run: |
+          set -euo pipefail
+          mkdir -p out
+          cp "$SRC/ffmpeg/ffmpeg" "$SRC/ffmpeg/ffprobe" out/
+          strip out/ffmpeg out/ffprobe
+          ls -l out
 
       - name: Verify feature set
         run: |
           set -euo pipefail
-          cd "$SRC/ffmpeg"
-          ./ffmpeg -hide_banner -version
-          ./ffmpeg -hide_banner -encoders | grep -E 'libx264|libx265|libsvtav1|videotoolbox' || { echo "MISSING expected encoder"; exit 1; }
-          ./ffmpeg -hide_banner -filters | grep -E 'zscale|tonemap' || { echo "MISSING zscale/tonemap"; exit 1; }
-          ./ffmpeg -hide_banner -bsfs | grep -E 'hevc_mp4toannexb|hevc_metadata' || { echo "MISSING hevc bsf"; exit 1; }
-          ./ffmpeg -hide_banner -y -f rawvideo -pix_fmt yuv420p -video_size 192x108 -framerate 5 -i /dev/zero -frames:v 5 -c:v libx264 -preset ultrafast /tmp/h264.mp4
-          ./ffmpeg -hide_banner -y -f rawvideo -pix_fmt yuv420p -video_size 192x108 -framerate 5 -i /dev/zero -frames:v 5 -c:v libx265 -preset ultrafast /tmp/hevc.mkv
-          ./ffmpeg -hide_banner -y -f rawvideo -pix_fmt yuv420p10le -video_size 192x108 -framerate 5 -i /dev/zero -frames:v 5 -c:v libx265 -preset ultrafast /tmp/hevc10.mkv
-          test -s /tmp/h264.mp4 && test -s /tmp/hevc.mkv && test -s /tmp/hevc10.mkv
+          bash "$TOOLS/verify.sh" out macos
 
-      - name: Collect + checksum
+      - name: Package
         run: |
           set -euo pipefail
-          mkdir -p out
-          cp "$SRC/ffmpeg/ffmpeg" out/ffmpeg
-          cp "$SRC/ffmpeg/ffprobe" out/ffprobe
-          strip out/ffmpeg out/ffprobe || true
-          ( cd out && shasum -a 256 ffmpeg ffprobe | tee SHA256SUMS )
-          tar -C out -czf histv-ffmpeg-macos-arm64.tar.gz ffmpeg ffprobe SHA256SUMS
-          ls -lh out histv-ffmpeg-macos-arm64.tar.gz
+          bash "$TOOLS/package.sh" out "$SRC/ffmpeg" "histv-ffmpeg-macos-${{ matrix.arch }}.zip" macos
 
       - name: Upload artefact
         uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
         with:
-          name: histv-ffmpeg-macos-arm64
-          path: histv-ffmpeg-macos-arm64.tar.gz
+          name: histv-ffmpeg-macos-${{ matrix.arch }}
+          path: histv-ffmpeg-macos-${{ matrix.arch }}.zip
           retention-days: 30
 
   windows:
@@ -389,17 +577,23 @@ jobs:
       run:
         shell: msys2 {0}
     steps:
+      - name: Check out build scripts
+        uses: actions/checkout@df4cb1c069e1874edd31b4311f1884172cec0e10 # v6.0.3
+        with:
+          persist-credentials: false
+
       - name: Set up MSYS2 (MINGW64)
         uses: msys2/setup-msys2@66cd2cce69caa17b53920067426061ca1de3a884 # v2.32.0
         with:
           msystem: MINGW64
           update: true
           install: >-
-            base-devel git
+            base-devel git zip xz
             mingw-w64-x86_64-toolchain
             mingw-w64-x86_64-nasm
             mingw-w64-x86_64-cmake
             mingw-w64-x86_64-ninja
+            mingw-w64-x86_64-meson
             mingw-w64-x86_64-pkgconf
             autoconf automake libtool
 
@@ -408,6 +602,7 @@ jobs:
           set -euo pipefail
           echo "PREFIX=$HOME/ffbuild/prefix" >> "$GITHUB_ENV"
           echo "SRC=$HOME/ffbuild/src" >> "$GITHUB_ENV"
+          echo "TOOLS=$(cygpath -u "$GITHUB_WORKSPACE")/tools/ffmpeg" >> "$GITHUB_ENV"
           mkdir -p "$HOME/ffbuild/prefix/lib/pkgconfig" "$HOME/ffbuild/prefix/include" "$HOME/ffbuild/src"
           echo "PKG_CONFIG_PATH=$HOME/ffbuild/prefix/lib/pkgconfig" >> "$GITHUB_ENV"
 
@@ -470,6 +665,16 @@ jobs:
             -DBUILD_SHARED_LIBS=OFF -DENABLE_AVX512=ON -DSVT_AV1_LTO=OFF
           ninja -C SVT-AV1/Build install
 
+      - name: Build dav1d (static)
+        run: |
+          set -euo pipefail
+          cd "$SRC"
+          bash "$TOOLS/fetch.sh" "$DAV1D_URL" "$DAV1D_SHA256" dav1d
+          meson setup dav1d/build dav1d --prefix="$PREFIX" --libdir=lib \
+            --buildtype=release --default-library=static \
+            -Denable_tools=false -Denable_tests=false
+          ninja -C dav1d/build install
+
       - name: Build zimg (static)
         run: |
           set -euo pipefail
@@ -478,6 +683,36 @@ jobs:
           cd zimg
           ./autogen.sh
           ./configure --prefix="$PREFIX" --enable-static --disable-shared --with-pic
+          make -j"$(nproc)"
+          make install
+
+      - name: Build libopus, libogg, libvorbis (static)
+        run: |
+          set -euo pipefail
+          cd "$SRC"
+          bash "$TOOLS/fetch.sh" "$OPUS_URL" "$OPUS_SHA256" opus
+          bash "$TOOLS/fetch.sh" "$OGG_URL" "$OGG_SHA256" ogg
+          bash "$TOOLS/fetch.sh" "$VORBIS_URL" "$VORBIS_SHA256" vorbis
+          # On MinGW, opus's stack protector / fortify options add -lssp to
+          # opus.pc, which the fully static ffmpeg link does not want.
+          for lib in opus ogg vorbis; do
+            cmake -S "$lib" -B "$lib/build" -G Ninja -DCMAKE_POLICY_VERSION_MINIMUM=3.5 \
+              -DCMAKE_INSTALL_PREFIX="$PREFIX" -DCMAKE_INSTALL_LIBDIR=lib \
+              -DCMAKE_PREFIX_PATH="$PREFIX" -DCMAKE_BUILD_TYPE=Release \
+              -DBUILD_SHARED_LIBS=OFF -DBUILD_TESTING=OFF \
+              -DOPUS_BUILD_TESTING=OFF -DOPUS_BUILD_PROGRAMS=OFF \
+              -DOPUS_STACK_PROTECTOR=OFF -DOPUS_FORTIFY_SOURCE=OFF
+            ninja -C "$lib/build" install
+          done
+
+      - name: Build libmp3lame (static)
+        run: |
+          set -euo pipefail
+          cd "$SRC"
+          bash "$TOOLS/fetch.sh" "$LAME_URL" "$LAME_SHA256" lame
+          cd lame
+          ./configure --prefix="$PREFIX" --enable-static --disable-shared \
+            --disable-frontend --disable-decoder --disable-gtktest
           make -j"$(nproc)"
           make install
 
@@ -529,79 +764,103 @@ jobs:
             --enable-gpl --enable-version3 \
             --enable-static --disable-shared \
             --disable-debug --disable-doc --disable-ffplay --enable-ffprobe \
-            --disable-network --disable-indevs --disable-outdevs \
-            --enable-libx264 --enable-libx265 --enable-libsvtav1 --enable-libzimg \
+            --disable-network --disable-indevs --enable-indev=lavfi --disable-outdevs \
+            --enable-libx264 --enable-libx265 --enable-libsvtav1 --enable-libdav1d --enable-libzimg \
+            --enable-libopus --enable-libvorbis --enable-libmp3lame \
             --enable-ffnvcodec --enable-d3d11va --enable-dxva2 --enable-amf --enable-libvpl \
             --disable-filter=amf_capture,sr_amf,vpp_amf \
-            --enable-runtime-cpudetect \
-            || { echo "=== ffbuild/config.log (tail) ==="; tail -150 ffbuild/config.log; echo "=== SvtAv1Enc.pc ==="; cat "$PREFIX/lib/pkgconfig/SvtAv1Enc.pc" || true; echo "=== pkg-config probe ==="; PKG_CONFIG_PATH="$PREFIX/lib/pkgconfig" pkg-config --exists --print-errors 'SvtAv1Enc >= 0.9.0' || true; exit 1; }
+            --enable-runtime-cpudetect
           make -j"$(nproc)"
+
+      - name: Stage binaries
+        run: |
+          set -euo pipefail
+          mkdir -p out
+          cp "$SRC/ffmpeg/ffmpeg.exe" "$SRC/ffmpeg/ffprobe.exe" out/
+          strip out/ffmpeg.exe out/ffprobe.exe
+          ls -l out
 
       - name: Verify feature set
         run: |
           set -euo pipefail
-          cd "$SRC/ffmpeg"
-          ./ffmpeg.exe -hide_banner -version
-          ./ffmpeg.exe -hide_banner -encoders | grep -E 'libx264|libx265|libsvtav1|nvenc' || { echo "MISSING expected encoder"; exit 1; }
-          # AMD (amf) + Intel (qsv) HW encoders: compiled-in proof only (the CI
-          # runner has no AMD/Intel GPU, so list them rather than run them).
-          ./ffmpeg.exe -hide_banner -encoders | grep -q hevc_amf || { echo "MISSING amf (AMD) encoder"; exit 1; }
-          ./ffmpeg.exe -hide_banner -encoders | grep -q hevc_qsv || { echo "MISSING qsv (Intel) encoder"; exit 1; }
-          ./ffmpeg.exe -hide_banner -filters | grep -E 'zscale|tonemap' || { echo "MISSING zscale/tonemap"; exit 1; }
-          ./ffmpeg.exe -hide_banner -bsfs | grep -E 'hevc_mp4toannexb|hevc_metadata' || { echo "MISSING hevc bsf"; exit 1; }
-          # Native ffmpeg.exe can't read MSYS2 /dev/zero; make raw files in the
-          # bash shell and use cwd-relative I/O to avoid path translation.
-          head -c 400000 /dev/zero > raw8.yuv
-          head -c 800000 /dev/zero > raw10.yuv
-          ./ffmpeg.exe -hide_banner -y -f rawvideo -pix_fmt yuv420p -video_size 192x108 -i raw8.yuv -frames:v 5 -c:v libx264 -preset ultrafast h264.mp4
-          ./ffmpeg.exe -hide_banner -y -f rawvideo -pix_fmt yuv420p -video_size 192x108 -i raw8.yuv -frames:v 5 -c:v libx265 -preset ultrafast hevc.mkv
-          ./ffmpeg.exe -hide_banner -y -f rawvideo -pix_fmt yuv420p10le -video_size 192x108 -i raw10.yuv -frames:v 5 -c:v libx265 -preset ultrafast hevc10.mkv
-          test -s h264.mp4 && test -s hevc.mkv && test -s hevc10.mkv
+          bash "$TOOLS/verify.sh" out windows
 
-      - name: Collect + checksum
+      - name: Package
         run: |
           set -euo pipefail
-          mkdir -p out
-          cp "$SRC/ffmpeg/ffmpeg.exe" out/ffmpeg.exe
-          cp "$SRC/ffmpeg/ffprobe.exe" out/ffprobe.exe
-          strip out/ffmpeg.exe out/ffprobe.exe || true
-          ( cd out && sha256sum ffmpeg.exe ffprobe.exe | tee SHA256SUMS )
-          tar -C out -czf histv-ffmpeg-windows-x64.tar.gz ffmpeg.exe ffprobe.exe SHA256SUMS
-          ls -lh out histv-ffmpeg-windows-x64.tar.gz
+          bash "$TOOLS/package.sh" out "$SRC/ffmpeg" histv-ffmpeg-windows-x64.zip windows
 
       - name: Upload artefact
         uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
         with:
           name: histv-ffmpeg-windows-x64
-          path: histv-ffmpeg-windows-x64.tar.gz
+          path: histv-ffmpeg-windows-x64.zip
           retention-days: 30
 
   publish:
     needs: [linux, macos, windows]
-    # Publish whatever built: ship Linux to experimental even while macOS/Windows
-    # are still being ironed out (don't let one platform block the others).
-    if: ${{ !cancelled() && (github.event_name == 'push' || inputs.publish) && (needs.linux.result == 'success' || needs.macos.result == 'success' || needs.windows.result == 'success') }}
+    # experimental: publish whatever built, so one platform still being ironed
+    # out does not block the others. release: all four archives or nothing.
+    if: >-
+      ${{ !cancelled() && (github.event_name == 'push' || inputs.publish) && (
+        (inputs.channel == 'release' && needs.linux.result == 'success' && needs.macos.result == 'success' && needs.windows.result == 'success') ||
+        (inputs.channel != 'release' && (needs.linux.result == 'success' || needs.macos.result == 'success' || needs.windows.result == 'success'))
+      ) }}
     runs-on: ubuntu-22.04
     permissions:
       contents: write
+    env:
+      CHANNEL: ${{ inputs.channel || 'experimental' }}
+      GH_TOKEN: ${{ github.token }}
     steps:
       - name: Download built ffmpeg artefacts
         uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
         with:
+          pattern: histv-ffmpeg-*
           path: dist
           merge-multiple: true
 
-      - name: Publish to ffmpeg-experimental prerelease
-        env:
-          GH_TOKEN: ${{ github.token }}
+      - name: Checksum archives
         run: |
           set -euo pipefail
-          find dist -type f
+          cd dist
+          sha256sum histv-ffmpeg-* | tee SHA256SUMS
+
+      - name: Publish to ffmpeg-experimental prerelease
+        if: env.CHANNEL != 'release'
+        run: |
+          set -euo pipefail
+          tag=ffmpeg-experimental
           # Create the prerelease once; ignore if it already exists, then clobber assets.
-          gh release view ffmpeg-experimental --repo "$GITHUB_REPOSITORY" >/dev/null 2>&1 || \
-            gh release create ffmpeg-experimental \
+          gh release view "$tag" --repo "$GITHUB_REPOSITORY" >/dev/null 2>&1 || \
+            gh release create "$tag" \
               --repo "$GITHUB_REPOSITORY" \
               --prerelease \
               --title "Custom ffmpeg (experimental)" \
-              --notes "Histv-tailored static ffmpeg built from pinned source (ffmpeg ${FFMPEG_TAG}, x265 ${X265_VER} multilib, x264 stable, SVT-AV1 ${SVTAV1_TAG}, zimg ${ZIMG_TAG}). HW encode: nvenc + vaapi + AMF ${AMF_TAG} (linux), nvenc + d3d11va/dxva2 + AMF ${AMF_TAG} (windows), Intel QSV via libvpl ${LIBVPL_TAG} (linux+windows), videotoolbox (macos). Experimental test builds - download the per-platform archive and swap it into histv to test."
-          gh release upload ffmpeg-experimental --repo "$GITHUB_REPOSITORY" --clobber $(find dist -type f)
+              --notes "Histv-tailored static ffmpeg built from pinned source (ffmpeg ${FFMPEG_TAG}). Experimental test builds; each archive's BUILDINFO.txt lists every source pin. Not for pinning: assets are replaced on every build, use a versioned ffmpeg-*-histv.* release instead."
+          # Drop assets from earlier layouts (e.g. the old .tar.gz names) so the
+          # prerelease only offers what this run built.
+          gh release view "$tag" --repo "$GITHUB_REPOSITORY" --json assets --jq '.assets[].name' | while IFS= read -r name; do
+            [ -e "dist/$name" ] || gh release delete-asset "$tag" "$name" --repo "$GITHUB_REPOSITORY" --yes
+          done
+          gh release upload "$tag" --repo "$GITHUB_REPOSITORY" --clobber dist/*
+
+      - name: Publish versioned release
+        if: env.CHANNEL == 'release'
+        run: |
+          set -euo pipefail
+          tag="ffmpeg-${FFMPEG_TAG}-histv.${HISTV_FFMPEG_REV}"
+          if gh release view "$tag" --repo "$GITHUB_REPOSITORY" >/dev/null 2>&1; then
+            echo "::error::Release $tag already exists. Bump HISTV_FFMPEG_REV for a new build."
+            exit 1
+          fi
+          if gh api "repos/$GITHUB_REPOSITORY/git/ref/tags/$tag" >/dev/null 2>&1; then
+            echo "::error::Tag $tag already exists without a release. Bump HISTV_FFMPEG_REV."
+            exit 1
+          fi
+          gh release create "$tag" dist/* \
+            --repo "$GITHUB_REPOSITORY" \
+            --target "$GITHUB_SHA" \
+            --latest=false \
+            --title "ffmpeg ${FFMPEG_TAG} for histv (build ${HISTV_FFMPEG_REV})" \
+            --notes "Histv-tailored static ffmpeg/ffprobe built from pinned, unmodified upstream source (ffmpeg ${FFMPEG_TAG}). Archives: linux-x64 (.tar.gz), macos-arm64, macos-x64 and windows-x64 (.zip), each with SHA256SUMS, LICENSE.txt (GPL v3) and BUILDINFO.txt. SHA256SUMS on this release covers the four archives. Assets on this tag are never replaced."
