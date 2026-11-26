@@ -148,7 +148,7 @@ A missing `data-ui-style` while the right sheets are active is reported as a `WA
 
 ## Negative controls
 
-`run.sh selftest` runs each command where it must fail and where it must pass and checks the exit code and a line of the output. `stubs.py` builds the failing trees: a copy of HEAD's front end with a minimal implementation of the contract table (`#sel-ui-style`, `data-ui-style`, `#ui-style-css`, disabled Doublet sheets, `Classic Dark`/`Classic Light` themes, `css/app-classic.css` copied from `e4d0ee2`). Variants: `correct` (style applied in `<head>` from a cache), `leaky` (a live switch leaves the other style's custom properties on `<html>`), `late` (style applied only after `get_config`). They are controls for the harness, not a model of the real implementation.
+`run.sh selftest` runs each command where it must fail and where it must pass and checks the exit code and a line of the output. `stubs.py` builds the failing trees: a copy of the front end at `5e73dad` (the last commit before the style toggle; the selftest also uses it as the tree with no style control) with a minimal implementation of the contract table (`#sel-ui-style`, `data-ui-style`, `#ui-style-css`, disabled Doublet sheets, `Classic Dark`/`Classic Light` themes, `css/app-classic.css` copied from `e4d0ee2`). Variants: `correct` (style applied in `<head>` from a cache), `leaky` (a live switch leaves the other style's custom properties on `<html>`), `late` (style applied only after `get_config`). They are controls for the harness, not a model of the real implementation.
 
 Result on 2026-11-26 (11 of 11 behaved as expected):
 

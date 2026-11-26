@@ -9,6 +9,10 @@ from core import EXIT_DIFF, EXIT_HARNESS, EXIT_NOTHING, EXIT_OK
 
 HARNESS = str(core.HERE / "harness.py")
 
+# The harness base: the last front end before the style toggle. The controls that need a tree with no
+# style control, and the stubs, are built from it; HEAD has the toggle once the branches meet.
+NO_CONTROL = "5e73dad"
+
 
 def run(args):
     p = subprocess.run([sys.executable, HARNESS, *args], capture_output=True, text=True)
@@ -16,34 +20,34 @@ def run(args):
 
 
 def cmd_selftest(a):
-    correct = stubs.build_stub("correct")
-    leaky = stubs.build_stub("leaky")
-    late = stubs.build_stub("late")
+    correct = stubs.build_stub("correct", base_ref=NO_CONTROL)
+    leaky = stubs.build_stub("leaky", base_ref=NO_CONTROL)
+    late = stubs.build_stub("late", base_ref=NO_CONTROL)
     quick = ["--states", "empty", "rows"]
     cases = [
         # (what the control does, args, expected exit code, text the output must contain)
         ("mock: the app asks for a command the mock does not know (get_themes, errors are caught by the app)",
-         ["matrix", "HEAD", "--themes", "Default Dark", "--states", "empty", "--mock-drop", "get_themes"],
+         ["matrix", NO_CONTROL, "--themes", "Default Dark", "--states", "empty", "--mock-drop", "get_themes"],
          EXIT_HARNESS, "does not know invoke get_themes"),
         ("mock: same ref, nothing dropped",
-         ["matrix", "HEAD", "--themes", "Default Dark", "--states", "empty"], EXIT_OK, "cells rendered"),
+         ["matrix", NO_CONTROL, "--themes", "Default Dark", "--states", "empty"], EXIT_OK, "cells rendered"),
         ("parity: baseline against itself (same mock, two renders)",
          ["parity", "--candidate", "e4d0ee2", *quick], EXIT_OK, "0 unexplained differences"),
-        ("parity: baseline against a tree whose layout differs (HEAD as it renders now, doublet)",
-         ["parity", "--candidate", "HEAD", "--candidate-style", "native", *quick], EXIT_DIFF, "DIFF"),
+        ("parity: baseline against a tree whose layout differs (the harness base, doublet)",
+         ["parity", "--candidate", NO_CONTROL, "--candidate-style", "native", *quick], EXIT_DIFF, "DIFF"),
         ("parity: classic requested on a tree with no style control",
-         ["parity", "--candidate", "HEAD", "--states", "empty"], EXIT_NOTHING, "nothing was compared"),
+         ["parity", "--candidate", NO_CONTROL, "--states", "empty"], EXIT_NOTHING, "nothing was compared"),
         ("toggle: correct stub",
          ["toggle", correct, "--themes", "Default Dark", "--cycles", "2"] + quick, EXIT_OK, "0 failed"),
         ("toggle: stub that leaves the other style's custom properties on <html>",
          ["toggle", leaky, "--themes", "Default Dark", "--cycles", "1", "--max-lines", "3"] + quick, EXIT_DIFF,
          "custom properties of doublet remain on <html>"),
         ("toggle: tree with no style control",
-         ["toggle", "HEAD"], EXIT_NOTHING, "nothing was switched"),
+         ["toggle", NO_CONTROL], EXIT_NOTHING, "nothing was switched"),
         ("paint: correct stub (style applied in <head>)", ["paint", correct], EXIT_OK, "0 failed"),
         ("paint: stub that applies the style after get_config answers",
          ["paint", late], EXIT_DIFF, "painted frames show the wrong style"),
-        ("paint: tree with no style control", ["paint", "HEAD"], EXIT_NOTHING, "nothing was checked"),
+        ("paint: tree with no style control", ["paint", NO_CONTROL], EXIT_NOTHING, "nothing was checked"),
     ]
     bad = 0
     for what, args, want, text in cases:
