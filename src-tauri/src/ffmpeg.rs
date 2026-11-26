@@ -247,15 +247,15 @@ pub fn exe_dir() -> Option<PathBuf> {
 #[cfg(feature = "downloader")]
 #[allow(dead_code)] // each platform uses only its own pin
 mod histv_release {
-    pub const TAG: &str = "ffmpeg-n8.1.3-histv.1";
+    pub const TAG: &str = "ffmpeg-n8.1.3-histv.2";
     pub const SHA256_LINUX_X64: &str =
-        "a5755af50e1e240b2bdf0e27d6f73ac67eb95c245a838c78b5ed110539b79f9a";
+        "3b6e92edbd1944f4816d1de31e507b82beaf6358692f32651ef08b228c34407a";
     pub const SHA256_WINDOWS_X64: &str =
-        "3a39cc552220da1f18d8b9505ae99ce234f470a688e4704f540f892672224628";
+        "32f0ef2378efb7db546cd76e9b7d32de3175b6df0af0b84fe1ac713a477edb94";
     pub const SHA256_MACOS_ARM64: &str =
-        "0ee9102b408656d3b731d6e7ece0a9aec5710964905a9ede938b306cb11eadd8";
+        "6e8d74820cefbbc3b997cb972b13f1dbca9b60da013b2e80a899d249c7e9f80e";
     pub const SHA256_MACOS_X64: &str =
-        "5cbbae68bfde9331bceca4d8ef373babec73c2e9e845444235503570786bd3a6";
+        "50052f6f189bb75c8f592d6eb207ba47b8071d1229fdeed96a0672dceac83be4";
 }
 
 /// One place to fetch an ffmpeg archive from, with an optional pinned digest.
@@ -1227,7 +1227,7 @@ mod download_tests {
         let first = &list[0];
         assert!(first
             .url
-            .contains("/releases/download/ffmpeg-n8.1.3-histv.1/histv-ffmpeg-"));
+            .contains("/releases/download/ffmpeg-n8.1.3-histv.2/histv-ffmpeg-"));
         assert!(first.sha256.is_some());
         assert!(list[1..].iter().all(|c| c.sha256.is_none()));
     }
