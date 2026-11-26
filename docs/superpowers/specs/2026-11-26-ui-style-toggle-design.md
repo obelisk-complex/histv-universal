@@ -26,7 +26,7 @@ Release 3.0 ships the Doublet UI refresh. Settings gets a switch so users who pr
 - Same element ids in both styles. Doublet added `dx-*` classes and two stylesheets (`css/doublet-tokens.css`, `css/doublet-components.css`); classic ignores `dx-*` classes.
 - Old CSS: `git show e4d0ee2:src/css/app.css`. Old token derivation (`--glass-*` variables): `git show e4d0ee2:src/js/app.js`, function `applyTheme`.
 - Rail and splitter behaviour changed after `e4d0ee2` (`--rail-w` on `#main-area`, collapsed toggle, narrow mode). Classic needs the old behaviour; if the current JS cannot serve both, branch on `data-ui-style` and keep one code path where it can.
-- Headings such as `Queue / Your files` are split by Doublet CSS; classic must show only the part the old UI showed.
+- Headings such as `Queue / Your files` are plain text in Doublet (nothing splits them). Classic hides the extra part with `<span class="doublet-only">`; the hidden part differs per heading (`Queue / `, `Advanced / `, but ` / Profile` for the rail title). `textContent` still includes the hidden part; only the rendered text differs.
 - `src/js/lib.js` holds pure helpers duplicated inline in `app.js`; `lib.test.js` has a drift test. Keep both in step.
 - Config: `src-tauri/src/config.rs` (`theme` at about line 12). Add `ui_style` with the same serde conventions as its neighbours; an unknown or missing value reads as `doublet`.
 - Built-in themes: `src-tauri/src/themes.rs` and `src-tauri/themes/`; follow the Creditor precedent (commit `a454be7`) for adding built-ins, including the upgrade pass and its tests.
@@ -39,3 +39,17 @@ Release 3.0 ships the Doublet UI refresh. Settings gets a switch so users who pr
 4. **Toggle integrity:** doublet to classic to doublet, several times. After each switch the computed styles of the shared ids equal those of a fresh load in that style, and no custom property from the other style remains on `<html>`.
 5. **First paint:** the persisted style applies before the first paint (no flash of the wrong style).
 6. **Engines:** the real WebKitGTK and WebView2 renders are not available headlessly; list what was and was not covered.
+
+## Real-engine checklist (cannot be run headlessly; do on Linux, Windows and macOS builds before 3.0)
+
+- First paint waits for the `document.write` stylesheet: no flash of Doublet when Classic is saved.
+- `link.disabled` turns the two Doublet stylesheets off.
+- The saved style survives an app restart (browser-side storage is used for first paint; if it is lost, one launch shows Doublet before switching).
+- A live switch shows no stale frame.
+- The modal backdrop blur renders as in 2.6.0.
+- Rail and splitter: drag, collapse, reopen, narrow window, under both styles.
+
+## Decisions made during implementation
+
+- Classic keeps the corrected rail and splitter code (the 2.6.0 code had inverted drag, a gap on reopen, a half off-screen collapsed toggle and a rail stuck shut in narrow windows); only the old widths and look come from the classic CSS.
+- The first-paint link is written by `js/ui-style.js` during head parsing, not static markup: changing a link's `href` from script painted the wrong style first.
