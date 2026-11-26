@@ -8,6 +8,14 @@ The app's look follows the Doublet design system. Four dark Doublet pairings hea
 
 Your own themes use the same six-colour format and appear below them. A theme file named "Doublet", "Doublet Dusk", "Doublet Ember" or "Doublet Filigree" replaces the built-in pairing of that name.
 
+## Classic Dark and Classic Light
+
+Classic Dark and Classic Light are the Default Dark and Default Light colours from before Doublet (2.6.0). They are ordinary JSON themes and work under either interface style.
+
+## Interface style
+
+Settings has a Style control next to Theme: Doublet (the default) or Classic, the look from before Doublet. Changing the style never changes your theme. Under Classic, the same six colours are derived the 2.6.0 way: no contrast adjustment, row tints instead of status washes, and `row-encoding`, `progress-fill` and `progress-bg` are used again. The rest of this page describes the Doublet derivation.
+
 ## Where to put themes
 
 Theme files live in a `themes/` folder next to the application executable. On first launch the app creates this folder and writes the built-in JSON themes into it. Any `.json` file you drop in there will appear in the Theme dropdown.
@@ -106,7 +114,7 @@ Power users can override any derived value by adding extra keys to the `colors` 
 
 Override values must be hex colours (`#rgb`, `#rrggbb`), except `log-*`, which also accept `rgb()` and `rgba()`.
 
-`row-encoding`, `progress-fill` and `progress-bg` are no longer used: progress is drawn in the accent colour. Themes that set them still load.
+`row-encoding`, `progress-fill` and `progress-bg` are not used under the Doublet style: progress is drawn in the accent colour. The Classic style uses them. Themes that set them load under either style.
 
 ## Backward compatibility
 

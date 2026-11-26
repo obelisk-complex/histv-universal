@@ -53,6 +53,7 @@
     const numThreads      = $('#num-threads');
     const chkLowPriority  = $('#chk-low-priority');
     const selTheme        = $('#sel-theme');
+    const selUiStyle      = $('#sel-ui-style');
     const txtOutputFolder = $('#txt-output-folder');
     const radioOutputMode = document.querySelectorAll('input[name="output-mode"]');
     const chkOverwrite    = $('#chk-overwrite');
@@ -184,6 +185,10 @@
     async function loadConfig() {
       try {
         const cfg = await invoke('get_config');
+        // js/ui-style.js applied the last known style before first paint; the
+        // config is authoritative. loadThemes then derives the theme for it.
+        selUiStyle.value = normaliseUiStyle(cfg.uiStyle);
+        switchUiStyle(selUiStyle.value);
         numBitrate.value = cfg.targetBitrate || 4;
         setPeakMultiplier(cfg.peakMultiplier || 1.5);
         numQpI.value = cfg.qpI ?? 20;
@@ -222,6 +227,7 @@
         return cfg;
       } catch (e) {
         console.warn('Could not load config:', e);
+        selUiStyle.value = normaliseUiStyle(document.documentElement.dataset.uiStyle);
         return null;
       }
     }
@@ -234,6 +240,7 @@
           await invoke('save_config', {
             config: {
               theme: selTheme.value || 'Default Dark',
+              uiStyle: normaliseUiStyle(selUiStyle.value),
               outputFolder: txtOutputFolder.value,
               outputMode: getOutputMode(),
               outputContainer: 'auto',
@@ -301,15 +308,44 @@
     // tokens (--dx-*) and set inline on :root, over the defaults in
     // doublet-tokens.css. Legacy key names still work as fallbacks.
     //
-    // The Doublet pairings need no derivation: their tokens are already in
-    // doublet-tokens.css, selected with data-dx-pairing.
+    // The Doublet pairings need no derivation under the Doublet style: their
+    // tokens are already in doublet-tokens.css, selected with data-dx-pairing.
+    // Under the Classic style that file is disabled, so each pairing also
+    // carries its six seed colours (equal to doublet-tokens.css; lib.test.js
+    // checks) and is derived like any other theme.
+    //
+    // The Classic style derives the pre-Doublet custom properties instead
+    // (deriveClassicTokens). The active style is <html data-ui-style>.
 
     const DOUBLET_THEMES = [
-      { name: 'Doublet', pairing: 'electric' },
-      { name: 'Doublet Dusk', pairing: 'dusk' },
-      { name: 'Doublet Ember', pairing: 'ember' },
-      { name: 'Doublet Filigree', pairing: 'filigree' },
+      { name: 'Doublet', pairing: 'electric', colors: {
+        background: '#0A0D13', surface: '#12161F', text: '#E9EAEE',
+        primary: '#1F6FFF', success: '#2FD07A', error: '#FF4D4D' } },
+      { name: 'Doublet Dusk', pairing: 'dusk', colors: {
+        background: '#16121E', surface: '#201A2B', text: '#ECE8F2',
+        primary: '#FF6A00', success: '#2FD07A', error: '#FF4D4D' } },
+      { name: 'Doublet Ember', pairing: 'ember', colors: {
+        background: '#0F1620', surface: '#18212E', text: '#E8EAF0',
+        primary: '#FF6A00', success: '#2FD07A', error: '#FF4D4D' } },
+      { name: 'Doublet Filigree', pairing: 'filigree', colors: {
+        background: '#0E0F12', surface: '#181A1F', text: '#E6E8EC',
+        primary: '#C9CFD8', success: '#2FD07A', error: '#FF4D4D' } },
     ];
+
+    // Interface style from a config value (mirrors normaliseUiStyle in lib.js).
+    function normaliseUiStyle(value) {
+      return value === 'classic' ? 'classic' : 'doublet';
+    }
+
+    // Which interface style owns an inline custom property on <html> (mirrors
+    // uiStyleOfProperty in lib.js, which carries the unit tests).
+    function uiStyleOfProperty(prop) {
+      if (prop.startsWith('--dx-')) return 'doublet';
+      if (/^--(glass|row|progress|icon)-/.test(prop)) return 'classic';
+      const classicCore = ['--background', '--surface', '--text', '--primary', '--success', '--error',
+        '--surface-dim', '--surface-bright', '--text-muted', '--accent', '--text-on-primary'];
+      return classicCore.includes(prop) ? 'classic' : null;
+    }
 
     // Theme JSON keys that feed the derivation; any other key is passed
     // through as a custom property (log-* and future variables). Keys
@@ -331,14 +367,16 @@
       const theme = themes.find(t => t.name === name);
       if (!theme) return;
       const root = document.documentElement;
+      const style = normaliseUiStyle(root.dataset.uiStyle);
+      const otherStyle = style === 'classic' ? 'doublet' : 'classic';
 
-      // Drop whatever the previous theme set inline.
+      // Drop whatever the previous theme, or the previous style, set inline.
       for (const prop of appliedThemeProps) root.style.removeProperty(prop);
       appliedThemeProps = [];
       root.style.removeProperty('color-scheme');
       root.removeAttribute('data-dx-pairing');
 
-      if (theme.pairing) {
+      if (style === 'doublet' && theme.pairing) {
         if (theme.pairing !== 'electric') root.setAttribute('data-dx-pairing', theme.pairing);
         return;
       }
@@ -349,24 +387,110 @@
         appliedThemeProps.push(`--${key}`);
       };
 
-      const tokens = deriveDoubletTokens(c);
+      const tokens = style === 'classic' ? deriveClassicTokens(c) : deriveDoubletTokens(c);
       for (const [key, value] of Object.entries(tokens)) setProp(key, value);
 
-      // Pass through explicit extra keys (with colour validation).
-      const isValidCssColor = (v) => {
-        if (typeof v !== 'string') return false;
-        if (/^#[0-9a-fA-F]{3,8}$/.test(v)) return true;
-        if (/^rgba?\(\s*\d[\d\s.,%/]*\)$/.test(v)) return true;
-        return false;
-      };
+      // Pass through explicit extra keys (with colour validation). Keys the
+      // derivation already used, and names of the other style's tokens, are
+      // skipped.
       for (const [key, value] of Object.entries(c)) {
-        if (!key.startsWith('dx-') && !THEME_DERIVATION_KEYS.has(key) && /^[a-z0-9-]+$/.test(key) && isValidCssColor(value)) {
+        const used = style === 'classic' ? key in tokens : THEME_DERIVATION_KEYS.has(key);
+        if (!used && !key.startsWith('dx-') && /^[a-z0-9-]+$/.test(key)
+            && uiStyleOfProperty(`--${key}`) !== otherStyle && isValidCssColor(value)) {
           setProp(key, value);
         }
       }
 
       // Colour-scheme for native form controls
-      root.style.colorScheme = isLightColor(tokens['dx-cloth']) ? 'light' : 'dark';
+      const ground = style === 'classic' ? (tokens['background'] || '#1E1E1E') : tokens['dx-cloth'];
+      root.style.colorScheme = isLightColor(ground) ? 'light' : 'dark';
+    }
+
+    function isValidCssColor(v) {
+      if (typeof v !== 'string') return false;
+      if (/^#[0-9a-fA-F]{3,8}$/.test(v)) return true;
+      if (/^rgba?\(\s*\d[\d\s.,%/]*\)$/.test(v)) return true;
+      return false;
+    }
+
+    // The pre-Doublet (2.6.0) derivation, for the Classic style. Six colours
+    // in, the classic custom properties out (named without the leading --).
+    // An explicit key in the theme replaces the derived value; a value that
+    // is not a valid colour is left out.
+    function deriveClassicTokens(c) {
+      const bg      = c['background'] || c['base-100'] || '#1E1E1E';
+      const surface = c['surface']    || c['base-300'] || '#373737';
+      const text    = c['text']       || c['base-content'] || '#DCDCDC';
+      const primary = c['primary']    || '#0078D7';
+      const success = c['success']    || '#4ade80';
+      const error   = c['error']      || '#f87171';
+      const light = isLightColor(bg);
+      // Muted tint of a bright colour over the background
+      const tint = (colour) => blendHex(colour, bg, light ? 0.12 : 0.15);
+
+      const d = {};
+      d['background']     = bg;
+      d['surface']        = surface;
+      d['text']           = text;
+      d['primary']        = primary;
+      d['success']        = success;
+      d['error']          = error;
+
+      // Surface hierarchy
+      d['surface-dim']    = c['surface-dim']    || blendHex(surface, bg, 0.5);
+      d['surface-bright'] = c['surface-bright'] || shiftBrightness(surface, light ? -0.08 : 0.08);
+      d['text-muted']     = c['text-muted']     || c['secondary'] || hexToRgba(text, 0.65);
+      d['accent']         = c['accent']         || primary;
+
+      // Row tints
+      d['row-info']       = c['row-info']       || c['info']    || blendHex(primary, bg, 0.15);
+      d['row-done']       = c['row-done']       || tint(success);
+      d['row-encoding']   = c['row-encoding']   || c['warning'] || shiftBrightness(surface, light ? -0.04 : 0.04);
+      d['row-failed']     = c['row-failed']     || tint(error);
+      d['row-cancelled']  = c['row-cancelled']  || blendHex(d['row-failed'], d['row-encoding'], 0.5);
+
+      // Progress bar
+      d['progress-fill']  = c['progress-fill']  || d['row-done'];
+      d['progress-bg']    = c['progress-bg']    || d['row-encoding'];
+
+      // Icon / log colours (bright, full saturation)
+      d['icon-done']      = c['icon-done']      || c['status-done']      || success;
+      d['icon-failed']    = c['icon-failed']    || c['status-failed']    || error;
+      d['icon-cancelled'] = c['icon-cancelled'] || c['status-cancelled'] || '#fb923c';
+      d['log-result']     = c['log-result']     || d['icon-done'];
+      d['log-warn']       = c['log-warn']       || d['icon-cancelled'];
+      d['log-error']      = c['log-error']      || d['icon-failed'];
+      d['log-detect']     = c['log-detect']     || c['status-detect'] || '#a78bfa';
+      d['log-file']       = c['log-file']       || '#7dd3fc';
+      d['log-text']       = c['log-text']       || '#8BC88B';
+      d['log-cmd']        = c['log-cmd']        || (light ? '#6b7280' : '#7a8090');
+      d['text-on-primary'] = c['text-on-primary'] || bestTextOn(primary);
+
+      // Glass tokens, by theme lightness
+      Object.assign(d, light ? {
+        'glass-bg': 'rgba(255, 255, 255, 0.55)', 'glass-border': 'rgba(0, 0, 0, 0.08)',
+        'glass-input-bg': 'rgba(0, 0, 0, 0.04)', 'glass-th-bg': 'rgba(255, 255, 255, 0.8)',
+        'glass-hover': 'rgba(0, 0, 0, 0.04)', 'glass-toggle-bg': 'rgba(0, 0, 0, 0.04)',
+        'glass-log-bg': 'rgba(20, 20, 20, 0.95)', 'glass-strip-bg': 'rgba(255, 255, 255, 0.6)',
+        'glass-overlay-bg': 'rgba(255, 255, 255, 0.92)',
+      } : {
+        'glass-bg': 'rgba(40, 40, 40, 0.65)', 'glass-border': 'rgba(255, 255, 255, 0.06)',
+        'glass-input-bg': 'rgba(55, 55, 55, 0.5)', 'glass-th-bg': 'rgba(55, 55, 55, 0.9)',
+        'glass-hover': 'rgba(255, 255, 255, 0.08)', 'glass-toggle-bg': 'rgba(55, 55, 55, 0.4)',
+        'glass-log-bg': 'rgba(8, 8, 8, 0.9)', 'glass-strip-bg': 'rgba(40, 40, 40, 0.7)',
+        'glass-overlay-bg': 'rgba(40, 40, 40, 0.92)',
+      });
+
+      for (const key of Object.keys(d)) {
+        if (!isValidCssColor(d[key])) delete d[key];
+      }
+      return d;
+    }
+
+    // Hex to rgba() string
+    function hexToRgba(hex, alpha) {
+      const [r, g, b] = hexToRgb(hex);
+      return `rgba(${r}, ${g}, ${b}, ${alpha})`;
     }
 
     // Six seeds in, the full --dx-* colour set out. Neutral text and line
@@ -585,6 +709,29 @@
     selTheme.addEventListener('change', () => {
       applyTheme(selTheme.value);
       scheduleConfigSave();
+    });
+
+    // Interface style: swap the stylesheets once the new ones have loaded
+    // (applyUiStyle, js/ui-style.js), then re-derive the theme for the new
+    // style in the same step. The theme is unchanged. If a stylesheet does
+    // not load, the old style stays and the control goes back to it.
+    function switchUiStyle(style, onSwitched) {
+      const previous = normaliseUiStyle(document.documentElement.dataset.uiStyle);
+      applyUiStyle(style, (failedHref) => {
+        if (failedHref) {
+          selUiStyle.value = previous;
+          const msg = `Style: ${style === 'classic' ? 'Classic' : 'Doublet'} did not load (${failedHref})`;
+          appendLog(msg);
+          announceStatus(msg);
+          return;
+        }
+        applyTheme(selTheme.value);
+        if (onSwitched) onSwitched();
+      });
+    }
+
+    selUiStyle.addEventListener('change', () => {
+      switchUiStyle(normaliseUiStyle(selUiStyle.value), scheduleConfigSave);
     });
 
     // ═══════════════════════════════════════════════════════════════

@@ -1,0 +1,1262 @@
+[
+  {
+    "id": "sel-theme",
+    "reason": "New by design: the Style row (#sel-ui-style) under Theme adds a 57px footer row to the rail.",
+    "states": [
+      "drawer",
+      "empty",
+      "log",
+      "modal-fallback",
+      "modal-overwrite",
+      "modal-preflight",
+      "rail-collapsed",
+      "rail-max",
+      "rail-min",
+      "rows"
+    ],
+    "props": [
+      "y"
+    ]
+  },
+  {
+    "id": "right-panel",
+    "reason": "New by design: the Style row (#sel-ui-style) under Theme adds a 57px footer row to the rail.",
+    "states": [
+      "narrow-800"
+    ],
+    "props": [
+      "h"
+    ]
+  },
+  {
+    "id": "left-panel",
+    "reason": "New by design: the Style row (#sel-ui-style) under Theme adds a 57px footer row to the rail.",
+    "states": [
+      "narrow-800"
+    ],
+    "props": [
+      "y"
+    ]
+  },
+  {
+    "id": "left-panel",
+    "reason": "New by design: the Style row (#sel-ui-style) under Theme adds a 57px footer row to the rail.",
+    "states": [
+      "narrow-800"
+    ],
+    "props": [
+      "h"
+    ]
+  },
+  {
+    "id": "queue-container",
+    "reason": "New by design: the Style row (#sel-ui-style) under Theme adds a 57px footer row to the rail.",
+    "states": [
+      "narrow-800"
+    ],
+    "props": [
+      "y"
+    ]
+  },
+  {
+    "id": "queue-container",
+    "reason": "New by design: the Style row (#sel-ui-style) under Theme adds a 57px footer row to the rail.",
+    "states": [
+      "narrow-800"
+    ],
+    "props": [
+      "h"
+    ]
+  },
+  {
+    "id": "queue-summary",
+    "reason": "New by design: the Style row (#sel-ui-style) under Theme adds a 57px footer row to the rail.",
+    "states": [
+      "narrow-800"
+    ],
+    "props": [
+      "y"
+    ]
+  },
+  {
+    "id": "queue-table",
+    "reason": "New by design: the Style row (#sel-ui-style) under Theme adds a 57px footer row to the rail.",
+    "states": [
+      "narrow-800"
+    ],
+    "props": [
+      "y"
+    ]
+  },
+  {
+    "id": "queue-body",
+    "reason": "Wording (a784a50): longer queue headers (Source size, Output size (est.)) wrap to two lines in app-classic.css.",
+    "states": [
+      "drawer",
+      "empty",
+      "log",
+      "modal-fallback",
+      "modal-overwrite",
+      "modal-preflight",
+      "narrow-800",
+      "rail-max",
+      "rail-min",
+      "rows"
+    ],
+    "props": [
+      "y"
+    ]
+  },
+  {
+    "id": "select-all",
+    "reason": "Wording (a784a50): longer queue headers (Source size, Output size (est.)) wrap to two lines in app-classic.css.",
+    "states": [
+      "drawer",
+      "empty",
+      "log",
+      "modal-fallback",
+      "modal-overwrite",
+      "modal-preflight",
+      "narrow-800",
+      "rail-max",
+      "rail-min",
+      "rows"
+    ],
+    "props": [
+      "y"
+    ]
+  },
+  {
+    "id": "queue-table",
+    "reason": "Wording (a784a50): longer queue headers (Source size, Output size (est.)) wrap to two lines in app-classic.css.",
+    "states": [
+      "drawer",
+      "empty",
+      "log",
+      "modal-fallback",
+      "modal-overwrite",
+      "modal-preflight",
+      "rail-max",
+      "rail-min",
+      "rows"
+    ],
+    "props": [
+      "h"
+    ]
+  },
+  {
+    "id": "start-tooltip",
+    "reason": "Wording (a784a50): the 'Batch already running' and 'No pending items in the queue' Start hints were removed, so the tooltip is empty.",
+    "states": [
+      "drawer",
+      "empty",
+      "log",
+      "modal-fallback",
+      "modal-overwrite",
+      "narrow-800",
+      "rail-collapsed",
+      "rail-max",
+      "rail-min",
+      "rows"
+    ],
+    "props": [
+      "x"
+    ]
+  },
+  {
+    "id": "start-tooltip",
+    "reason": "Wording (a784a50): the 'Batch already running' and 'No pending items in the queue' Start hints were removed, so the tooltip is empty.",
+    "states": [
+      "drawer",
+      "empty",
+      "log",
+      "modal-fallback",
+      "modal-overwrite",
+      "narrow-800",
+      "rail-collapsed",
+      "rail-max",
+      "rail-min",
+      "rows"
+    ],
+    "props": [
+      "y"
+    ]
+  },
+  {
+    "id": "start-tooltip",
+    "reason": "Wording (a784a50): the 'Batch already running' and 'No pending items in the queue' Start hints were removed, so the tooltip is empty.",
+    "states": [
+      "drawer",
+      "empty",
+      "log",
+      "modal-fallback",
+      "modal-overwrite",
+      "narrow-800",
+      "rail-collapsed",
+      "rail-max",
+      "rail-min",
+      "rows"
+    ],
+    "props": [
+      "w"
+    ]
+  },
+  {
+    "id": "start-tooltip",
+    "reason": "Wording (a784a50): the 'Batch already running' and 'No pending items in the queue' Start hints were removed, so the tooltip is empty.",
+    "states": [
+      "drawer",
+      "empty",
+      "log",
+      "modal-fallback",
+      "modal-overwrite",
+      "narrow-800",
+      "rail-collapsed",
+      "rail-max",
+      "rail-min",
+      "rows"
+    ],
+    "props": [
+      "h"
+    ]
+  },
+  {
+    "id": "radio-output-mode",
+    "reason": "Wording (a784a50): label 'Where' became 'Output location', option 'Use the Save to folder' became 'Save to folder'.",
+    "states": [
+      "drawer"
+    ],
+    "props": [
+      "x"
+    ]
+  },
+  {
+    "id": "radio-output-mode",
+    "reason": "Wording (a784a50): label 'Where' became 'Output location', option 'Use the Save to folder' became 'Save to folder'.",
+    "states": [
+      "drawer"
+    ],
+    "props": [
+      "w"
+    ]
+  },
+  {
+    "id": "sel-post-action",
+    "reason": "Wording (a784a50): the After batch Action label lost its tooltip icon, so the select starts earlier.",
+    "states": [
+      "drawer"
+    ],
+    "props": [
+      "x"
+    ]
+  },
+  {
+    "id": "sel-post-action",
+    "reason": "Wording (a784a50): the After batch Action label lost its tooltip icon, so the select starts earlier.",
+    "states": [
+      "drawer"
+    ],
+    "props": [
+      "w"
+    ]
+  },
+  {
+    "id": "job-status",
+    "reason": "Wording (a784a50): status chip reads 'Encoding' instead of 'Encoding...', so it is narrower.",
+    "states": [
+      "drawer",
+      "log",
+      "modal-fallback",
+      "modal-overwrite",
+      "narrow-800",
+      "rail-collapsed",
+      "rail-max",
+      "rail-min",
+      "rows"
+    ],
+    "props": [
+      "w"
+    ]
+  },
+  {
+    "id": "job-file",
+    "reason": "Wording (a784a50): status chip reads 'Encoding' instead of 'Encoding...', so it is narrower.",
+    "states": [
+      "drawer",
+      "log",
+      "modal-fallback",
+      "modal-overwrite",
+      "narrow-800",
+      "rail-collapsed",
+      "rail-max",
+      "rail-min",
+      "rows"
+    ],
+    "props": [
+      "x"
+    ]
+  },
+  {
+    "id": "job-file",
+    "reason": "Wording (a784a50): status chip reads 'Encoding' instead of 'Encoding...', so it is narrower.",
+    "states": [
+      "narrow-800"
+    ],
+    "props": [
+      "w"
+    ]
+  },
+  {
+    "id": "job-progress-text",
+    "reason": "Wording (a784a50): status chip reads 'Encoding' instead of 'Encoding...', so it is narrower.",
+    "states": [
+      "drawer",
+      "log",
+      "modal-fallback",
+      "modal-overwrite",
+      "rail-collapsed",
+      "rail-max",
+      "rail-min",
+      "rows"
+    ],
+    "props": [
+      "x"
+    ]
+  },
+  {
+    "id": "modal-overwrite-title",
+    "reason": "Wording (a784a50): dialog body is the file name only (one line) and buttons read Replace / Skip / Replace all.",
+    "states": [
+      "modal-overwrite"
+    ],
+    "props": [
+      "y"
+    ]
+  },
+  {
+    "id": "overwrite-body",
+    "reason": "Wording (a784a50): dialog body is the file name only (one line) and buttons read Replace / Skip / Replace all.",
+    "states": [
+      "modal-overwrite"
+    ],
+    "props": [
+      "y"
+    ]
+  },
+  {
+    "id": "overwrite-body",
+    "reason": "Wording (a784a50): dialog body is the file name only (one line) and buttons read Replace / Skip / Replace all.",
+    "states": [
+      "modal-overwrite"
+    ],
+    "props": [
+      "h"
+    ]
+  },
+  {
+    "id": "ow-yes",
+    "reason": "Wording (a784a50): dialog body is the file name only (one line) and buttons read Replace / Skip / Replace all.",
+    "states": [
+      "modal-overwrite"
+    ],
+    "props": [
+      "x"
+    ]
+  },
+  {
+    "id": "ow-yes",
+    "reason": "Wording (a784a50): dialog body is the file name only (one line) and buttons read Replace / Skip / Replace all.",
+    "states": [
+      "modal-overwrite"
+    ],
+    "props": [
+      "y"
+    ]
+  },
+  {
+    "id": "ow-yes",
+    "reason": "Wording (a784a50): dialog body is the file name only (one line) and buttons read Replace / Skip / Replace all.",
+    "states": [
+      "modal-overwrite"
+    ],
+    "props": [
+      "w"
+    ]
+  },
+  {
+    "id": "ow-no",
+    "reason": "Wording (a784a50): dialog body is the file name only (one line) and buttons read Replace / Skip / Replace all.",
+    "states": [
+      "modal-overwrite"
+    ],
+    "props": [
+      "x"
+    ]
+  },
+  {
+    "id": "ow-no",
+    "reason": "Wording (a784a50): dialog body is the file name only (one line) and buttons read Replace / Skip / Replace all.",
+    "states": [
+      "modal-overwrite"
+    ],
+    "props": [
+      "y"
+    ]
+  },
+  {
+    "id": "ow-no",
+    "reason": "Wording (a784a50): dialog body is the file name only (one line) and buttons read Replace / Skip / Replace all.",
+    "states": [
+      "modal-overwrite"
+    ],
+    "props": [
+      "w"
+    ]
+  },
+  {
+    "id": "ow-always",
+    "reason": "Wording (a784a50): dialog body is the file name only (one line) and buttons read Replace / Skip / Replace all.",
+    "states": [
+      "modal-overwrite"
+    ],
+    "props": [
+      "x"
+    ]
+  },
+  {
+    "id": "ow-always",
+    "reason": "Wording (a784a50): dialog body is the file name only (one line) and buttons read Replace / Skip / Replace all.",
+    "states": [
+      "modal-overwrite"
+    ],
+    "props": [
+      "y"
+    ]
+  },
+  {
+    "id": "ow-always",
+    "reason": "Wording (a784a50): dialog body is the file name only (one line) and buttons read Replace / Skip / Replace all.",
+    "states": [
+      "modal-overwrite"
+    ],
+    "props": [
+      "w"
+    ]
+  },
+  {
+    "id": "modal-fallback-title",
+    "reason": "Wording (a784a50): dialog body is the file name only (one line) and buttons read Replace / Skip / Replace all.",
+    "states": [
+      "modal-fallback"
+    ],
+    "props": [
+      "y"
+    ]
+  },
+  {
+    "id": "fallback-body",
+    "reason": "Wording (a784a50): dialog body is the file name only (one line) and buttons read Replace / Skip / Replace all.",
+    "states": [
+      "modal-fallback"
+    ],
+    "props": [
+      "y"
+    ]
+  },
+  {
+    "id": "fallback-body",
+    "reason": "Wording (a784a50): dialog body is the file name only (one line) and buttons read Replace / Skip / Replace all.",
+    "states": [
+      "modal-fallback"
+    ],
+    "props": [
+      "h"
+    ]
+  },
+  {
+    "id": "fb-yes",
+    "reason": "Wording (a784a50): dialog body is the file name only (one line) and buttons read Replace / Skip / Replace all.",
+    "states": [
+      "modal-fallback"
+    ],
+    "props": [
+      "y"
+    ]
+  },
+  {
+    "id": "fb-no",
+    "reason": "Wording (a784a50): dialog body is the file name only (one line) and buttons read Replace / Skip / Replace all.",
+    "states": [
+      "modal-fallback"
+    ],
+    "props": [
+      "y"
+    ]
+  },
+  {
+    "id": "advanced-arrow",
+    "reason": "Wording (fb25e9f): 'H.264/MP4 - plays on...' became 'H.264/MP4. Plays on...', one line less in the 0-width collapsed rail.",
+    "states": [
+      "rail-collapsed"
+    ],
+    "props": [
+      "y"
+    ]
+  },
+  {
+    "id": "advanced-toggle",
+    "reason": "Wording (fb25e9f): 'H.264/MP4 - plays on...' became 'H.264/MP4. Plays on...', one line less in the 0-width collapsed rail.",
+    "states": [
+      "rail-collapsed"
+    ],
+    "props": [
+      "y"
+    ]
+  },
+  {
+    "id": "profile-list",
+    "reason": "Wording (fb25e9f): 'H.264/MP4 - plays on...' became 'H.264/MP4. Plays on...', one line less in the 0-width collapsed rail.",
+    "states": [
+      "rail-collapsed"
+    ],
+    "props": [
+      "h"
+    ]
+  },
+  {
+    "id": "chk-auto-clear",
+    "reason": "Follows from the hidden quality-mode row (422292f, accepted) less the two-line encoder summary (0e7ebec): drawer rows below move up 24px.",
+    "states": [
+      "drawer"
+    ],
+    "props": [
+      "y"
+    ]
+  },
+  {
+    "id": "chk-compat",
+    "reason": "Follows from the hidden quality-mode row (422292f, accepted) less the two-line encoder summary (0e7ebec): drawer rows below move up 24px.",
+    "states": [
+      "drawer"
+    ],
+    "props": [
+      "y"
+    ]
+  },
+  {
+    "id": "chk-delete-source",
+    "reason": "Follows from the hidden quality-mode row (422292f, accepted) less the two-line encoder summary (0e7ebec): drawer rows below move up 24px.",
+    "states": [
+      "drawer"
+    ],
+    "props": [
+      "y"
+    ]
+  },
+  {
+    "id": "chk-force-local",
+    "reason": "Follows from the hidden quality-mode row (422292f, accepted) less the two-line encoder summary (0e7ebec): drawer rows below move up 24px.",
+    "states": [
+      "drawer"
+    ],
+    "props": [
+      "y"
+    ]
+  },
+  {
+    "id": "chk-hdr",
+    "reason": "Follows from the hidden quality-mode row (422292f, accepted) less the two-line encoder summary (0e7ebec): drawer rows below move up 24px.",
+    "states": [
+      "drawer"
+    ],
+    "props": [
+      "y"
+    ]
+  },
+  {
+    "id": "chk-low-priority",
+    "reason": "Follows from the hidden quality-mode row (422292f, accepted) less the two-line encoder summary (0e7ebec): drawer rows below move up 24px.",
+    "states": [
+      "drawer"
+    ],
+    "props": [
+      "y"
+    ]
+  },
+  {
+    "id": "chk-overwrite",
+    "reason": "Follows from the hidden quality-mode row (422292f, accepted) less the two-line encoder summary (0e7ebec): drawer rows below move up 24px.",
+    "states": [
+      "drawer"
+    ],
+    "props": [
+      "y"
+    ]
+  },
+  {
+    "id": "chk-precision",
+    "reason": "Follows from the hidden quality-mode row (422292f, accepted) less the two-line encoder summary (0e7ebec): drawer rows below move up 24px.",
+    "states": [
+      "drawer"
+    ],
+    "props": [
+      "y"
+    ]
+  },
+  {
+    "id": "chk-preserve-av1",
+    "reason": "Follows from the hidden quality-mode row (422292f, accepted) less the two-line encoder summary (0e7ebec): drawer rows below move up 24px.",
+    "states": [
+      "drawer"
+    ],
+    "props": [
+      "y"
+    ]
+  },
+  {
+    "id": "chk-save-log",
+    "reason": "Follows from the hidden quality-mode row (422292f, accepted) less the two-line encoder summary (0e7ebec): drawer rows below move up 24px.",
+    "states": [
+      "drawer"
+    ],
+    "props": [
+      "y"
+    ]
+  },
+  {
+    "id": "chk-toast",
+    "reason": "Follows from the hidden quality-mode row (422292f, accepted) less the two-line encoder summary (0e7ebec): drawer rows below move up 24px.",
+    "states": [
+      "drawer"
+    ],
+    "props": [
+      "y"
+    ]
+  },
+  {
+    "id": "encoder-summary",
+    "reason": "Behaviour (422292f, 0e7ebec, accepted): the encoder summary lists one encoder per codec in the queue and wraps to two lines; rows below move down.",
+    "states": [
+      "drawer"
+    ],
+    "props": [
+      "h"
+    ]
+  },
+  {
+    "id": "lbl-qp",
+    "reason": "Follows from the hidden quality-mode row (422292f, accepted) less the two-line encoder summary (0e7ebec): drawer rows below move up 24px.",
+    "states": [
+      "drawer"
+    ],
+    "props": [
+      "y"
+    ]
+  },
+  {
+    "id": "num-bitrate",
+    "reason": "Behaviour (422292f, 0e7ebec, accepted): the encoder summary lists one encoder per codec in the queue and wraps to two lines; rows below move down.",
+    "states": [
+      "drawer"
+    ],
+    "props": [
+      "y"
+    ]
+  },
+  {
+    "id": "num-qp-i",
+    "reason": "Follows from the hidden quality-mode row (422292f, accepted) less the two-line encoder summary (0e7ebec): drawer rows below move up 24px.",
+    "states": [
+      "drawer"
+    ],
+    "props": [
+      "y"
+    ]
+  },
+  {
+    "id": "num-qp-p",
+    "reason": "Follows from the hidden quality-mode row (422292f, accepted) less the two-line encoder summary (0e7ebec): drawer rows below move up 24px.",
+    "states": [
+      "drawer"
+    ],
+    "props": [
+      "y"
+    ]
+  },
+  {
+    "id": "num-threads",
+    "reason": "Follows from the hidden quality-mode row (422292f, accepted) less the two-line encoder summary (0e7ebec): drawer rows below move up 24px.",
+    "states": [
+      "drawer"
+    ],
+    "props": [
+      "y"
+    ]
+  },
+  {
+    "id": "peak-toggle",
+    "reason": "Behaviour (93455bb, accepted): the 4x VBR peak button widens the peak toggle.",
+    "states": [
+      "drawer"
+    ],
+    "props": [
+      "w"
+    ]
+  },
+  {
+    "id": "peak-toggle",
+    "reason": "Behaviour (422292f, 0e7ebec, accepted): the encoder summary lists one encoder per codec in the queue and wraps to two lines; rows below move down.",
+    "states": [
+      "drawer"
+    ],
+    "props": [
+      "y"
+    ]
+  },
+  {
+    "id": "radio-output-mode",
+    "reason": "Follows from the hidden quality-mode row (422292f, accepted) less the two-line encoder summary (0e7ebec): drawer rows below move up 24px.",
+    "states": [
+      "drawer"
+    ],
+    "props": [
+      "y"
+    ]
+  },
+  {
+    "id": "rc-toggle",
+    "reason": "Behaviour (422292f, accepted): refreshEncoderDisplay re-checks the quality-mode row when files are added and hides it, as every fixture encoder is hardware; 2.6.0 never re-checked.",
+    "states": [
+      "drawer",
+      "log",
+      "modal-fallback",
+      "modal-overwrite",
+      "modal-preflight",
+      "narrow-800",
+      "rail-collapsed",
+      "rail-max",
+      "rail-min",
+      "rows"
+    ],
+    "props": [
+      "display"
+    ]
+  },
+  {
+    "id": "rc-toggle",
+    "reason": "Behaviour (422292f, accepted): refreshEncoderDisplay re-checks the quality-mode row when files are added and hides it, as every fixture encoder is hardware; 2.6.0 never re-checked.",
+    "states": [
+      "drawer"
+    ],
+    "props": [
+      "h"
+    ]
+  },
+  {
+    "id": "rc-toggle",
+    "reason": "Behaviour (422292f, accepted): refreshEncoderDisplay re-checks the quality-mode row when files are added and hides it, as every fixture encoder is hardware; 2.6.0 never re-checked.",
+    "states": [
+      "drawer"
+    ],
+    "props": [
+      "w"
+    ]
+  },
+  {
+    "id": "rc-toggle",
+    "reason": "Behaviour (422292f, accepted): refreshEncoderDisplay re-checks the quality-mode row when files are added and hides it, as every fixture encoder is hardware; 2.6.0 never re-checked.",
+    "states": [
+      "drawer"
+    ],
+    "props": [
+      "x"
+    ]
+  },
+  {
+    "id": "rc-toggle",
+    "reason": "Behaviour (422292f, accepted): refreshEncoderDisplay re-checks the quality-mode row when files are added and hides it, as every fixture encoder is hardware; 2.6.0 never re-checked.",
+    "states": [
+      "drawer"
+    ],
+    "props": [
+      "y"
+    ]
+  },
+  {
+    "id": "row-qp",
+    "reason": "Follows from the hidden quality-mode row (422292f, accepted) less the two-line encoder summary (0e7ebec): drawer rows below move up 24px.",
+    "states": [
+      "drawer"
+    ],
+    "props": [
+      "y"
+    ]
+  },
+  {
+    "id": "row-rc-mode",
+    "reason": "Behaviour (422292f, accepted): refreshEncoderDisplay re-checks the quality-mode row when files are added and hides it, as every fixture encoder is hardware; 2.6.0 never re-checked.",
+    "states": [
+      "drawer",
+      "log",
+      "modal-fallback",
+      "modal-overwrite",
+      "modal-preflight",
+      "narrow-800",
+      "rail-collapsed",
+      "rail-max",
+      "rail-min",
+      "rows"
+    ],
+    "props": [
+      "display"
+    ]
+  },
+  {
+    "id": "row-rc-mode",
+    "reason": "Behaviour (422292f, accepted): refreshEncoderDisplay re-checks the quality-mode row when files are added and hides it, as every fixture encoder is hardware; 2.6.0 never re-checked.",
+    "states": [
+      "drawer"
+    ],
+    "props": [
+      "h"
+    ]
+  },
+  {
+    "id": "row-rc-mode",
+    "reason": "Behaviour (422292f, accepted): refreshEncoderDisplay re-checks the quality-mode row when files are added and hides it, as every fixture encoder is hardware; 2.6.0 never re-checked.",
+    "states": [
+      "drawer"
+    ],
+    "props": [
+      "w"
+    ]
+  },
+  {
+    "id": "row-rc-mode",
+    "reason": "Behaviour (422292f, accepted): refreshEncoderDisplay re-checks the quality-mode row when files are added and hides it, as every fixture encoder is hardware; 2.6.0 never re-checked.",
+    "states": [
+      "drawer"
+    ],
+    "props": [
+      "x"
+    ]
+  },
+  {
+    "id": "row-rc-mode",
+    "reason": "Behaviour (422292f, accepted): refreshEncoderDisplay re-checks the quality-mode row when files are added and hides it, as every fixture encoder is hardware; 2.6.0 never re-checked.",
+    "states": [
+      "drawer"
+    ],
+    "props": [
+      "y"
+    ]
+  },
+  {
+    "id": "sel-post-action",
+    "reason": "Follows from the hidden quality-mode row (422292f, accepted) less the two-line encoder summary (0e7ebec): drawer rows below move up 24px.",
+    "states": [
+      "drawer"
+    ],
+    "props": [
+      "y"
+    ]
+  },
+  {
+    "id": "settings-panel",
+    "reason": "Follows from the hidden quality-mode row (422292f, accepted) less the two-line encoder summary (0e7ebec): drawer rows below move up 24px.",
+    "states": [
+      "drawer"
+    ],
+    "props": [
+      "h"
+    ]
+  },
+  {
+    "id": "splitter-toggle",
+    "reason": "Behaviour (38aa6ec, accepted): the collapsed splitter toggle sits inside the window instead of half off it.",
+    "states": [
+      "rail-collapsed"
+    ],
+    "props": [
+      "x"
+    ]
+  },
+  {
+    "id": "queue-row-0",
+    "reason": "Wording (a784a50): longer queue headers (Source size, Output size (est.)) wrap to two lines in app-classic.css.",
+    "states": [
+      "drawer",
+      "log",
+      "modal-fallback",
+      "modal-overwrite",
+      "modal-preflight",
+      "rail-max",
+      "rail-min",
+      "rows"
+    ],
+    "props": [
+      "y"
+    ]
+  },
+  {
+    "id": "queue-row-0",
+    "reason": "New by design: the Style row (#sel-ui-style) under Theme adds a 57px footer row to the rail.",
+    "states": [
+      "narrow-800"
+    ],
+    "props": [
+      "y"
+    ]
+  },
+  {
+    "id": "queue-row-0-status",
+    "reason": "Wording (a784a50): longer queue headers (Source size, Output size (est.)) wrap to two lines in app-classic.css.",
+    "states": [
+      "drawer",
+      "log",
+      "modal-fallback",
+      "modal-overwrite",
+      "modal-preflight",
+      "rail-max",
+      "rail-min",
+      "rows"
+    ],
+    "props": [
+      "y"
+    ]
+  },
+  {
+    "id": "queue-row-0-status",
+    "reason": "New by design: the Style row (#sel-ui-style) under Theme adds a 57px footer row to the rail.",
+    "states": [
+      "narrow-800"
+    ],
+    "props": [
+      "y"
+    ]
+  },
+  {
+    "id": "queue-row-1",
+    "reason": "Wording (a784a50): longer queue headers (Source size, Output size (est.)) wrap to two lines in app-classic.css.",
+    "states": [
+      "drawer",
+      "log",
+      "modal-fallback",
+      "modal-overwrite",
+      "modal-preflight",
+      "rail-max",
+      "rail-min",
+      "rows"
+    ],
+    "props": [
+      "y"
+    ]
+  },
+  {
+    "id": "queue-row-1",
+    "reason": "New by design: the Style row (#sel-ui-style) under Theme adds a 57px footer row to the rail.",
+    "states": [
+      "narrow-800"
+    ],
+    "props": [
+      "y"
+    ]
+  },
+  {
+    "id": "queue-row-1-status",
+    "reason": "Wording (a784a50): longer queue headers (Source size, Output size (est.)) wrap to two lines in app-classic.css.",
+    "states": [
+      "drawer",
+      "log",
+      "modal-fallback",
+      "modal-overwrite",
+      "modal-preflight",
+      "rail-max",
+      "rail-min",
+      "rows"
+    ],
+    "props": [
+      "y"
+    ]
+  },
+  {
+    "id": "queue-row-1-status",
+    "reason": "New by design: the Style row (#sel-ui-style) under Theme adds a 57px footer row to the rail.",
+    "states": [
+      "narrow-800"
+    ],
+    "props": [
+      "y"
+    ]
+  },
+  {
+    "id": "queue-row-2",
+    "reason": "Wording (a784a50): longer queue headers (Source size, Output size (est.)) wrap to two lines in app-classic.css.",
+    "states": [
+      "drawer",
+      "log",
+      "modal-fallback",
+      "modal-overwrite",
+      "modal-preflight",
+      "rail-max",
+      "rail-min",
+      "rows"
+    ],
+    "props": [
+      "y"
+    ]
+  },
+  {
+    "id": "queue-row-2",
+    "reason": "New by design: the Style row (#sel-ui-style) under Theme adds a 57px footer row to the rail.",
+    "states": [
+      "narrow-800"
+    ],
+    "props": [
+      "y"
+    ]
+  },
+  {
+    "id": "queue-row-2-status",
+    "reason": "Wording (a784a50): longer queue headers (Source size, Output size (est.)) wrap to two lines in app-classic.css.",
+    "states": [
+      "drawer",
+      "log",
+      "modal-fallback",
+      "modal-overwrite",
+      "modal-preflight",
+      "rail-max",
+      "rail-min",
+      "rows"
+    ],
+    "props": [
+      "y"
+    ]
+  },
+  {
+    "id": "queue-row-2-status",
+    "reason": "New by design: the Style row (#sel-ui-style) under Theme adds a 57px footer row to the rail.",
+    "states": [
+      "narrow-800"
+    ],
+    "props": [
+      "y"
+    ]
+  },
+  {
+    "id": "queue-row-3",
+    "reason": "Wording (a784a50): longer queue headers (Source size, Output size (est.)) wrap to two lines in app-classic.css.",
+    "states": [
+      "drawer",
+      "log",
+      "modal-fallback",
+      "modal-overwrite",
+      "modal-preflight",
+      "rail-max",
+      "rail-min",
+      "rows"
+    ],
+    "props": [
+      "y"
+    ]
+  },
+  {
+    "id": "queue-row-3",
+    "reason": "New by design: the Style row (#sel-ui-style) under Theme adds a 57px footer row to the rail.",
+    "states": [
+      "narrow-800"
+    ],
+    "props": [
+      "y"
+    ]
+  },
+  {
+    "id": "queue-row-3-status",
+    "reason": "Wording (a784a50): longer queue headers (Source size, Output size (est.)) wrap to two lines in app-classic.css.",
+    "states": [
+      "drawer",
+      "log",
+      "modal-fallback",
+      "modal-overwrite",
+      "modal-preflight",
+      "rail-max",
+      "rail-min",
+      "rows"
+    ],
+    "props": [
+      "y"
+    ]
+  },
+  {
+    "id": "queue-row-3-status",
+    "reason": "New by design: the Style row (#sel-ui-style) under Theme adds a 57px footer row to the rail.",
+    "states": [
+      "narrow-800"
+    ],
+    "props": [
+      "y"
+    ]
+  },
+  {
+    "id": "queue-row-4",
+    "reason": "Wording (a784a50): longer queue headers (Source size, Output size (est.)) wrap to two lines in app-classic.css.",
+    "states": [
+      "drawer",
+      "log",
+      "modal-fallback",
+      "modal-overwrite",
+      "modal-preflight",
+      "rail-max",
+      "rail-min",
+      "rows"
+    ],
+    "props": [
+      "y"
+    ]
+  },
+  {
+    "id": "queue-row-4",
+    "reason": "New by design: the Style row (#sel-ui-style) under Theme adds a 57px footer row to the rail.",
+    "states": [
+      "narrow-800"
+    ],
+    "props": [
+      "y"
+    ]
+  },
+  {
+    "id": "queue-row-4-status",
+    "reason": "Wording (a784a50): longer queue headers (Source size, Output size (est.)) wrap to two lines in app-classic.css.",
+    "states": [
+      "drawer",
+      "log",
+      "modal-fallback",
+      "modal-overwrite",
+      "modal-preflight",
+      "rail-max",
+      "rail-min",
+      "rows"
+    ],
+    "props": [
+      "y"
+    ]
+  },
+  {
+    "id": "queue-row-4-status",
+    "reason": "New by design: the Style row (#sel-ui-style) under Theme adds a 57px footer row to the rail.",
+    "states": [
+      "narrow-800"
+    ],
+    "props": [
+      "y"
+    ]
+  },
+  {
+    "id": "queue-row-5",
+    "reason": "Wording (a784a50): longer queue headers (Source size, Output size (est.)) wrap to two lines in app-classic.css.",
+    "states": [
+      "drawer",
+      "log",
+      "modal-fallback",
+      "modal-overwrite",
+      "modal-preflight",
+      "rail-max",
+      "rail-min",
+      "rows"
+    ],
+    "props": [
+      "y"
+    ]
+  },
+  {
+    "id": "queue-row-5",
+    "reason": "New by design: the Style row (#sel-ui-style) under Theme adds a 57px footer row to the rail.",
+    "states": [
+      "narrow-800"
+    ],
+    "props": [
+      "y"
+    ]
+  },
+  {
+    "id": "queue-row-5-status",
+    "reason": "Wording (a784a50): longer queue headers (Source size, Output size (est.)) wrap to two lines in app-classic.css.",
+    "states": [
+      "drawer",
+      "log",
+      "modal-fallback",
+      "modal-overwrite",
+      "modal-preflight",
+      "rail-max",
+      "rail-min",
+      "rows"
+    ],
+    "props": [
+      "y"
+    ]
+  },
+  {
+    "id": "queue-row-5-status",
+    "reason": "New by design: the Style row (#sel-ui-style) under Theme adds a 57px footer row to the rail.",
+    "states": [
+      "narrow-800"
+    ],
+    "props": [
+      "y"
+    ]
+  },
+  {
+    "id": "queue-row-6",
+    "reason": "Wording (a784a50): longer queue headers (Source size, Output size (est.)) wrap to two lines in app-classic.css.",
+    "states": [
+      "drawer",
+      "log",
+      "modal-fallback",
+      "modal-overwrite",
+      "modal-preflight",
+      "rail-max",
+      "rail-min",
+      "rows"
+    ],
+    "props": [
+      "y"
+    ]
+  },
+  {
+    "id": "queue-row-6",
+    "reason": "New by design: the Style row (#sel-ui-style) under Theme adds a 57px footer row to the rail.",
+    "states": [
+      "narrow-800"
+    ],
+    "props": [
+      "y"
+    ]
+  },
+  {
+    "id": "queue-row-6-status",
+    "reason": "Wording (a784a50): longer queue headers (Source size, Output size (est.)) wrap to two lines in app-classic.css.",
+    "states": [
+      "drawer",
+      "log",
+      "modal-fallback",
+      "modal-overwrite",
+      "modal-preflight",
+      "rail-max",
+      "rail-min",
+      "rows"
+    ],
+    "props": [
+      "y"
+    ]
+  },
+  {
+    "id": "queue-row-6-status",
+    "reason": "New by design: the Style row (#sel-ui-style) under Theme adds a 57px footer row to the rail.",
+    "states": [
+      "narrow-800"
+    ],
+    "props": [
+      "y"
+    ]
+  }
+]
