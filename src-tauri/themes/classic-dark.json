@@ -1,0 +1,11 @@
+{
+  "name": "Classic Dark",
+  "colors": {
+    "background": "#1E1E1E",
+    "surface": "#373737",
+    "text": "#DCDCDC",
+    "primary": "#0078D7",
+    "success": "#4ade80",
+    "error": "#f87171"
+  }
+}

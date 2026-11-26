@@ -76,6 +76,12 @@ pub fn scan_themes_folder(app: &AppHandle) -> Vec<Theme> {
     if !themes.iter().any(|t| t.name == "Monokai") {
         themes.push(monokai_theme());
     }
+    if !themes.iter().any(|t| t.name == "Classic Dark") {
+        themes.push(classic_dark_theme());
+    }
+    if !themes.iter().any(|t| t.name == "Classic Light") {
+        themes.push(classic_light_theme());
+    }
 
     // Ensure themes/ folder exists and write built-in themes if missing
     if !dir.exists() {
@@ -89,6 +95,8 @@ pub fn scan_themes_folder(app: &AppHandle) -> Vec<Theme> {
     write_builtin_if_missing(&dir, "vempire.json", &vempire_theme());
     write_builtin_if_missing(&dir, "creditor.json", &creditor_theme());
     write_builtin_if_missing(&dir, "monokai.json", &monokai_theme());
+    write_builtin_if_missing(&dir, "classic-dark.json", &classic_dark_theme());
+    write_builtin_if_missing(&dir, "classic-light.json", &classic_light_theme());
 
     themes
 }
@@ -350,6 +358,32 @@ fn monokai_theme() -> Theme {
     )
 }
 
+/// Default Dark as shipped before Doublet (2.6.0).
+fn classic_dark_theme() -> Theme {
+    theme_from_core(
+        "Classic Dark",
+        "#1E1E1E", // background
+        "#373737", // surface
+        "#DCDCDC", // text
+        "#0078D7", // primary
+        "#4ade80", // success
+        "#f87171", // error
+    )
+}
+
+/// Default Light as shipped before Doublet (2.6.0).
+fn classic_light_theme() -> Theme {
+    theme_from_core(
+        "Classic Light",
+        "#FFFFFF", // background
+        "#E0E0E0", // surface
+        "#1E1E1E", // text
+        "#0078D7", // primary
+        "#22c55e", // success
+        "#ef4444", // error
+    )
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -519,6 +553,47 @@ mod tests {
     }
 
     #[test]
+    fn classic_themes_hold_the_pre_doublet_defaults() {
+        let dark = classic_dark_theme();
+        assert_eq!(dark.name, "Classic Dark");
+        assert!(holds_previous_colours(
+            &dark,
+            upgrade_for(DEFAULT_DARK_FILE).previous
+        ));
+
+        // Default Light did not change with Doublet, so Classic Light shares
+        // its six colours under its own name.
+        let light = classic_light_theme();
+        assert_eq!(light.name, "Classic Light");
+        assert_eq!(light.colors, default_light_theme().colors);
+    }
+
+    #[test]
+    fn upgrade_pass_leaves_classic_files_alone() {
+        // classic-dark.json holds exactly the colours that mark an unedited
+        // pre-Doublet default-dark.json; the upgrade must not touch it.
+        let dir = scratch_dir("classic");
+        for (file, theme) in [
+            ("classic-dark.json", classic_dark_theme()),
+            ("classic-light.json", classic_light_theme()),
+        ] {
+            write_theme_file(&dir.join(file), &theme);
+        }
+        let before_dark = fs::read_to_string(dir.join("classic-dark.json")).unwrap();
+        let before_light = fs::read_to_string(dir.join("classic-light.json")).unwrap();
+        upgrade_builtin_themes_if_unedited(&dir);
+        assert_eq!(
+            fs::read_to_string(dir.join("classic-dark.json")).unwrap(),
+            before_dark
+        );
+        assert_eq!(
+            fs::read_to_string(dir.join("classic-light.json")).unwrap(),
+            before_light
+        );
+        let _ = fs::remove_dir_all(&dir);
+    }
+
+    #[test]
     fn shipped_json_matches_builtin_fns() {
         let shipped = [
             (
@@ -541,6 +616,14 @@ mod tests {
             (include_str!("../themes/vempire.json"), vempire_theme()),
             (include_str!("../themes/creditor.json"), creditor_theme()),
             (include_str!("../themes/monokai.json"), monokai_theme()),
+            (
+                include_str!("../themes/classic-dark.json"),
+                classic_dark_theme(),
+            ),
+            (
+                include_str!("../themes/classic-light.json"),
+                classic_light_theme(),
+            ),
         ];
         for (json, builtin) in shipped {
             let file: Theme = serde_json::from_str(json).unwrap();

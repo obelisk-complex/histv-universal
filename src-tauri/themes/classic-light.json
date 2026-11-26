@@ -1,0 +1,11 @@
+{
+  "name": "Classic Light",
+  "colors": {
+    "background": "#FFFFFF",
+    "surface": "#E0E0E0",
+    "text": "#1E1E1E",
+    "primary": "#0078D7",
+    "success": "#22c55e",
+    "error": "#ef4444"
+  }
+}
