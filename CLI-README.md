@@ -14,7 +14,7 @@ Yes! Please see the [Sonarr-Radarr Guide](https://github.com/obelisk-complex/his
 
 Download the binary from the [Releases page](https://github.com/obelisk-complex/histv-universal/releases). Place it on your PATH. On Linux/macOS: `chmod +x histv-cli-*`
 
-**Prerequisites:** ffmpeg and ffprobe must be on your PATH. The CLI does not download ffmpeg - install it via your package manager. For Dolby Vision preservation, MP4Box (GPAC) is also required on your PATH (`apt install gpac`, `brew install gpac`, etc.). Without it, DV files fall back to HDR10. HDR10+ preservation works without any extra tools.
+**Prerequisites:** ffmpeg and ffprobe must be on your PATH. The CLI does not download ffmpeg - install it via your package manager. Dolby Vision profile 7, and any Dolby Vision file when your ffmpeg cannot write Dolby Vision itself, also need MP4Box (GPAC) on your PATH (`apt install gpac`, `brew install gpac`, etc.). Without it those files fall back to HDR10. HISTV's own ffmpeg build can write Dolby Vision itself.
 
 <details>
 <summary><strong>Building from source</strong></summary>
@@ -88,10 +88,16 @@ When `--hdr` is active (the default for HDR sources), the CLI automatically pres
 
 | Source | Tools needed | Result |
 |--------|-------------|--------|
-| Dolby Vision (any profile) | MP4Box on PATH | Full DV preservation. Output forced to MP4. |
-| HDR10+ | None | Full dynamic metadata preservation. |
-| DV without MP4Box | None | Falls back to HDR10 base layer. Warning logged. |
+| Dolby Vision profile 5 or 8, libx265 | ffmpeg with native Dolby Vision coding (HISTV's own build) | ffmpeg writes the Dolby Vision data. Audio, subtitles and the MKV container are kept. Profile 5 stays profile 5. |
+| Dolby Vision profile 5, 7 or 8, hardware HEVC encoder | MP4Box on PATH | The hardware encoder is kept and the output is MP4. Profile 5 and 7 are written as profile 8.1. |
+| Dolby Vision profile 7, or profile 5 or 8 with an ffmpeg that cannot write Dolby Vision | MP4Box on PATH | Output is MP4. Profile 5 and 7 are written as profile 8.1. |
+| Dolby Vision without the tools above | None | Falls back to the HDR10 base layer. Warning logged. Profile 5 has no HDR10 base layer, so that fallback does not look right. |
+| HDR10+, libx265 | An ffmpeg whose libx265 can write HDR10+ (HISTV's own build can) | libx265 writes the dynamic metadata. |
+| HDR10+, hardware HEVC encoder | None | The metadata is injected after encoding. |
+| HDR10+, H.264 or AV1 output | None | Static HDR10 only. |
 | HDR10 / HLG | None | Preserved as-is. |
+
+On Linux, a VAAPI encoder is replaced by libx265 for Dolby Vision. See the [main README](README.md#dolby-vision-and-hdr10) for the full routing table.
 
 The dry-run table shows each file's source size, estimated output size, resolution, HDR type (DV8, HDR10+, HDR10, HLG, SDR), source bitrate, and target bitrate. Warnings are logged before encoding starts if any files won't get their best-possible treatment.
 
