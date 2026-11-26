@@ -3135,6 +3135,7 @@
         startCountdown(action, countdown);
       });
 
-      return Promise.all(registrations);
+      // allSettled: one failed registration must not abort start-up.
+      return Promise.allSettled(registrations);
     }
 
