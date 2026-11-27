@@ -459,6 +459,46 @@ pub(crate) fn webp_encoder_args(a: &WebpEncodeArgs<'_>) -> Vec<String> {
     args
 }
 
+/// Base framerate for the output. Individual frame durations are
+/// honoured by writing each frame multiple times proportional to its
+/// duration (frame duplication). 50fps = 20ms per tick, which is the
+/// minimum frame duration in the WebP spec. The encoder compresses
+/// duplicate frames to near-zero cost (identical P-frames).
+const BASE_FPS: f64 = 50.0;
+
+/// Canvas size padded to even dimensions (required by most encoders).
+fn padded_canvas(info: &WebpInfo) -> (u32, u32) {
+    ((info.width + 1) & !1, (info.height + 1) & !1)
+}
+
+/// ffmpeg arguments for the decoder that reads standalone WebP frames
+/// from stdin and writes raw RGBA to stdout.
+///
+/// Frames of an animated WebP can be smaller than the canvas. ffmpeg
+/// would scale every frame to the first frame's size, so each one is
+/// padded to the full canvas instead, top-left aligned: every decoded
+/// frame is then exactly `width * height * 4` bytes and keeps its pixels.
+fn webp_decoder_args(width: u32, height: u32) -> Vec<String> {
+    [
+        "-f",
+        "webp_pipe",
+        "-i",
+        "pipe:0",
+        "-vf",
+        &format!("format=rgba,pad={width}:{height}:0:0:color=black@0"),
+        "-f",
+        "rawvideo",
+        "-pix_fmt",
+        "rgba",
+        "-v",
+        "error",
+        "pipe:1",
+    ]
+    .iter()
+    .map(|s| s.to_string())
+    .collect()
+}
+
 /// Decode an animated WebP file and encode it to a video file.
 ///
 /// Uses two ffmpeg processes:
@@ -508,28 +548,7 @@ pub async fn transcode_animated_webp(
         timing_label,
     ));
 
-    // Base framerate for the output. Individual frame durations are
-    // honoured by writing each frame multiple times proportional to its
-    // duration (frame duplication). 50fps = 20ms per tick, which is the
-    // minimum frame duration in the WebP spec. The encoder compresses
-    // duplicate frames to near-zero cost (identical P-frames).
-    let base_fps: f64 = 50.0;
-    let ms_per_tick: f64 = 1000.0 / base_fps;
-
-    let canvas_w = info.width;
-    let canvas_h = info.height;
-    // Pad to even dimensions (required by most encoders)
-    let padded_w = (canvas_w + 1) & !1;
-    let padded_h = (canvas_h + 1) & !1;
-    let frame_byte_size = (padded_w as usize)
-        .checked_mul(padded_h as usize)
-        .and_then(|v| v.checked_mul(4))
-        .ok_or_else(|| {
-            format!(
-                "Padded canvas dimensions too large: {}x{}",
-                padded_w, padded_h
-            )
-        })?;
+    let (padded_w, padded_h) = padded_canvas(&info);
 
     // ── Spawn the output encoder ──
     let encoder = video_args
@@ -555,18 +574,14 @@ pub async fn transcode_animated_webp(
         threads,
         width: padded_w,
         height: padded_h,
-        fps: base_fps,
+        fps: BASE_FPS,
         output_path,
         hw: &hw,
         size_fix: size_fix.as_ref(),
     });
 
     let mut enc_cmd = crate::ffmpeg::ffmpeg_command();
-    enc_cmd
-        .args(&enc_args)
-        .stdin(std::process::Stdio::piped())
-        .stdout(std::process::Stdio::null())
-        .stderr(std::process::Stdio::piped());
+    enc_cmd.args(&enc_args);
 
     if low_priority {
         #[cfg(target_os = "windows")]
@@ -576,6 +591,54 @@ pub async fn transcode_animated_webp(
             enc_cmd.creation_flags(BELOW_NORMAL | NO_WINDOW);
         }
     }
+
+    let mut dec_cmd = crate::ffmpeg::ffmpeg_command();
+    dec_cmd.args(webp_decoder_args(padded_w, padded_h));
+
+    run_pipeline(
+        &frames,
+        &info,
+        enc_cmd,
+        dec_cmd,
+        low_priority,
+        sink,
+        batch_control,
+    )
+    .await
+}
+
+/// Run the decoder and encoder children of the animated WebP pipeline.
+/// The commands carry their arguments; this sets their stdio.
+async fn run_pipeline(
+    frames: &[AnimFrame],
+    info: &WebpInfo,
+    mut enc_cmd: tokio::process::Command,
+    mut dec_cmd: tokio::process::Command,
+    low_priority: bool,
+    sink: &dyn EventSink,
+    batch_control: &dyn BatchControl,
+) -> Result<TranscodeResult, String> {
+    let ms_per_tick: f64 = 1000.0 / BASE_FPS;
+    let (padded_w, padded_h) = padded_canvas(info);
+    let frame_byte_size = (padded_w as usize)
+        .checked_mul(padded_h as usize)
+        .and_then(|v| v.checked_mul(4))
+        .ok_or_else(|| {
+            format!(
+                "Padded canvas dimensions too large: {}x{}",
+                padded_w, padded_h
+            )
+        })?;
+
+    // Allocate before spawning so an error here cannot leave children behind.
+    let mut canvas = Canvas::new(padded_w, padded_h)?;
+    canvas.clear(); // WebP spec: canvas starts as transparent black
+
+    enc_cmd
+        .kill_on_drop(true)
+        .stdin(std::process::Stdio::piped())
+        .stdout(std::process::Stdio::null())
+        .stderr(std::process::Stdio::piped());
 
     let mut encoder = enc_cmd
         .spawn()
@@ -601,6 +664,8 @@ pub async fn transcode_animated_webp(
         .stdin
         .take()
         .ok_or_else(|| "Could not open encoder stdin".to_string())?;
+    // An undrained stderr pipe fills over a long encode and blocks ffmpeg.
+    let enc_stderr = drain_stderr(encoder.stderr.take());
 
     // ── Spawn a single decoder process for all frames ──
     // Instead of spawning one ffmpeg process per frame, we use a single
@@ -608,21 +673,8 @@ pub async fn transcode_animated_webp(
     // standalone WebP data to its stdin and read the decoded RGBA pixels
     // from its stdout. A background task feeds stdin while the main loop
     // reads stdout, avoiding pipe deadlocks.
-    let mut dec_cmd = crate::ffmpeg::ffmpeg_command();
     dec_cmd
-        .args([
-            "-f",
-            "webp_pipe",
-            "-i",
-            "pipe:0",
-            "-f",
-            "rawvideo",
-            "-pix_fmt",
-            "rgba",
-            "-v",
-            "error",
-            "pipe:1",
-        ])
+        .kill_on_drop(true)
         .stdin(std::process::Stdio::piped())
         .stdout(std::process::Stdio::piped())
         .stderr(std::process::Stdio::piped());
@@ -639,6 +691,7 @@ pub async fn transcode_animated_webp(
         .stdout
         .take()
         .ok_or_else(|| "Could not open decoder stdout".to_string())?;
+    let dec_stderr = drain_stderr(decoder.stderr.take());
 
     // Prepare the frame payloads for the writer task. Each entry is the
     // standalone-wrapped WebP data to write to the decoder's stdin.
@@ -649,7 +702,7 @@ pub async fn transcode_animated_webp(
 
     // Spawn a background task that feeds all frames to the decoder's stdin.
     // This runs concurrently with the stdout reader to avoid deadlock.
-    let writer_handle = tokio::spawn(async move {
+    let mut writer_handle = tokio::spawn(async move {
         let mut stdin = dec_stdin;
         for payload in &frame_payloads {
             if stdin.write_all(payload).await.is_err() {
@@ -661,51 +714,57 @@ pub async fn transcode_animated_webp(
     });
 
     // ── Compositing loop ──
-    let mut canvas = Canvas::new(padded_w, padded_h)?;
-    canvas.clear(); // WebP spec: canvas starts as transparent black
     let total_frames = frames.len();
     let mut decoded_count: u32 = 0;
-    let mut was_cancelled = false;
+    // Set when the loop stops before the last frame.
+    let mut stop: Option<Stop> = None;
 
-    for (i, frame) in frames.iter().enumerate() {
+    'frames: for (i, frame) in frames.iter().enumerate() {
         // Check for cancellation
-        if batch_control.should_cancel_current() || batch_control.should_cancel_all() {
-            was_cancelled = true;
+        if cancel_requested(batch_control) {
+            stop = Some(Stop::Cancelled);
+            break;
+        }
+
+        if frame.width > padded_w || frame.height > padded_h {
+            stop = Some(Stop::Failed(format!(
+                "Frame {} ({}x{}) is larger than the {}x{} canvas",
+                i + 1,
+                frame.width,
+                frame.height,
+                info.width,
+                info.height
+            )));
             break;
         }
 
         // Read decoded RGBA pixels for this frame from the single decoder
-        // process. Each frame produces exactly width * height * 4 bytes.
-        let expected_size = (frame.width as usize)
-            .checked_mul(frame.height as usize)
-            .and_then(|v| v.checked_mul(4))
-            .ok_or_else(|| {
-                format!(
-                    "Frame {} dimensions too large: {}x{}",
+        // process. Each frame arrives padded to the full canvas, with the
+        // frame's own pixels in its top-left corner.
+        let mut padded_rgba = vec![0u8; frame_byte_size];
+        match until_cancelled(read_full(&mut dec_stdout, &mut padded_rgba), batch_control).await {
+            None => {
+                stop = Some(Stop::Cancelled);
+                break;
+            }
+            Some(Err(e)) => {
+                stop = Some(Stop::Failed(format!(
+                    "Frame {} decode read failed: {e}",
+                    i + 1
+                )));
+                break;
+            }
+            Some(Ok(n)) if n < frame_byte_size => {
+                stop = Some(Stop::Failed(format!(
+                    "Could not decode frame {} of {}: the decoder stopped early",
                     i + 1,
-                    frame.width,
-                    frame.height
-                )
-            })?;
-        let decoded_rgba = {
-            let mut buf = vec![0u8; expected_size];
-            let mut read_so_far = 0;
-            while read_so_far < expected_size {
-                match dec_stdout.read(&mut buf[read_so_far..]).await {
-                    Ok(0) => break, // EOF
-                    Ok(n) => read_so_far += n,
-                    Err(e) => {
-                        return Err(format!("Frame {} decode read failed: {e}", i + 1));
-                    }
-                }
+                    total_frames
+                )));
+                break;
             }
-            if read_so_far < expected_size {
-                // Pad with zeros if the decoder produced fewer bytes than expected
-                buf.truncate(read_so_far);
-                buf.resize(expected_size, 0);
-            }
-            buf
-        };
+            Some(Ok(_)) => {}
+        }
+        let decoded_rgba = crop_top_left(&padded_rgba, padded_w, frame.width, frame.height);
 
         // Composite onto canvas
         if !frame.blend {
@@ -732,19 +791,22 @@ pub async fn transcode_animated_webp(
             // This shouldn't happen with correct padding, but handle it safely
             &canvas_bytes[..canvas_bytes.len().min(frame_byte_size)]
         };
-        let mut pipe_broken = false;
         for _ in 0..repeat_count {
-            if let Err(e) = enc_stdin.write_all(write_bytes).await {
-                sink.log(&format!(
-                    "  WARNING: Encoder pipe closed at frame {}: {e}",
-                    i + 1
-                ));
-                pipe_broken = true;
-                break;
+            match until_cancelled(enc_stdin.write_all(write_bytes), batch_control).await {
+                None => {
+                    stop = Some(Stop::Cancelled);
+                    break 'frames;
+                }
+                Some(Err(e)) => {
+                    sink.log(&format!(
+                        "  WARNING: Encoder pipe closed at frame {}: {e}",
+                        i + 1
+                    ));
+                    stop = Some(Stop::EncoderClosed);
+                    break 'frames;
+                }
+                Some(Ok(())) => {}
             }
-        }
-        if pipe_broken {
-            break;
         }
 
         // Disposal for the *current* frame (applies to the next frame's rendering)
@@ -762,29 +824,184 @@ pub async fn transcode_animated_webp(
         sink.file_progress(pct, elapsed_secs, total_secs, None);
     }
 
+    // ── Teardown ──
     // Close encoder stdin to signal EOF
     drop(enc_stdin);
 
-    // Ensure the decoder writer task finishes (it may already have)
-    let _ = writer_handle.await;
-
-    // Clean up the decoder process
+    // Never await the feeder while the decoder can still block it: a
+    // decoder whose stdout nobody reads stops reading its stdin, and the
+    // feeder then waits for ever. Stop the decoder first if the loop ended
+    // early, and close its stdout in every case.
+    if stop.is_some() {
+        let _ = decoder.start_kill();
+    }
+    if matches!(stop, Some(Stop::Cancelled | Stop::Failed(_))) {
+        let _ = encoder.start_kill();
+    }
     drop(dec_stdout);
-    let _ = decoder.wait().await;
+
+    // Each wait below gives way to a cancel; the kill then lets it finish.
+    if until_cancelled(&mut writer_handle, batch_control)
+        .await
+        .is_none()
+    {
+        stop = Some(Stop::Cancelled);
+        let _ = decoder.start_kill();
+        let _ = encoder.start_kill();
+        let _ = writer_handle.await;
+    }
+
+    if until_cancelled(decoder.wait(), batch_control)
+        .await
+        .is_none()
+    {
+        stop = Some(Stop::Cancelled);
+        let _ = decoder.start_kill();
+        let _ = encoder.start_kill();
+    }
+    let dec_status = decoder.wait().await;
 
     // Wait for encoder to finish
+    if until_cancelled(encoder.wait(), batch_control)
+        .await
+        .is_none()
+    {
+        stop = Some(Stop::Cancelled);
+        let _ = encoder.start_kill();
+    }
     let enc_status = encoder
         .wait()
         .await
         .map_err(|e| format!("Encoder wait failed: {e}"))?;
+    // Both children have exited, so their stderr pipes are at EOF.
+    let enc_tail = enc_stderr.await.unwrap_or_default();
+    let dec_tail = dec_stderr.await.unwrap_or_default();
+
+    // A decoder that fails after all frames were read still fails the item.
+    if stop.is_none() {
+        match dec_status {
+            Ok(st) if !st.success() => {
+                stop = Some(Stop::Failed(format!(
+                    "The decoder failed (exit code {})",
+                    st.code().unwrap_or(-1)
+                )));
+            }
+            Err(e) => stop = Some(Stop::Failed(format!("Decoder wait failed: {e}"))),
+            Ok(_) => {}
+        }
+    }
 
     let exit_code = enc_status.code().unwrap_or(-1);
-
+    if exit_code != 0 && !matches!(stop, Some(Stop::Cancelled)) {
+        if let Some(line) = last_line(&enc_tail) {
+            sink.log(&format!("  Encoder ffmpeg: {line}"));
+        }
+    }
+    if let Some(Stop::Failed(msg)) = stop {
+        return Err(match last_line(&dec_tail) {
+            Some(line) => format!("{msg}. ffmpeg said: {line}"),
+            None => msg,
+        });
+    }
     Ok(TranscodeResult {
         exit_code,
-        was_cancelled,
+        was_cancelled: matches!(stop, Some(Stop::Cancelled)),
         frame_count: decoded_count as u64,
     })
+}
+
+/// Why the frame loop of `run_pipeline` stopped early.
+enum Stop {
+    Cancelled,
+    /// The encoder closed its input; its exit code decides the result.
+    EncoderClosed,
+    Failed(String),
+}
+
+/// Bytes of a child's stderr kept for error messages.
+const STDERR_TAIL: usize = 4096;
+
+/// Read a child's stderr to EOF so the child never blocks on a full pipe.
+/// Resolves to the last `STDERR_TAIL` bytes.
+fn drain_stderr(stderr: Option<tokio::process::ChildStderr>) -> tokio::task::JoinHandle<Vec<u8>> {
+    tokio::spawn(async move {
+        let mut tail = Vec::new();
+        let Some(mut stderr) = stderr else {
+            return tail;
+        };
+        let mut buf = [0u8; 4096];
+        while let Ok(n) = stderr.read(&mut buf).await {
+            if n == 0 {
+                break;
+            }
+            tail.extend_from_slice(&buf[..n]);
+            if tail.len() > 2 * STDERR_TAIL {
+                tail.drain(..tail.len() - STDERR_TAIL);
+            }
+        }
+        if tail.len() > STDERR_TAIL {
+            tail.drain(..tail.len() - STDERR_TAIL);
+        }
+        tail
+    })
+}
+
+/// The last non-empty line of a stderr tail (ffmpeg ends progress lines
+/// with `\r`).
+fn last_line(tail: &[u8]) -> Option<String> {
+    String::from_utf8_lossy(tail)
+        .split(['\n', '\r'])
+        .map(str::trim)
+        .rfind(|l| !l.is_empty())
+        .map(str::to_string)
+}
+
+fn cancel_requested(control: &dyn BatchControl) -> bool {
+    control.should_cancel_current() || control.should_cancel_all()
+}
+
+/// Await `fut`, checking for a cancel every 100 ms. Returns `None` if the
+/// user cancels first, so a stalled child cannot make cancel wait.
+async fn until_cancelled<F: std::future::Future>(
+    fut: F,
+    control: &dyn BatchControl,
+) -> Option<F::Output> {
+    tokio::pin!(fut);
+    loop {
+        if cancel_requested(control) {
+            return None;
+        }
+        tokio::select! {
+            out = &mut fut => return Some(out),
+            _ = tokio::time::sleep(std::time::Duration::from_millis(100)) => {}
+        }
+    }
+}
+
+/// The `width` x `height` RGBA rectangle in the top-left corner of a frame
+/// `stride_px` pixels wide. The caller ensures it fits.
+fn crop_top_left(rgba: &[u8], stride_px: u32, width: u32, height: u32) -> Vec<u8> {
+    let row = width as usize * 4;
+    rgba.chunks_exact(stride_px as usize * 4)
+        .take(height as usize)
+        .flat_map(|line| &line[..row])
+        .copied()
+        .collect()
+}
+
+/// Read until `buf` is full or the reader reaches EOF; returns the bytes read.
+async fn read_full(
+    r: &mut (impl tokio::io::AsyncRead + Unpin),
+    buf: &mut [u8],
+) -> std::io::Result<usize> {
+    let mut n = 0;
+    while n < buf.len() {
+        match r.read(&mut buf[n..]).await? {
+            0 => break,
+            k => n += k,
+        }
+    }
+    Ok(n)
 }
 
 /// Result from the animated WebP transcode pipeline.
@@ -1087,6 +1304,296 @@ mod tests {
             pixel[2]
         );
         assert_eq!(pixel[3], 255, "alpha should be 255");
+    }
+
+    #[test]
+    fn last_line_skips_progress_and_blank_lines() {
+        let tail = b"frame=  10 fps=0.0\rframe=  20 fps=9.9\r\nError while encoding\n\n";
+        assert_eq!(last_line(tail).as_deref(), Some("Error while encoding"));
+        assert_eq!(last_line(b"\r\n  \n"), None);
+    }
+
+    // ── Pipeline supervision (stub children) ─────────────────────
+
+    /// Drives `run_pipeline` with `sh -c` stubs in place of ffmpeg.
+    #[cfg(unix)]
+    mod pipeline {
+        use super::*;
+        use crate::test_helpers::{CancellableBatchControl, NoopSink};
+        use std::sync::Arc;
+        use std::time::Duration;
+
+        const W: u32 = 64;
+        const H: u32 = 48;
+        const FRAME_BYTES: usize = (W * H * 4) as usize;
+        const FRAMES: usize = 4;
+        /// Big enough that the feeder cannot finish into the pipe buffers
+        /// alone: 4 x 256 KiB against 64 KiB pipes.
+        const PAYLOAD: usize = 256 * 1024;
+        const WATCHDOG: Duration = Duration::from_secs(20);
+
+        /// Scripts `exec` their last command so a kill reaches the process
+        /// that holds the pipes, as it does for ffmpeg.
+        fn sh(script: &str) -> tokio::process::Command {
+            let mut c = tokio::process::Command::new("sh");
+            c.arg("-c").arg(script).kill_on_drop(true);
+            c
+        }
+
+        fn synthetic() -> (WebpInfo, Vec<AnimFrame>) {
+            let frames: Vec<AnimFrame> = (0..FRAMES)
+                .map(|_| AnimFrame {
+                    x_offset: 0,
+                    y_offset: 0,
+                    width: W,
+                    height: H,
+                    duration_ms: 100,
+                    dispose: false,
+                    blend: false,
+                    data: vec![0x55; PAYLOAD],
+                })
+                .collect();
+            let info = WebpInfo {
+                width: W,
+                height: H,
+                frame_count: FRAMES as u32,
+                total_duration_ms: 100 * FRAMES as u32,
+                loop_count: 0,
+                has_alpha: false,
+            };
+            (info, frames)
+        }
+
+        /// Run the pipeline on its own thread and runtime; fail the test
+        /// instead of hanging the suite if it does not return.
+        fn run_watched(
+            input: (WebpInfo, Vec<AnimFrame>),
+            enc: tokio::process::Command,
+            dec: tokio::process::Command,
+            control: Arc<CancellableBatchControl>,
+        ) -> Result<TranscodeResult, String> {
+            let (tx, rx) = std::sync::mpsc::channel();
+            std::thread::spawn(move || {
+                let (info, frames) = input;
+                let rt = tokio::runtime::Builder::new_current_thread()
+                    .enable_all()
+                    .build()
+                    .unwrap();
+                let r = rt.block_on(run_pipeline(
+                    &frames, &info, enc, dec, false, &NoopSink, &*control,
+                ));
+                let _ = tx.send(r);
+            });
+            rx.recv_timeout(WATCHDOG)
+                .unwrap_or_else(|_| panic!("pipeline did not return within {WATCHDOG:?}"))
+        }
+
+        /// Decoder stub: swallow all input, then emit `n` frames of zeros.
+        fn decoder_emitting(n: usize) -> tokio::process::Command {
+            sh(&format!(
+                "cat >/dev/null; exec head -c {} /dev/zero",
+                n * FRAME_BYTES
+            ))
+        }
+
+        /// Control: healthy stubs complete, so the harness can pass.
+        #[test]
+        fn healthy_stubs_complete() {
+            let r = run_watched(
+                synthetic(),
+                sh("exec cat >/dev/null"),
+                decoder_emitting(FRAMES),
+                Arc::new(CancellableBatchControl::new()),
+            )
+            .expect("healthy pipeline");
+            assert_eq!(r.exit_code, 0);
+            assert!(!r.was_cancelled);
+            assert_eq!(r.frame_count, FRAMES as u64);
+        }
+
+        /// The encoder exits before reading. The decoder (`cat`, which
+        /// like ffmpeg only reads stdin while its stdout drains) still has
+        /// most of the feed to pass through once we stop reading it.
+        #[test]
+        fn encoder_exit_does_not_hang_on_feeder() {
+            let r = run_watched(
+                synthetic(),
+                sh("exit 1"),
+                sh("exec cat"),
+                Arc::new(CancellableBatchControl::new()),
+            );
+            assert!(
+                !matches!(r, Ok(ref t) if t.exit_code == 0),
+                "a dead encoder must not report success"
+            );
+        }
+
+        /// Cancel with the decoder's output unread and the feed unfinished.
+        #[test]
+        fn cancel_does_not_hang_on_feeder() {
+            let control = Arc::new(CancellableBatchControl::new());
+            control
+                .cancel_current
+                .store(true, std::sync::atomic::Ordering::SeqCst);
+            let r = run_watched(
+                synthetic(),
+                sh("exec cat >/dev/null"),
+                sh("exec cat"),
+                control,
+            )
+            .expect("cancel");
+            assert!(r.was_cancelled);
+        }
+
+        /// Cancel while a frame write is blocked on an encoder that has
+        /// stopped reading (a stalled encoder, or one stuck on a full
+        /// stderr pipe).
+        #[test]
+        fn cancel_interrupts_blocked_encoder_write() {
+            let control = Arc::new(CancellableBatchControl::new());
+            let flip = Arc::clone(&control);
+            std::thread::spawn(move || {
+                std::thread::sleep(Duration::from_millis(500));
+                flip.cancel_current
+                    .store(true, std::sync::atomic::Ordering::SeqCst);
+            });
+            let r = run_watched(
+                synthetic(),
+                sh("exec sleep 30"),
+                decoder_emitting(FRAMES),
+                control,
+            )
+            .expect("cancel");
+            assert!(r.was_cancelled);
+        }
+
+        /// A decoder that fails must fail the item, not encode zeroed frames.
+        #[test]
+        fn decoder_failure_is_reported() {
+            let r = run_watched(
+                synthetic(),
+                sh("exec cat >/dev/null"),
+                sh("cat >/dev/null; echo 'Invalid data found' >&2; exit 1"),
+                Arc::new(CancellableBatchControl::new()),
+            );
+            let e = r.err().expect("decoder failure must be an error");
+            assert!(e.contains("Invalid data found"), "{e}");
+        }
+
+        /// Fewer frames than the file has, even with a clean exit.
+        #[test]
+        fn decoder_short_output_is_reported() {
+            let r = run_watched(
+                synthetic(),
+                sh("exec cat >/dev/null"),
+                decoder_emitting(FRAMES - 1),
+                Arc::new(CancellableBatchControl::new()),
+            );
+            assert!(r.is_err(), "missing frames must be an error");
+        }
+
+        /// Every frame arrives but the decoder exits with an error.
+        #[test]
+        fn decoder_exit_status_is_checked() {
+            let r = run_watched(
+                synthetic(),
+                sh("exec cat >/dev/null"),
+                sh(&format!(
+                    "cat >/dev/null; head -c {} /dev/zero; exit 1",
+                    FRAMES * FRAME_BYTES
+                )),
+                Arc::new(CancellableBatchControl::new()),
+            );
+            let e = r.err().expect("decoder exit 1 must be an error");
+            assert!(e.contains("exit code 1"), "{e}");
+        }
+
+        /// Optimised animated WebPs store most frames as small rectangles.
+        /// Fixture, made with ffmpeg's libwebp_anim: a 64x48 blue canvas
+        /// with a 12x12 red square moving right, 10 frames of 100 ms.
+        /// Frames 2-10 are 16 or 18 by 12 pixel rectangles at y=8.
+        #[test]
+        fn sub_rectangle_frames_composite_onto_canvas() {
+            if std::process::Command::new("ffmpeg")
+                .arg("-version")
+                .output()
+                .is_err()
+            {
+                eprintln!("skipped: ffmpeg is not on PATH");
+                return;
+            }
+            let path =
+                Path::new(env!("CARGO_MANIFEST_DIR")).join("tests/fixtures/anim_subrect.webp");
+            let (info, frames) = extract_frames(&path).unwrap();
+            assert_eq!((info.width, info.height, frames.len()), (64, 48, 10));
+            assert!(
+                frames[1..].iter().all(|f| f.width < 64 && f.height < 48),
+                "fixture lost its sub-rectangle frames"
+            );
+
+            let dir = tempfile::tempdir().unwrap();
+            let out = dir.path().join("canvas.rgba");
+            let enc = sh(&format!("exec cat > '{}'", out.display()));
+            let mut dec = tokio::process::Command::new("ffmpeg");
+            dec.args(webp_decoder_args(64, 48)).kill_on_drop(true);
+            let r = run_watched(
+                (info, frames),
+                enc,
+                dec,
+                Arc::new(CancellableBatchControl::new()),
+            )
+            .expect("fixture converts");
+            assert_eq!(r.exit_code, 0);
+
+            // The source frames, as ffmpeg drew them before encoding.
+            const BLUE: [u8; 4] = [0, 0, 254, 255];
+            const RED: [u8; 4] = [253, 0, 0, 255];
+            let raw = std::fs::read(&out).unwrap();
+            // 100 ms frames at 50 fps: each canvas is written 5 times.
+            assert_eq!(raw.len(), 10 * 5 * FRAME_BYTES);
+            for (k, canvas) in raw.chunks_exact(FRAME_BYTES).enumerate() {
+                let n = k / 5;
+                let left = (5 * (n + 1)) & !1;
+                for (p, px) in canvas.chunks_exact(4).enumerate() {
+                    let (x, y) = (p % 64, p / 64);
+                    let red = (8..20).contains(&y) && (left..left + 12).contains(&x);
+                    let want = if red { RED } else { BLUE };
+                    assert_eq!(px, want, "frame {} pixel ({x},{y})", n + 1);
+                }
+            }
+        }
+
+        /// A malformed file whose frame is wider than its canvas fails
+        /// cleanly instead of panicking on the crop.
+        #[test]
+        fn frame_larger_than_canvas_is_an_error() {
+            let (info, mut frames) = synthetic();
+            frames[1].width = W + 2;
+            let r = run_watched(
+                (info, frames),
+                sh("exec cat >/dev/null"),
+                decoder_emitting(FRAMES),
+                Arc::new(CancellableBatchControl::new()),
+            );
+            let e = r.err().expect("oversized frame must be an error");
+            assert!(e.contains("larger than the 64x48 canvas"), "{e}");
+        }
+
+        /// An encoder that writes a lot to stderr before reading stdin
+        /// (ffmpeg's stats and warnings over a long encode) must not stall
+        /// the frame writes.
+        #[test]
+        fn encoder_stderr_is_drained() {
+            let r = run_watched(
+                synthetic(),
+                sh("head -c 1048576 /dev/zero >&2; exec cat >/dev/null"),
+                decoder_emitting(FRAMES),
+                Arc::new(CancellableBatchControl::new()),
+            )
+            .expect("pipeline with a chatty encoder");
+            assert_eq!(r.exit_code, 0);
+            assert_eq!(r.frame_count, FRAMES as u64);
+        }
     }
 
     // ── Property-based tests ─────────────────────────────────────
