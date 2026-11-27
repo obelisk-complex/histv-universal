@@ -12,6 +12,25 @@ use std::sync::atomic::{AtomicU64, Ordering};
 
 static STAGE_COUNTER: AtomicU64 = AtomicU64::new(0);
 
+/// Longest staged or backup file name, in bytes. File systems allow 255;
+/// the rest leaves room for the DV and HDR10+ working names derived from
+/// a staged name (`.histv-dv.mp4`, `.hdr10p.<ext>`).
+const MAX_NAME_BYTES: usize = 240;
+
+/// `name` shortened, if needed, so that `name` + `reserved` bytes fit
+/// MAX_NAME_BYTES, cut on a character boundary.
+fn fit(name: &str, reserved: usize) -> &str {
+    let budget = MAX_NAME_BYTES.saturating_sub(reserved);
+    if name.len() <= budget {
+        return name;
+    }
+    let mut end = budget;
+    while !name.is_char_boundary(end) {
+        end -= 1;
+    }
+    &name[..end]
+}
+
 /// A staged path beside `final_path` that no other encode in any running
 /// HISTV process uses. It keeps the final extension so ffmpeg picks the
 /// same muxer.
@@ -33,17 +52,19 @@ pub fn unique_name(prefix: &str) -> String {
 pub fn backup_path(source: &Path) -> PathBuf {
     let n = STAGE_COUNTER.fetch_add(1, Ordering::Relaxed);
     let name = source.file_name().unwrap_or_default().to_string_lossy();
-    source.with_file_name(format!("{name}.histv-bak-{}-{n}", std::process::id()))
+    let suffix = format!(".histv-bak-{}-{n}", std::process::id());
+    source.with_file_name(format!("{}{suffix}", fit(&name, suffix.len())))
 }
 
 /// `staged_output_path` with the process id and sequence number given.
 pub fn staged_output_path_with(final_path: &Path, pid: u32, n: u64) -> PathBuf {
     let stem = final_path.file_stem().unwrap_or_default().to_string_lossy();
-    let name = match final_path.extension() {
-        Some(ext) => format!("{stem}.histv-tmp-{pid}-{n}.{}", ext.to_string_lossy()),
-        None => format!("{stem}.histv-tmp-{pid}-{n}"),
+    let suffix = match final_path.extension() {
+        Some(ext) => format!(".histv-tmp-{pid}-{n}.{}", ext.to_string_lossy()),
+        None => format!(".histv-tmp-{pid}-{n}"),
     };
-    final_path.with_file_name(name)
+    // The staged name is never shown, so a long stem is simply shortened.
+    final_path.with_file_name(format!("{}{suffix}", fit(&stem, suffix.len())))
 }
 
 /// What to do about a file already at the output path, decided before the
@@ -160,6 +181,33 @@ mod tests {
         assert_eq!(p, Path::new("/out/My Film.v2.histv-tmp-42-7.mkv"));
         let p = staged_output_path_with(Path::new("/out/noext"), 1, 0);
         assert_eq!(p, Path::new("/out/noext.histv-tmp-1-0"));
+    }
+
+    #[test]
+    fn staged_and_backup_names_fit_the_file_name_limit() {
+        // 2 + 3 * 82 = 248 bytes of stem, with 3-byte characters so a cut
+        // at the byte budget would land inside one.
+        let stem = format!("ab{}", "\u{20ac}".repeat(82));
+        assert_eq!(stem.len(), 248);
+        let fin = PathBuf::from(format!("/out/{stem}.mkv"));
+        let a = staged_output_path(&fin);
+        let b = staged_output_path(&fin);
+        assert_ne!(a, b);
+        for p in [&a, &b] {
+            let name = p.file_name().unwrap().to_str().unwrap();
+            // Room is left for the DV / HDR10+ names derived from it.
+            assert!(name.len() <= MAX_NAME_BYTES, "{} bytes", name.len());
+            assert!(name.ends_with(".mkv") && name.contains(".histv-tmp-"));
+            // A derived name still fits the 255-byte limit.
+            let dv = p.with_extension("histv-dv.mp4");
+            assert!(dv.file_name().unwrap().len() <= 255);
+        }
+        let bak = backup_path(&fin);
+        let name = bak.file_name().unwrap().to_str().unwrap();
+        assert!(name.len() <= MAX_NAME_BYTES && name.contains(".histv-bak-"));
+        // Short names are untouched.
+        let short = staged_output_path_with(Path::new("/o/a.mkv"), 1, 2);
+        assert_eq!(short, Path::new("/o/a.histv-tmp-1-2.mkv"));
     }
 
     #[test]

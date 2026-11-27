@@ -623,3 +623,21 @@ fn replace_never_overwrites_a_backup_left_by_an_earlier_crash() {
         b"ORIGINAL FROM A CRASH"
     );
 }
+
+#[test]
+fn a_source_with_a_very_long_name_still_encodes() {
+    setup();
+    let dir = tempfile::tempdir().unwrap();
+    let out = dir.path().join("out");
+    std::fs::create_dir(&out).unwrap();
+    // 236 + ".mkv" = 240 bytes, legal on every desktop filesystem.
+    let stem = format!("STUBSRC-{}", "x".repeat(228));
+    let mut queue = vec![source(&dir.path().join(format!("{stem}.mkv")))];
+    let sink = Sink::default();
+    let ctrl = Control::new(&sink, "yes");
+    let s = settings("folder", &out, "libx264", "h264");
+    let (done, failed, _, _) = run(&sink, &ctrl, &mut queue, &s, local_plan(1));
+
+    assert_eq!((done, failed), (1, 0));
+    assert!(read_string(&out.join(format!("{stem}.mkv"))).starts_with("ENCODED:"));
+}
