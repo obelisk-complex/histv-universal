@@ -392,19 +392,25 @@ fn compute_decisions(
                 },
                 detected_encoders,
             );
-            encoder::decide_encode_strategy(
+            let rc = encoder::RateControlParams {
+                mode: &rate_control_mode,
+                qp_i: args.qp_i,
+                qp_p: args.qp_p,
+                crf_val: args.crf,
+            };
+            let decision = encoder::decide_encode_strategy(
                 item.probe.video_bitrate_mbps,
                 args.bitrate,
                 &item.probe.video_codec,
                 &resolved.codec_family,
-                &encoder::RateControlParams {
-                    mode: &rate_control_mode,
-                    qp_i: args.qp_i,
-                    qp_p: args.qp_p,
-                    crf_val: args.crf,
-                },
+                &rc,
                 args.peak_multiplier,
-            )
+            );
+            if encoder::compat_needs_reencode(args.compat, &item.probe.video_codec) {
+                encoder::reencode_instead_of_copy(decision, &rc)
+            } else {
+                decision
+            }
         })
         .collect()
 }

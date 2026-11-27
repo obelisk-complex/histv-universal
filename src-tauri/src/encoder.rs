@@ -630,6 +630,88 @@ pub fn decide_encode_strategy(
     }
 }
 
+/// Compatibility mode promises H.264 video, so a source in any other codec
+/// is re-encoded even when its bitrate would allow a stream copy.
+pub fn compat_needs_reencode(compat: bool, source_codec: &str) -> bool {
+    compat && source_codec != "h264"
+}
+
+/// Turn a stream copy into a quality-based encode, for a stream that must be
+/// re-encoded anyway (tone-mapping, Compatibility mode). CRF or CQP, not
+/// VBR: the source is already at or below the bitrate threshold, and VBR
+/// would risk a bigger file. Other decisions are returned unchanged.
+pub fn reencode_instead_of_copy(
+    decision: EncodeDecision,
+    rc: &RateControlParams,
+) -> EncodeDecision {
+    if !matches!(decision, EncodeDecision::Copy) {
+        decision
+    } else if rc.mode.eq_ignore_ascii_case("CRF") {
+        EncodeDecision::Crf {
+            crf: rc.crf_val,
+            qi_fallback: rc.qp_i,
+            qp_fallback: rc.qp_p,
+        }
+    } else {
+        EncodeDecision::Cqp {
+            qi: rc.qp_i,
+            qp: rc.qp_p,
+        }
+    }
+}
+
+#[cfg(test)]
+mod compat_h264_tests {
+    use super::*;
+    use crate::test_helpers::{default_encoders, default_settings};
+
+    const RC: RateControlParams = RateControlParams {
+        mode: "QP",
+        qp_i: 20,
+        qp_p: 22,
+        crf_val: 20,
+    };
+
+    #[test]
+    fn compat_beats_an_explicit_codec() {
+        let mut settings = default_settings();
+        settings.compatibility_mode = true;
+        settings.codec_family = "hevc".into();
+        let r = resolve_file_settings("hevc", "mkv", &settings, &default_encoders());
+        assert_eq!(r.codec_family, "h264");
+    }
+
+    #[test]
+    fn compat_reencodes_a_small_non_h264_source() {
+        for codec in ["hevc", "av1", "vp9"] {
+            assert!(compat_needs_reencode(true, codec), "{codec}");
+            let d = decide_encode_strategy(2.0, 4.0, codec, "h264", &RC, 1.5);
+            assert!(matches!(d, EncodeDecision::Copy), "precondition");
+            let d = reencode_instead_of_copy(d, &RC);
+            assert!(matches!(d, EncodeDecision::Cqp { qi: 20, qp: 22 }), "{d:?}");
+        }
+        assert!(!compat_needs_reencode(true, "h264"));
+        assert!(!compat_needs_reencode(false, "hevc"));
+    }
+
+    #[test]
+    fn reencode_keeps_decisions_that_already_encode() {
+        let vbr = EncodeDecision::Vbr {
+            target_bps: 4_000_000,
+            peak_bps: 6_000_000,
+        };
+        assert!(matches!(
+            reencode_instead_of_copy(vbr, &RC),
+            EncodeDecision::Vbr { .. }
+        ));
+        let crf = RateControlParams { mode: "CRF", ..RC };
+        assert!(matches!(
+            reencode_instead_of_copy(EncodeDecision::Copy, &crf),
+            EncodeDecision::Crf { crf: 20, .. }
+        ));
+    }
+}
+
 // ── ffmpeg capability probe ─────────────────────────────────────
 
 /// What the resolved ffmpeg can do beyond listing encoders. Set by
@@ -1823,12 +1905,12 @@ pub fn resolve_file_settings(
     settings: &BatchSettings,
     detected_encoders: &[EncoderInfo],
 ) -> ResolvedFileSettings {
-    // 1. Codec family — explicit --codec override takes priority, then
-    //    compatibility mode, then per-file detection from the source codec.
+    // 1. Codec family — compatibility mode (always H.264) takes priority,
+    //    then an explicit --codec override, then per-file detection.
     let codec_family = match settings.codec_family.as_str() {
+        _ if settings.compatibility_mode => "h264",
         "h264" => "h264",
         "hevc" => "hevc",
-        _ if settings.compatibility_mode => "h264",
         _ if source_video_codec == "h264" => "h264",
         _ if source_video_codec == "hevc" || source_video_codec == "h265" => "hevc",
         _ if settings.preserve_av1 && source_video_codec == "av1" => "av1",
@@ -2368,7 +2450,20 @@ async fn handle_post_encode(
         let audio_overhead = item_duration_secs * 500.0 * num_audio;
         let deadband = ((video_overhead + audio_overhead + 10_240.0) * 1.2) as u64;
 
-        if dst_size > src_size + deadband && src_size > 0 && !is_image_source && !is_copy {
+        let larger = dst_size > src_size + deadband && src_size > 0 && !is_image_source && !is_copy;
+        // Remuxing the source would put its non-H.264 video back.
+        let keep_for_compat =
+            compat_needs_reencode(settings.compatibility_mode, &queue[idx].probe.video_codec);
+        if larger && keep_for_compat {
+            let msg = format!(
+                "  Output larger than source ({:.1}MB vs {:.1}MB): kept, Compatibility mode needs H.264 video",
+                dst_size as f64 / 1_000_000.0,
+                src_size as f64 / 1_000_000.0,
+            );
+            sink.log(&msg);
+            write_log(log_writer, &msg);
+        }
+        if larger && !keep_for_compat {
             sink.log(&format!(
                 "  WARNING: Output ({:.1}MB) larger than source ({:.1}MB) - remuxing source instead",
                 dst_size as f64 / 1_000_000.0, src_size as f64 / 1_000_000.0,
@@ -2887,25 +2982,21 @@ async fn encode_single_file(
     );
 
     // Tonemapping requires re-encoding — a stream copy can't apply a
-    // `-vf` filter. If the decision is Copy but we've committed to an
-    // HDR→SDR tonemap, ffmpeg will reject `-c:v copy -vf zscale=...`
-    // with EINVAL (exit 234). Override to a quality-based transcode so
-    // the user's SDR request is actually honoured. We use CRF/CQP
-    // (not VBR) because the source is already at/below the bitrate
-    // threshold — VBR would risk inflating the file.
-    let decision = if tonemap_filter.is_some() && matches!(decision, EncodeDecision::Copy) {
-        if settings.rate_control_mode.eq_ignore_ascii_case("CRF") {
-            EncodeDecision::Crf {
-                crf: settings.crf_val,
-                qi_fallback: settings.qp_i,
-                qp_fallback: settings.qp_p,
-            }
-        } else {
-            EncodeDecision::Cqp {
-                qi: settings.qp_i,
-                qp: settings.qp_p,
-            }
-        }
+    // `-vf` filter (ffmpeg rejects `-c:v copy -vf zscale=...` with EINVAL,
+    // exit 234). Compatibility mode promises H.264, so a small HEVC, AV1 or
+    // VP9 source cannot be copied either.
+    let decision = if tonemap_filter.is_some()
+        || compat_needs_reencode(settings.compatibility_mode, &item_video_codec)
+    {
+        reencode_instead_of_copy(
+            decision,
+            &RateControlParams {
+                mode: &settings.rate_control_mode,
+                qp_i: settings.qp_i,
+                qp_p: settings.qp_p,
+                crf_val: settings.crf_val,
+            },
+        )
     } else {
         decision
     };

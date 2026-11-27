@@ -31,6 +31,8 @@ function computeTargetBitrateLabel(item, settings) {
   const mbps = item.videoBitrateMbps;
   const sourceCodec = (item.videoCodec || '').toLowerCase();
   const isNonCopyable = ['gif', 'apng', 'mjpeg', 'webp'].includes(sourceCodec);
+  // Compatibility mode promises H.264: other codecs are never copied.
+  const mustEncode = isNonCopyable || (settings.compat && sourceCodec !== 'h264');
 
   if (!mbps || mbps <= 0) {
     if (settings.rcMode === 'CRF') {
@@ -44,7 +46,7 @@ function computeTargetBitrateLabel(item, settings) {
   if (mbps > settings.target * 1.15 || (mbps > settings.target && !isSameCodec)) {
     const peak = (settings.target * settings.peakMultiplier).toFixed(1).replace(/\.0$/, '');
     return `${settings.target}/${peak}Mbps (VBR)`;
-  } else if (isNonCopyable) {
+  } else if (mustEncode) {
     if (settings.rcMode === 'CRF') {
       return `CRF ${settings.crf}`;
     }
@@ -65,6 +67,8 @@ function computeEstimatedSize(item, settings) {
   const mbps = item.videoBitrateMbps;
   const sourceCodec = (item.videoCodec || '').toLowerCase();
   const isNonCopyable = ['gif', 'apng', 'mjpeg', 'webp'].includes(sourceCodec);
+  // Compatibility mode promises H.264: other codecs are never copied.
+  const mustEncode = isNonCopyable || (settings.compat && sourceCodec !== 'h264');
 
   if (!mbps || mbps <= 0) {
     if (!item.videoCodec) return null;
@@ -76,7 +80,7 @@ function computeEstimatedSize(item, settings) {
   if (mbps > settings.target * 1.15 || (mbps > settings.target && !isSameCodec)) {
     const estimatedBytes = (settings.target * 1000000 * item.durationSecs) / 8;
     return { bytes: Math.round(estimatedBytes), approx: false };
-  } else if (isNonCopyable) {
+  } else if (mustEncode) {
     return { bytes: item.sourceBytes, approx: true };
   } else if (mbps > 0) {
     return { bytes: item.sourceBytes, approx: false };

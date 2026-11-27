@@ -470,6 +470,25 @@ describe('computeEstimatedSize target family', () => {
   });
 });
 
+describe('Compatibility mode always encodes to H.264', () => {
+  const settings = {
+    target: 4, compat: true, preserveAv1: false,
+    rcMode: 'QP', qpI: 20, qpP: 22, crf: 20, peakMultiplier: 1.5,
+  };
+  const small = { sourceBytes: 50000000, videoBitrateMbps: 2.0, durationSecs: 200 };
+
+  it('does not copy a small non-H.264 source', () => {
+    for (const videoCodec of ['hevc', 'av1', 'vp9']) {
+      assert.equal(computeTargetBitrateLabel({ ...small, videoCodec }, settings), 'CQP (20/22)', videoCodec);
+      assert.equal(computeEstimatedSize({ ...small, videoCodec }, settings).approx, true, videoCodec);
+    }
+  });
+
+  it('still copies a small H.264 source', () => {
+    assert.equal(computeTargetBitrateLabel({ ...small, videoCodec: 'h264' }, settings), 'Copy');
+  });
+});
+
 // ── resolveEncoderFamilies ─────────────────────────────────────
 
 describe('resolveEncoderFamilies', () => {
@@ -577,6 +596,17 @@ describe('app.js inline copies match lib.js', () => {
 
   it('resolveFamilyForCodec is identical', () => {
     assert.equal(extract(app, 'resolveFamilyForCodec'), extract(lib, 'resolveFamilyForCodec'));
+  });
+
+  // app.js has extra comments in these two; compare the code lines only.
+  const code = (src) => src.split('\n').filter((l) => !l.startsWith('//')).join('\n');
+
+  it('computeTargetBitrateLabel is identical', () => {
+    assert.equal(code(extract(app, 'computeTargetBitrateLabel')), code(extract(lib, 'computeTargetBitrateLabel')));
+  });
+
+  it('computeEstimatedSize is identical', () => {
+    assert.equal(code(extract(app, 'computeEstimatedSize')), code(extract(lib, 'computeEstimatedSize')));
   });
 
   it('normaliseUiStyle is identical', () => {
