@@ -387,3 +387,95 @@ fn hardware_failure_that_stops_the_batch_is_counted_as_failed() {
         "{logs:?}"
     );
 }
+
+fn wave(n: usize) -> Option<Vec<WaveItem>> {
+    Some(vec![WaveItem::Wave {
+        indices: (0..n).collect(),
+        total_stage_bytes: 1000 * n as u64,
+    }])
+}
+
+fn read_string(p: &Path) -> String {
+    String::from_utf8_lossy(&std::fs::read(p).unwrap()).into_owned()
+}
+
+#[test]
+fn same_base_name_in_one_wave_reaches_its_own_folder() {
+    setup();
+    let dir = tempfile::tempdir().unwrap();
+    let (a, b) = (dir.path().join("a"), dir.path().join("b"));
+    std::fs::create_dir(&a).unwrap();
+    std::fs::create_dir(&b).unwrap();
+    let mut queue = vec![
+        source(&a.join("STUBSRC-same.mkv")),
+        source(&b.join("STUBSRC-same.mkv")),
+    ];
+
+    let sink = Sink::default();
+    let ctrl = Control::new(&sink, "yes");
+    let s = settings("replace", dir.path(), "libx264", "h264");
+    let (done, failed, _, _) = run(&sink, &ctrl, &mut queue, &s, wave(2));
+
+    assert_eq!((done, failed), (2, 0));
+    // Each encode was made from its own staged input (index 0 and 1).
+    let got_a = read_string(&a.join("STUBSRC-same.mkv"));
+    let got_b = read_string(&b.join("STUBSRC-same.mkv"));
+    assert!(
+        got_a.starts_with("ENCODED:") && got_a.ends_with("/0_STUBSRC-same.mkv"),
+        "{got_a}"
+    );
+    assert!(
+        got_b.starts_with("ENCODED:") && got_b.ends_with("/1_STUBSRC-same.mkv"),
+        "{got_b}"
+    );
+    assert_eq!(names(&a), vec!["STUBSRC-same.mkv"]);
+    assert_eq!(names(&b), vec!["STUBSRC-same.mkv"]);
+}
+
+#[test]
+fn cancel_all_keeps_encodes_already_finished_in_the_wave() {
+    setup();
+    let dir = tempfile::tempdir().unwrap();
+    let mut queue = vec![
+        source(&dir.path().join("STUBSRC-keep1.mkv")),
+        source(&dir.path().join("STUBSRC-SLOW-keep2.mkv")),
+    ];
+
+    let sink = Sink {
+        cancel_on_status: Some("[2/2]".into()),
+        ..Sink::default()
+    };
+    let ctrl = Control::new(&sink, "yes");
+    let s = settings("beside", dir.path(), "libx264", "h264");
+    let (done, _, _, cancelled) = run(&sink, &ctrl, &mut queue, &s, wave(2));
+
+    assert!(cancelled);
+    assert_eq!(done, 1);
+    assert_eq!(queue[0].status, QueueItemStatus::Done);
+    let kept = read_string(&dir.path().join("output").join("STUBSRC-keep1.mkv"));
+    assert!(kept.starts_with("ENCODED:"), "{kept}");
+    assert_eq!(names(&dir.path().join("output")), vec!["STUBSRC-keep1.mkv"]);
+}
+
+#[test]
+fn failed_delivery_is_not_marked_done() {
+    setup();
+    let dir = tempfile::tempdir().unwrap();
+    let mut queue = vec![source(&dir.path().join("STUBSRC-undeliverable.mkv"))];
+    // A file where the "output" folder should go: the copy back must fail.
+    std::fs::write(dir.path().join("output"), b"not a folder").unwrap();
+
+    let sink = Sink::default();
+    let ctrl = Control::new(&sink, "yes");
+    let s = settings("beside", dir.path(), "libx264", "h264");
+    let (done, failed, _, _) = run(&sink, &ctrl, &mut queue, &s, wave(1));
+
+    assert_eq!((done, failed), (0, 1));
+    assert_eq!(queue[0].status, QueueItemStatus::Failed);
+    let logs = sink.logs.lock().unwrap();
+    let kept = logs
+        .iter()
+        .find_map(|l| l.trim().strip_prefix("Encoded file preserved at: "))
+        .expect("no preserved-at line");
+    assert!(read_string(Path::new(kept)).starts_with("ENCODED:"));
+}

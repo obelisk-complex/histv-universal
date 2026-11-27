@@ -20,6 +20,13 @@ pub fn staged_output_path(final_path: &Path) -> PathBuf {
     staged_output_path_with(final_path, std::process::id(), n)
 }
 
+/// A name no other call in any running HISTV process returns, for a
+/// per-file folder: `<prefix>-<pid>-<n>`.
+pub fn unique_name(prefix: &str) -> String {
+    let n = STAGE_COUNTER.fetch_add(1, Ordering::Relaxed);
+    format!("{prefix}-{}-{n}", std::process::id())
+}
+
 /// `staged_output_path` with the process id and sequence number given.
 pub fn staged_output_path_with(final_path: &Path, pid: u32, n: u64) -> PathBuf {
     let stem = final_path.file_stem().unwrap_or_default().to_string_lossy();
