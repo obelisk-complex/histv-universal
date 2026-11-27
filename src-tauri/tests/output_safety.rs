@@ -215,6 +215,7 @@ fn source(path: &Path) -> QueueItem {
             video_rotation: 0,
             video_fps: 25.0,
             subtitle_stream_count: 0,
+            subtitle_codecs: Vec::new(),
         },
     }
 }
