@@ -746,7 +746,14 @@ async fn run_pipeline(
                 )));
                 break;
             }
-            // A short read leaves the zero-filled remainder in place.
+            Some(Ok(n)) if n < expected_size => {
+                stop = Some(Stop::Failed(format!(
+                    "Could not decode frame {} of {}: the decoder stopped early",
+                    i + 1,
+                    total_frames
+                )));
+                break;
+            }
             Some(Ok(_)) => {}
         }
 
@@ -843,7 +850,7 @@ async fn run_pipeline(
         let _ = decoder.start_kill();
         let _ = encoder.start_kill();
     }
-    let _ = decoder.wait().await;
+    let dec_status = decoder.wait().await;
 
     // Wait for encoder to finish
     if until_cancelled(encoder.wait(), batch_control)
@@ -859,7 +866,21 @@ async fn run_pipeline(
         .map_err(|e| format!("Encoder wait failed: {e}"))?;
     // Both children have exited, so their stderr pipes are at EOF.
     let enc_tail = enc_stderr.await.unwrap_or_default();
-    let _ = dec_stderr.await;
+    let dec_tail = dec_stderr.await.unwrap_or_default();
+
+    // A decoder that fails after all frames were read still fails the item.
+    if stop.is_none() {
+        match dec_status {
+            Ok(st) if !st.success() => {
+                stop = Some(Stop::Failed(format!(
+                    "The decoder failed (exit code {})",
+                    st.code().unwrap_or(-1)
+                )));
+            }
+            Err(e) => stop = Some(Stop::Failed(format!("Decoder wait failed: {e}"))),
+            Ok(_) => {}
+        }
+    }
 
     let exit_code = enc_status.code().unwrap_or(-1);
     if exit_code != 0 && !matches!(stop, Some(Stop::Cancelled)) {
@@ -868,7 +889,10 @@ async fn run_pipeline(
         }
     }
     if let Some(Stop::Failed(msg)) = stop {
-        return Err(msg);
+        return Err(match last_line(&dec_tail) {
+            Some(line) => format!("{msg}. ffmpeg said: {line}"),
+            None => msg,
+        });
     }
     Ok(TranscodeResult {
         exit_code,
@@ -1408,6 +1432,44 @@ mod tests {
             let r = run_watched(sh("exec sleep 30"), decoder_emitting(FRAMES), control)
                 .expect("cancel");
             assert!(r.was_cancelled);
+        }
+
+        /// A decoder that fails must fail the item, not encode zeroed frames.
+        #[test]
+        fn decoder_failure_is_reported() {
+            let r = run_watched(
+                sh("exec cat >/dev/null"),
+                sh("cat >/dev/null; echo 'Invalid data found' >&2; exit 1"),
+                Arc::new(CancellableBatchControl::new()),
+            );
+            let e = r.err().expect("decoder failure must be an error");
+            assert!(e.contains("Invalid data found"), "{e}");
+        }
+
+        /// Fewer frames than the file has, even with a clean exit.
+        #[test]
+        fn decoder_short_output_is_reported() {
+            let r = run_watched(
+                sh("exec cat >/dev/null"),
+                decoder_emitting(FRAMES - 1),
+                Arc::new(CancellableBatchControl::new()),
+            );
+            assert!(r.is_err(), "missing frames must be an error");
+        }
+
+        /// Every frame arrives but the decoder exits with an error.
+        #[test]
+        fn decoder_exit_status_is_checked() {
+            let r = run_watched(
+                sh("exec cat >/dev/null"),
+                sh(&format!(
+                    "cat >/dev/null; head -c {} /dev/zero; exit 1",
+                    FRAMES * FRAME_BYTES
+                )),
+                Arc::new(CancellableBatchControl::new()),
+            );
+            let e = r.err().expect("decoder exit 1 must be an error");
+            assert!(e.contains("exit code 1"), "{e}");
         }
 
         /// An encoder that writes a lot to stderr before reading stdin
