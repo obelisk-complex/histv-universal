@@ -136,6 +136,46 @@ pub fn source_was_replaced(source: &Path, output: &Path) -> bool {
     !source.exists() || is_same_file(source, output)
 }
 
+/// Identity of the file at a path: device and inode on Unix, size and
+/// modification time elsewhere.
+fn file_id(p: &Path) -> Option<(u64, u128)> {
+    let m = std::fs::metadata(p).ok()?;
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::MetadataExt;
+        Some((m.dev(), m.ino() as u128))
+    }
+    #[cfg(not(unix))]
+    {
+        let t = m
+            .modified()
+            .ok()?
+            .duration_since(std::time::UNIX_EPOCH)
+            .ok()?;
+        Some((m.len(), t.as_nanos()))
+    }
+}
+
+/// A queued file as it was when the batch started. A path counts as this
+/// source only while the original file is still there: once the batch has
+/// installed an encode at that path (Replace mode, same name), the file
+/// there is that item's output, not its source.
+pub struct QueuedSource {
+    path: PathBuf,
+    id: Option<(u64, u128)>,
+}
+
+impl QueuedSource {
+    pub fn new(path: PathBuf) -> Self {
+        let id = file_id(&path);
+        Self { path, id }
+    }
+
+    pub fn is_at(&self, p: &Path) -> bool {
+        self.id.is_some() && is_same_file(p, &self.path) && file_id(p) == self.id
+    }
+}
+
 /// Removes a staged encode when dropped, unless `keep` was called. Held
 /// for the whole encode, so every early return (failure, cancel, launch
 /// error) cleans up the staged file and only that file.
@@ -308,6 +348,21 @@ mod tests {
         assert!(source_was_replaced(&out, &out)); // same name as output
         std::fs::write(&src, b"source").unwrap();
         assert!(!source_was_replaced(&src, &out)); // kept beside it
+    }
+
+    #[test]
+    fn queued_source_stops_counting_once_an_encode_replaces_it() {
+        let dir = tempfile::tempdir().unwrap();
+        let src = dir.path().join("movie.mkv");
+        std::fs::write(&src, b"source").unwrap();
+        let queued = QueuedSource::new(src.clone());
+        assert!(queued.is_at(&src));
+        assert!(!queued.is_at(&dir.path().join("other.mkv")));
+
+        let staged = dir.path().join("movie.histv-tmp-1-1.mkv");
+        std::fs::write(&staged, b"encoded").unwrap();
+        install(&staged, &src).unwrap();
+        assert!(!queued.is_at(&src));
     }
 
     #[test]

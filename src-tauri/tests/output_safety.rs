@@ -644,3 +644,56 @@ fn a_source_with_a_very_long_name_still_encodes() {
     assert_eq!((done, failed), (1, 0));
     assert!(read_string(&out.join(format!("{stem}.mkv"))).starts_with("ENCODED:"));
 }
+
+#[test]
+fn local_output_never_replaces_another_queued_source() {
+    setup();
+    let dir = tempfile::tempdir().unwrap();
+    let out = dir.path().join("out");
+    std::fs::create_dir(&out).unwrap();
+    let queued_source = out.join("STUBSRC-q.mkv");
+    let mut queue = vec![
+        source(&dir.path().join("STUBSRC-q.avi")),
+        source(&queued_source),
+    ];
+    let sink = Sink::default();
+    let ctrl = Control::new(&sink, "yes");
+    let s = settings("folder", &out, "libx264", "h264");
+    let (done, failed, _, _) = run(&sink, &ctrl, &mut queue, &s, local_plan(2));
+
+    // Item 1 would overwrite item 2's source; item 2 would overwrite itself.
+    assert_eq!((done, failed), (0, 2));
+    assert!(ctrl.prompts.lock().unwrap().is_empty());
+    assert_eq!(std::fs::read(&queued_source).unwrap(), vec![b's'; 1000]);
+}
+
+/// Replace mode, [x.mkv, x.avi]: x.mkv is replaced by its own encode first,
+/// so x.mkv is no longer a source and x.avi's output is an ordinary
+/// overwrite question, not a refusal.
+fn replaced_in_place_is_no_longer_a_source(plan: Option<Vec<WaveItem>>, name: &str) {
+    setup();
+    let dir = tempfile::tempdir().unwrap();
+    let mut queue = vec![
+        source(&dir.path().join(format!("{name}.mkv"))),
+        source(&dir.path().join(format!("{name}.avi"))),
+    ];
+    let sink = Sink::default();
+    let ctrl = Control::new(&sink, "yes");
+    let s = settings("replace", dir.path(), "libx264", "h264");
+    let (done, failed, _, _) = run(&sink, &ctrl, &mut queue, &s, plan);
+
+    assert_eq!((done, failed), (2, 0), "{:?}", sink.logs.lock().unwrap());
+    assert_eq!(ctrl.prompts.lock().unwrap().len(), 1);
+    let mkv = read_string(&dir.path().join(format!("{name}.mkv")));
+    assert!(mkv.ends_with(&format!("{name}.avi")), "{mkv}");
+}
+
+#[test]
+fn local_replace_in_place_is_no_longer_a_source() {
+    replaced_in_place_is_no_longer_a_source(local_plan(2), "STUBSRC-inplace-local");
+}
+
+#[test]
+fn wave_replace_in_place_is_no_longer_a_source() {
+    replaced_in_place_is_no_longer_a_source(wave(2), "STUBSRC-inplace-wave");
+}

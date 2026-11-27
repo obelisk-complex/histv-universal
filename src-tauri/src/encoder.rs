@@ -2720,6 +2720,7 @@ async fn encode_single_file(
     sink: &dyn EventSink,
     batch_control: &dyn BatchControl,
     batch_stderr_log: Option<SharedStderrLog>,
+    queued_sources: &[crate::output_install::QueuedSource],
 ) -> EncodeFileResult {
     // Extract read-only data from the queue item. Cloning individual
     // fields avoids a full QueueItem clone (which includes audio_streams
@@ -2981,16 +2982,25 @@ async fn encode_single_file(
     // Overwrite check. Replace mode replacing its own source needs no
     // prompt, but any other file at the output path does (for example
     // movie.mkv beside a source movie.avi). Outside replace mode, an output
-    // path that is the source itself is refused.
-    let existing = crate::output_install::existing_output_action(
+    // path that is the source itself is refused, and so, in every mode, is
+    // another queued file's source, whatever the overwrite answer.
+    let existing = crate::output_install::delivery_action(
         output_file.exists(),
         crate::output_install::is_same_file(&output_file, std::path::Path::new(&item_full_path)),
+        is_other_queued_source(&output_file, idx, queued_sources),
         is_replace_mode,
     );
-    if existing == crate::output_install::ExistingOutput::IsSource {
-        let msg = "  ERROR: The output would replace the source file. Choose a different output folder, or use Replace mode.";
-        sink.log(msg);
-        write_log(log_writer, msg);
+    let refusal = match existing {
+        crate::output_install::ExistingOutput::IsSource => Some("  ERROR: The output would replace the source file. Choose a different output folder, or use Replace mode.".to_string()),
+        crate::output_install::ExistingOutput::IsOtherSource => Some(format!(
+            "  ERROR: The output {} is the source of another file in this batch.",
+            output_file.display()
+        )),
+        _ => None,
+    };
+    if let Some(msg) = refusal {
+        sink.log(&msg);
+        write_log(log_writer, &msg);
         queue[idx].status = QueueItemStatus::Failed;
         sink.queue_item_updated(idx, "Failed");
         return EncodeFileResult::Failed;
@@ -4002,10 +4012,11 @@ enum Delivery {
 /// local encode is kept and its path logged.
 #[allow(clippy::too_many_arguments)]
 async fn deliver_staged_output(
+    idx: usize,
     item: &QueueItem,
     original_path: &str,
     out_dir: &std::path::Path,
-    other_sources: &[&std::path::Path],
+    queued_sources: &[crate::output_install::QueuedSource],
     settings: &BatchSettings,
     preserve_hdr: bool,
     detected_encoders: &[EncoderInfo],
@@ -4052,9 +4063,7 @@ async fn deliver_staged_output(
     let action = crate::output_install::delivery_action(
         dest.exists(),
         crate::output_install::is_same_file(&dest, remote),
-        other_sources
-            .iter()
-            .any(|p| crate::output_install::is_same_file(&dest, p)),
+        is_other_queued_source(&dest, idx, queued_sources),
         is_replace,
     );
     match action {
@@ -4129,6 +4138,19 @@ async fn deliver_staged_output(
             Delivery::Failed
         }
     }
+}
+
+/// True when `path` is still the original source of a queued file other
+/// than `idx`.
+fn is_other_queued_source(
+    path: &std::path::Path,
+    idx: usize,
+    queued_sources: &[crate::output_install::QueuedSource],
+) -> bool {
+    queued_sources
+        .iter()
+        .enumerate()
+        .any(|(i, s)| i != idx && s.is_at(path))
 }
 
 /// Replace a remote source with its encode: copy the encode beside the
@@ -4376,9 +4398,9 @@ async fn run_encode_loop_impl(
 
     // Every queued file's own path, taken before staging rewrites the paths
     // of remote files: a delivery must never replace another file's source.
-    let source_paths: Vec<std::path::PathBuf> = queue
+    let queued_sources: Vec<crate::output_install::QueuedSource> = queue
         .iter()
-        .map(|q| std::path::PathBuf::from(&q.full_path))
+        .map(|q| crate::output_install::QueuedSource::new(q.full_path.clone().into()))
         .collect();
 
     // Declared outside the loop so cleanup runs even if `break 'outer` exits early.
@@ -4507,6 +4529,7 @@ async fn run_encode_loop_impl(
                 sink,
                 batch_control,
                 batch_stderr_log.clone(),
+                &queued_sources,
             )
             .await;
 
@@ -4525,17 +4548,12 @@ async fn run_encode_loop_impl(
         for (idx, mut ctx, original_path) in wave_staging_contexts.drain(..) {
             if let Some(pos) = awaiting_delivery.iter().position(|(i, _)| *i == idx) {
                 let (_, out_dir) = awaiting_delivery.swap_remove(pos);
-                let other_sources: Vec<&std::path::Path> = source_paths
-                    .iter()
-                    .enumerate()
-                    .filter(|(i, _)| *i != idx)
-                    .map(|(_, p)| p.as_path())
-                    .collect();
                 let delivery = deliver_staged_output(
+                    idx,
                     &queue[idx],
                     &original_path,
                     &out_dir,
-                    &other_sources,
+                    &queued_sources,
                     settings,
                     preserve_hdr,
                     detected_encoders,
