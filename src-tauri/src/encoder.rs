@@ -4540,6 +4540,18 @@ async fn run_ffmpeg_with_progress(
     let exit_code = exit_status.map(|s| s.code().unwrap_or(-1)).unwrap_or(-1);
     let final_frames = progress.frames();
 
+    let cancelled =
+        ctx.batch_control.should_cancel_current() || ctx.batch_control.should_cancel_all();
+    if exit_code != 0 && !cancelled {
+        let tail = progress.stderr_tail();
+        if !tail.is_empty() {
+            ctx.sink.log("  Last messages from ffmpeg:");
+            for line in tail {
+                ctx.sink.log(&format!("    {line}"));
+            }
+        }
+    }
+
     Ok(FfmpegRunResult {
         exit_code,
         was_cancelled_current: ctx.batch_control.should_cancel_current(),
@@ -5288,6 +5300,8 @@ pub async fn execute_post_action(action: &str) -> Result<(), String> {
 pub struct FfmpegProgress {
     pub progress_secs: Arc<std::sync::atomic::AtomicU64>,
     pub frame_count: Arc<std::sync::atomic::AtomicU64>,
+    /// ffmpeg's last stderr lines, shown in the log if the run fails.
+    pub stderr_tail: Arc<std::sync::Mutex<std::collections::VecDeque<String>>>,
 }
 
 impl Default for FfmpegProgress {
@@ -5301,6 +5315,7 @@ impl FfmpegProgress {
         Self {
             progress_secs: Arc::new(std::sync::atomic::AtomicU64::new(0)),
             frame_count: Arc::new(std::sync::atomic::AtomicU64::new(0)),
+            stderr_tail: Arc::default(),
         }
     }
 
@@ -5315,6 +5330,12 @@ impl FfmpegProgress {
     /// Read the current frame count.
     pub fn frames(&self) -> u64 {
         self.frame_count.load(std::sync::atomic::Ordering::Relaxed)
+    }
+
+    /// ffmpeg's last stderr lines, oldest first.
+    pub fn stderr_tail(&self) -> Vec<String> {
+        let tail = self.stderr_tail.lock().unwrap_or_else(|e| e.into_inner());
+        tail.iter().cloned().collect()
     }
 }
 
@@ -5422,6 +5443,36 @@ fn progress_field<'a>(line: &'a [u8], key: &[u8]) -> Option<&'a str> {
     std::str::from_utf8(&line[start..end]).ok()
 }
 
+/// How many of ffmpeg's last stderr lines a failed run shows in the log.
+const STDERR_TAIL_LINES: usize = 12;
+/// Longest stderr line shown in the log; the rest is cut off.
+const STDERR_LINE_SHOWN: usize = 500;
+/// Longest stderr line the reader buffers before the line ends.
+const STDERR_LINE_BUFFERED: usize = 8192;
+
+/// Keep a finished stderr line for the failure log, skipping the progress
+/// lines that would otherwise push the error messages out.
+fn remember_stderr_line(tail: &mut std::collections::VecDeque<String>, line: &[u8]) {
+    let is_progress =
+        progress_field(line, b"time=").is_some() && progress_field(line, b"speed=").is_some();
+    if is_progress {
+        return;
+    }
+    let mut text = String::from_utf8_lossy(line).into_owned();
+    if text.len() > STDERR_LINE_SHOWN {
+        let mut cut = STDERR_LINE_SHOWN;
+        while !text.is_char_boundary(cut) {
+            cut -= 1;
+        }
+        text.truncate(cut);
+        text.push_str("...");
+    }
+    if tail.len() == STDERR_TAIL_LINES {
+        tail.pop_front();
+    }
+    tail.push_back(text);
+}
+
 #[cfg(test)]
 mod stderr_reader_tests {
     use super::*;
@@ -5437,6 +5488,24 @@ mod stderr_reader_tests {
             Some("12345")
         );
         assert_eq!(progress_field(b"size=1kB", b"frame="), None);
+    }
+
+    #[test]
+    fn stderr_tail_keeps_the_last_messages_without_progress_lines() {
+        let mut tail = std::collections::VecDeque::new();
+        remember_stderr_line(&mut tail, b"Input #0, matroska,webm, from 'in.mkv':");
+        for i in 0..STDERR_TAIL_LINES {
+            remember_stderr_line(&mut tail, format!("message {i}").as_bytes());
+        }
+        remember_stderr_line(
+            &mut tail,
+            b"frame=   25 fps=0.0 q=-0.0 size=N/A time=00:00:01.00 bitrate=N/A speed= 620x",
+        );
+        remember_stderr_line(&mut tail, &[b'x'; 2000]);
+        assert_eq!(tail.len(), STDERR_TAIL_LINES);
+        assert_eq!(tail[0], "message 1", "oldest lines drop out first");
+        assert!(!tail.iter().any(|l| l.contains("speed=")), "{tail:?}");
+        assert!(tail.back().unwrap().len() <= STDERR_LINE_SHOWN + 3);
     }
 }
 
@@ -5462,6 +5531,7 @@ pub fn spawn_stderr_reader(
     };
     let progress_secs = Arc::clone(&progress.progress_secs);
     let frames = Arc::clone(&progress.frame_count);
+    let stderr_tail = Arc::clone(&progress.stderr_tail);
     let label = label.to_owned();
 
     std::thread::spawn(move || {
@@ -5508,9 +5578,13 @@ pub fn spawn_stderr_reader(
                                 {
                                     frames.store(fc, std::sync::atomic::Ordering::Relaxed);
                                 }
+                                remember_stderr_line(
+                                    &mut stderr_tail.lock().unwrap_or_else(|e| e.into_inner()),
+                                    &line_buf,
+                                );
                                 line_buf.clear();
                             }
-                        } else {
+                        } else if line_buf.len() < STDERR_LINE_BUFFERED {
                             line_buf.push(byte);
                         }
                     }
