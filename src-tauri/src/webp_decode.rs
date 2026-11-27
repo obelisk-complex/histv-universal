@@ -459,6 +459,39 @@ pub(crate) fn webp_encoder_args(a: &WebpEncodeArgs<'_>) -> Vec<String> {
     args
 }
 
+/// Base framerate for the output. Individual frame durations are
+/// honoured by writing each frame multiple times proportional to its
+/// duration (frame duplication). 50fps = 20ms per tick, which is the
+/// minimum frame duration in the WebP spec. The encoder compresses
+/// duplicate frames to near-zero cost (identical P-frames).
+const BASE_FPS: f64 = 50.0;
+
+/// Canvas size padded to even dimensions (required by most encoders).
+fn padded_canvas(info: &WebpInfo) -> (u32, u32) {
+    ((info.width + 1) & !1, (info.height + 1) & !1)
+}
+
+/// ffmpeg arguments for the decoder that reads standalone WebP frames
+/// from stdin and writes raw RGBA to stdout.
+fn webp_decoder_args() -> Vec<String> {
+    [
+        "-f",
+        "webp_pipe",
+        "-i",
+        "pipe:0",
+        "-f",
+        "rawvideo",
+        "-pix_fmt",
+        "rgba",
+        "-v",
+        "error",
+        "pipe:1",
+    ]
+    .iter()
+    .map(|s| s.to_string())
+    .collect()
+}
+
 /// Decode an animated WebP file and encode it to a video file.
 ///
 /// Uses two ffmpeg processes:
@@ -508,28 +541,7 @@ pub async fn transcode_animated_webp(
         timing_label,
     ));
 
-    // Base framerate for the output. Individual frame durations are
-    // honoured by writing each frame multiple times proportional to its
-    // duration (frame duplication). 50fps = 20ms per tick, which is the
-    // minimum frame duration in the WebP spec. The encoder compresses
-    // duplicate frames to near-zero cost (identical P-frames).
-    let base_fps: f64 = 50.0;
-    let ms_per_tick: f64 = 1000.0 / base_fps;
-
-    let canvas_w = info.width;
-    let canvas_h = info.height;
-    // Pad to even dimensions (required by most encoders)
-    let padded_w = (canvas_w + 1) & !1;
-    let padded_h = (canvas_h + 1) & !1;
-    let frame_byte_size = (padded_w as usize)
-        .checked_mul(padded_h as usize)
-        .and_then(|v| v.checked_mul(4))
-        .ok_or_else(|| {
-            format!(
-                "Padded canvas dimensions too large: {}x{}",
-                padded_w, padded_h
-            )
-        })?;
+    let (padded_w, padded_h) = padded_canvas(&info);
 
     // ── Spawn the output encoder ──
     let encoder = video_args
@@ -555,18 +567,14 @@ pub async fn transcode_animated_webp(
         threads,
         width: padded_w,
         height: padded_h,
-        fps: base_fps,
+        fps: BASE_FPS,
         output_path,
         hw: &hw,
         size_fix: size_fix.as_ref(),
     });
 
     let mut enc_cmd = crate::ffmpeg::ffmpeg_command();
-    enc_cmd
-        .args(&enc_args)
-        .stdin(std::process::Stdio::piped())
-        .stdout(std::process::Stdio::null())
-        .stderr(std::process::Stdio::piped());
+    enc_cmd.args(&enc_args);
 
     if low_priority {
         #[cfg(target_os = "windows")]
@@ -576,6 +584,49 @@ pub async fn transcode_animated_webp(
             enc_cmd.creation_flags(BELOW_NORMAL | NO_WINDOW);
         }
     }
+
+    let mut dec_cmd = crate::ffmpeg::ffmpeg_command();
+    dec_cmd.args(webp_decoder_args());
+
+    run_pipeline(
+        &frames,
+        &info,
+        enc_cmd,
+        dec_cmd,
+        low_priority,
+        sink,
+        batch_control,
+    )
+    .await
+}
+
+/// Run the decoder and encoder children of the animated WebP pipeline.
+/// The commands carry their arguments; this sets their stdio.
+async fn run_pipeline(
+    frames: &[AnimFrame],
+    info: &WebpInfo,
+    mut enc_cmd: tokio::process::Command,
+    mut dec_cmd: tokio::process::Command,
+    low_priority: bool,
+    sink: &dyn EventSink,
+    batch_control: &dyn BatchControl,
+) -> Result<TranscodeResult, String> {
+    let ms_per_tick: f64 = 1000.0 / BASE_FPS;
+    let (padded_w, padded_h) = padded_canvas(info);
+    let frame_byte_size = (padded_w as usize)
+        .checked_mul(padded_h as usize)
+        .and_then(|v| v.checked_mul(4))
+        .ok_or_else(|| {
+            format!(
+                "Padded canvas dimensions too large: {}x{}",
+                padded_w, padded_h
+            )
+        })?;
+
+    enc_cmd
+        .stdin(std::process::Stdio::piped())
+        .stdout(std::process::Stdio::null())
+        .stderr(std::process::Stdio::piped());
 
     let mut encoder = enc_cmd
         .spawn()
@@ -608,21 +659,7 @@ pub async fn transcode_animated_webp(
     // standalone WebP data to its stdin and read the decoded RGBA pixels
     // from its stdout. A background task feeds stdin while the main loop
     // reads stdout, avoiding pipe deadlocks.
-    let mut dec_cmd = crate::ffmpeg::ffmpeg_command();
     dec_cmd
-        .args([
-            "-f",
-            "webp_pipe",
-            "-i",
-            "pipe:0",
-            "-f",
-            "rawvideo",
-            "-pix_fmt",
-            "rgba",
-            "-v",
-            "error",
-            "pipe:1",
-        ])
         .stdin(std::process::Stdio::piped())
         .stdout(std::process::Stdio::piped())
         .stderr(std::process::Stdio::piped());
