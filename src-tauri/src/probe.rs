@@ -29,6 +29,10 @@ pub struct ProbeResult {
     pub video_rotation: i32,
     pub video_fps: f64,
     pub subtitle_stream_count: u32,
+    /// Codec of each subtitle stream, in stream order (`hdmv_pgs_subtitle`,
+    /// `subrip`, ...).
+    #[serde(default)]
+    pub subtitle_codecs: Vec<String>,
 }
 
 /// Run ffprobe with the given arguments and return trimmed stdout.
@@ -116,6 +120,7 @@ pub async fn probe_file(file_path: &str, sink: &dyn EventSink) -> Result<ProbeRe
                     30.0
                 },
                 subtitle_stream_count: 0,
+                subtitle_codecs: Vec::new(),
             });
         }
         // Fall through to normal probe if RIFF parse fails
@@ -160,12 +165,14 @@ pub async fn probe_file(file_path: &str, sink: &dyn EventSink) -> Result<ProbeRe
     let mut video_rotation: i32 = 0;
     let mut video_fps: f64 = 0.0;
     let mut subtitle_stream_count: u32 = 0;
+    let mut subtitle_codecs: Vec<String> = Vec::new();
 
     if let Some(streams_arr) = streams {
         for s in streams_arr {
             let codec_type = s["codec_type"].as_str().unwrap_or("");
             if codec_type == "subtitle" {
                 subtitle_stream_count += 1;
+                subtitle_codecs.push(s["codec_name"].as_str().unwrap_or("").to_string());
             }
 
             if codec_type == "video" && video_codec.is_empty() {
@@ -428,6 +435,7 @@ pub async fn probe_file(file_path: &str, sink: &dyn EventSink) -> Result<ProbeRe
         video_rotation,
         video_fps,
         subtitle_stream_count,
+        subtitle_codecs,
     })
 }
 

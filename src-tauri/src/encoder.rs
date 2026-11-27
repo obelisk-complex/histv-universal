@@ -2395,31 +2395,8 @@ async fn handle_post_encode(
             ];
             remux_args.extend(audio_map);
 
-            if ext == "mp4" {
-                // MP4: convert text subs to mov_text; ffmpeg silently
-                // skips bitmap subs (PGS, DVB) that can't be converted.
-                remux_args.extend([
-                    "-map".into(),
-                    "0:s?".into(),
-                    "-c:v".into(),
-                    "copy".into(),
-                    "-c:s".into(),
-                    "mov_text".into(),
-                ]);
-            } else {
-                remux_args.extend([
-                    "-map".into(),
-                    "0:s?".into(),
-                    "-c:v".into(),
-                    "copy".into(),
-                    "-c:s".into(),
-                    "copy".into(),
-                    "-map".into(),
-                    "0:t?".into(),
-                    "-c:t".into(),
-                    "copy".into(),
-                ]);
-            }
+            remux_args.extend(["-c:v".into(), "copy".into()]);
+            remux_args.extend(subtitle_args(&queue[idx].probe.subtitle_codecs, ext == "mp4").0);
             remux_args.extend(audio_codec);
             if ext == "mp4" && queue[idx].probe.dovi_profile.is_some() {
                 // Keep the source's DV configuration record (movenc drops it otherwise).
@@ -3396,6 +3373,14 @@ async fn encode_single_file(
             )
         };
 
+        if !is_image_source {
+            let (_, notes) = subtitle_args(&queue[idx].probe.subtitle_codecs, ext == "mp4");
+            for note in notes {
+                sink.log(&note);
+                write_log(log_writer, &note);
+            }
+        }
+
         let ffmpeg_args = assemble_ffmpeg_args(&FfmpegAssemblyParts {
             input_path: &item_full_path,
             output_path: &output_str,
@@ -3416,6 +3401,7 @@ async fn encode_single_file(
                 && matches!(source_ext.as_str(), "mp4" | "m4v" | "mov"),
             legacy_vsync: ffmpeg_caps().no_fps_mode,
             input_video_bsf: dovi_input_bsf(is_dovi_native, is_copy_decision, &item_video_codec),
+            subtitle_codecs: &queue[idx].probe.subtitle_codecs,
         });
 
         let cmd_line = format!("ffmpeg {}", ffmpeg_args.join(" "));
@@ -3697,6 +3683,7 @@ async fn encode_single_file(
                         keep_source_tag: false,
                         legacy_vsync: ffmpeg_caps().no_fps_mode,
                         input_video_bsf: None,
+                        subtitle_codecs: &queue[idx].probe.subtitle_codecs,
                     });
 
                     let sw_cmd = format!("ffmpeg {}", sw_args.join(" "));
@@ -4814,6 +4801,90 @@ pub async fn probe_crf_viability(
     }
 }
 
+/// Subtitle and attachment arguments for the output, from the codec of each
+/// source subtitle stream in order, and a log line for each track left out.
+fn subtitle_args(subtitle_codecs: &[String], mp4: bool) -> (Vec<String>, Vec<String>) {
+    if mp4 && !subtitle_codecs.is_empty() {
+        // MP4 holds only mov_text, and ffmpeg refuses to turn picture
+        // subtitles (PGS, DVD, DVB) into text: map the text tracks alone.
+        let mut args = Vec::new();
+        let mut notes = Vec::new();
+        for (i, codec) in subtitle_codecs.iter().enumerate() {
+            if converts_to_mov_text(codec) {
+                args.extend(["-map".to_string(), format!("0:s:{i}")]);
+            } else {
+                notes.push(format!(
+                    "  Subtitle track {} ({}): not kept, MP4 holds only text subtitles",
+                    i + 1,
+                    subtitle_format_name(codec)
+                ));
+            }
+        }
+        if !args.is_empty() {
+            args.extend(["-c:s".to_string(), "mov_text".to_string()]);
+        }
+        return (args, notes);
+    }
+    let args: Vec<&str> = if mp4 {
+        // Codecs unknown: map whatever is there.
+        vec!["-map", "0:s?", "-c:s", "mov_text"]
+    } else {
+        vec![
+            "-map",
+            "0:s?",
+            "-c:s",
+            "copy",
+            // Keep every subtitle track's flags as in the source. Any
+            // -disposition option stops ffmpeg marking the first track
+            // "default" when none is, and "+0" changes no flag.
+            "-disposition:s:0",
+            "+0",
+            // Attachments (fonts for styled ASS subtitles).
+            "-map",
+            "0:t?",
+            "-c:t",
+            "copy",
+        ]
+    };
+    (args.into_iter().map(String::from).collect(), Vec::new())
+}
+
+/// Text subtitle codecs ffmpeg can convert to MP4's mov_text.
+fn converts_to_mov_text(codec: &str) -> bool {
+    matches!(
+        codec,
+        "mov_text"
+            | "subrip"
+            | "srt"
+            | "ass"
+            | "ssa"
+            | "webvtt"
+            | "text"
+            | "microdvd"
+            | "mpl2"
+            | "jacosub"
+            | "pjs"
+            | "realtext"
+            | "sami"
+            | "stl"
+            | "subviewer"
+            | "subviewer1"
+            | "vplayer"
+            | "eia_608"
+    )
+}
+
+/// Short name of a subtitle format for the log.
+fn subtitle_format_name(codec: &str) -> &str {
+    match codec {
+        "hdmv_pgs_subtitle" => "PGS",
+        "dvd_subtitle" => "DVD",
+        "dvb_subtitle" => "DVB",
+        "" => "unknown format",
+        other => other,
+    }
+}
+
 #[cfg(test)]
 mod subtitle_policy_tests {
     use super::*;
@@ -4852,6 +4923,54 @@ mod subtitle_policy_tests {
         assert!(
             !args.iter().any(|a| a == "0:t?"),
             "MP4 has no attachments: {args:?}"
+        );
+    }
+
+    fn codecs(list: &[&str]) -> Vec<String> {
+        list.iter().map(|c| c.to_string()).collect()
+    }
+
+    #[test]
+    fn mp4_leaves_out_picture_subtitles_and_converts_text_ones() {
+        let subs = codecs(&["hdmv_pgs_subtitle", "subrip", "dvd_subtitle", "ass"]);
+        let (args, notes) = subtitle_args(&subs, true);
+        assert_eq!(
+            args,
+            ["-map", "0:s:1", "-map", "0:s:3", "-c:s", "mov_text"],
+            "{args:?}"
+        );
+        assert_eq!(
+            notes,
+            [
+                "  Subtitle track 1 (PGS): not kept, MP4 holds only text subtitles",
+                "  Subtitle track 3 (DVD): not kept, MP4 holds only text subtitles",
+            ]
+        );
+    }
+
+    #[test]
+    fn mp4_with_only_picture_subtitles_maps_none() {
+        let (args, notes) = subtitle_args(&codecs(&["dvb_subtitle"]), true);
+        assert!(args.is_empty(), "{args:?}");
+        assert_eq!(notes.len(), 1);
+    }
+
+    #[test]
+    fn subtitle_codecs_reach_the_encode_command() {
+        let subs = codecs(&["hdmv_pgs_subtitle", "subrip"]);
+        let args = assemble_ffmpeg_args(&FfmpegAssemblyParts {
+            input_path: "in.mkv",
+            output_path: "out.mp4",
+            video_args: &["-c:v", "libx264"],
+            pix_fmt: "yuv420p",
+            codec_family: "h264",
+            subtitle_codecs: &subs,
+            ..Default::default()
+        });
+        assert!(has_pair(&args, "-map", "0:s:1"), "{args:?}");
+        assert!(
+            !args.iter().any(|a| a == "0:s?" || a == "0:s:0"),
+            "{args:?}"
         );
     }
 }
@@ -4895,6 +5014,8 @@ struct FfmpegAssemblyParts<'a> {
     /// Bitstream filters applied to the mapped video stream before it is
     /// decoded (`dovi_input_bsf`).
     input_video_bsf: Option<&'a str>,
+    /// Codec of each source subtitle stream, in order (`subtitle_args`).
+    subtitle_codecs: &'a [String],
 }
 
 /// Colour metadata to embed in the ffmpeg output. Only needed for
@@ -5064,35 +5185,7 @@ fn assemble_ffmpeg_args_for(
             args.extend(vec!["-pix_fmt".into(), parts.pix_fmt.to_string()]);
         }
         args.extend_from_slice(parts.audio_codec_args);
-        // Subtitle handling: MP4 only supports mov_text (timed text).
-        // Using `-c:s mov_text` converts text-based subs (SRT, ASS) and
-        // causes ffmpeg to silently skip bitmap subs (PGS, DVB) that
-        // cannot be converted. MKV supports all subtitle codecs as-is.
-        if parts.output_path.ends_with(".mp4") {
-            args.extend(vec![
-                "-map".into(),
-                "0:s?".into(),
-                "-c:s".into(),
-                "mov_text".into(),
-            ]);
-        } else {
-            args.extend(vec![
-                "-map".into(),
-                "0:s?".into(),
-                "-c:s".into(),
-                "copy".into(),
-                // Keep every subtitle track's flags as in the source. Any
-                // -disposition option stops ffmpeg marking the first track
-                // "default" when none is, and "+0" changes no flag.
-                "-disposition:s:0".into(),
-                "+0".into(),
-                // Attachments (fonts for styled ASS subtitles).
-                "-map".into(),
-                "0:t?".into(),
-                "-c:t".into(),
-                "copy".into(),
-            ]);
-        }
+        args.extend(subtitle_args(parts.subtitle_codecs, parts.output_path.ends_with(".mp4")).0);
     }
 
     // MP4-specific muxing flags
@@ -6666,6 +6759,7 @@ mod tests {
             keep_source_tag: false,
             legacy_vsync: false,
             input_video_bsf: None,
+            subtitle_codecs: &[],
         });
         assert!(args.contains(&"-tag:v".to_string()));
         assert!(args.contains(&"hvc1".to_string()));
@@ -6694,6 +6788,7 @@ mod tests {
             keep_source_tag: false,
             legacy_vsync: false,
             input_video_bsf: None,
+            subtitle_codecs: &[],
         });
         assert!(!args.contains(&"-tag:v".to_string()));
         assert!(!args.contains(&"hvc1".to_string()));
@@ -6723,6 +6818,7 @@ mod tests {
             keep_source_tag: false,
             legacy_vsync: false,
             input_video_bsf: None,
+            subtitle_codecs: &[],
         });
         assert!(!args.contains(&"-tag:v".to_string()));
         assert!(!args.contains(&"hvc1".to_string()));
@@ -6751,6 +6847,7 @@ mod tests {
             keep_source_tag: false,
             legacy_vsync: false,
             input_video_bsf: None,
+            subtitle_codecs: &[],
         });
         assert!(args.contains(&"-c:s".to_string()));
         assert!(args.contains(&"mov_text".to_string()));
@@ -6787,6 +6884,7 @@ mod tests {
             keep_source_tag: false,
             legacy_vsync: false,
             input_video_bsf: None,
+            subtitle_codecs: &[],
         });
         assert!(args.contains(&"-c:s".to_string()));
         assert!(args.contains(&"copy".to_string()));
@@ -6819,6 +6917,7 @@ mod tests {
             keep_source_tag: false,
             legacy_vsync: false,
             input_video_bsf: None,
+            subtitle_codecs: &[],
         });
         assert!(args.contains(&"-vf".to_string()));
         assert!(args.iter().any(|a| a.contains("tonemap=hable")));
@@ -6856,6 +6955,7 @@ mod tests {
             keep_source_tag: false,
             legacy_vsync: false,
             input_video_bsf: None,
+            subtitle_codecs: &[],
         });
     }
 
@@ -7622,6 +7722,7 @@ mod tests {
             keep_source_tag: false,
             legacy_vsync: false,
             input_video_bsf: None,
+            subtitle_codecs: &[],
         });
 
         // hw_device_init args must precede -i
@@ -7667,6 +7768,7 @@ mod tests {
             keep_source_tag: false,
             legacy_vsync: false,
             input_video_bsf: None,
+            subtitle_codecs: &[],
         });
         assert!(
             args.iter().any(|a| a == "-init_hw_device"),
@@ -7713,6 +7815,7 @@ mod tests {
             keep_source_tag: false,
             legacy_vsync: false,
             input_video_bsf: None,
+            subtitle_codecs: &[],
         });
 
         // -vaapi_device must precede -i
@@ -7758,6 +7861,7 @@ mod tests {
             keep_source_tag: false,
             legacy_vsync: false,
             input_video_bsf: None,
+            subtitle_codecs: &[],
         });
 
         // VAAPI must always have -vaapi_device in args. If the render
@@ -7800,6 +7904,7 @@ mod tests {
             keep_source_tag: false,
             legacy_vsync: false,
             input_video_bsf: None,
+            subtitle_codecs: &[],
         });
 
         // When tonemap is present, can't use hwaccel decode (tonemap is CPU)
@@ -7842,6 +7947,7 @@ mod tests {
             keep_source_tag: false,
             legacy_vsync: false,
             input_video_bsf: None,
+            subtitle_codecs: &[],
         });
 
         assert!(!args.iter().any(|a| a == "-vaapi_device"));
@@ -7874,6 +7980,7 @@ mod tests {
             keep_source_tag: false,
             legacy_vsync: false,
             input_video_bsf: None,
+            subtitle_codecs: &[],
         });
 
         assert!(!args.iter().any(|a| a == "-vaapi_device"));
@@ -7912,6 +8019,7 @@ mod tests {
             keep_source_tag: false,
             legacy_vsync: false,
             input_video_bsf: None,
+            subtitle_codecs: &[],
         });
 
         let vf_pos = args.iter().position(|a| a == "-vf").unwrap();
@@ -7960,6 +8068,7 @@ mod tests {
             keep_source_tag: false,
             legacy_vsync: false,
             input_video_bsf: None,
+            subtitle_codecs: &[],
         });
 
         let vf_pos = args.iter().position(|a| a == "-vf").unwrap();
@@ -8010,6 +8119,7 @@ mod tests {
             keep_source_tag: false,
             legacy_vsync: false,
             input_video_bsf: None,
+            subtitle_codecs: &[],
         });
 
         // Must use hwaccel decode for 10-bit VAAPI
@@ -8077,6 +8187,7 @@ mod tests {
             keep_source_tag: false,
             legacy_vsync: false,
             input_video_bsf: None,
+            subtitle_codecs: &[],
         });
 
         let vf_pos = args.iter().position(|a| a == "-vf").unwrap();
@@ -8117,6 +8228,7 @@ mod tests {
             keep_source_tag: false,
             legacy_vsync: false,
             input_video_bsf: None,
+            subtitle_codecs: &[],
         });
 
         let vf_pos = args.iter().position(|a| a == "-vf").unwrap();
@@ -8161,6 +8273,7 @@ mod tests {
             keep_source_tag: false,
             legacy_vsync: false,
             input_video_bsf: None,
+            subtitle_codecs: &[],
         });
 
         let vf_pos = args.iter().position(|a| a == "-vf").unwrap();
@@ -8209,6 +8322,7 @@ mod tests {
             keep_source_tag: false,
             legacy_vsync: false,
             input_video_bsf: None,
+            subtitle_codecs: &[],
         });
 
         assert!(
@@ -8254,6 +8368,7 @@ mod tests {
             keep_source_tag: false,
             legacy_vsync: false,
             input_video_bsf: None,
+            subtitle_codecs: &[],
         });
 
         assert!(
@@ -8300,6 +8415,7 @@ mod tests {
             keep_source_tag: false,
             legacy_vsync: false,
             input_video_bsf: None,
+            subtitle_codecs: &[],
         });
 
         assert!(
@@ -8332,6 +8448,7 @@ mod tests {
             keep_source_tag: false,
             legacy_vsync: false,
             input_video_bsf: None,
+            subtitle_codecs: &[],
         });
 
         assert!(args
@@ -8416,6 +8533,7 @@ mod tests {
             keep_source_tag: false,
             legacy_vsync: false,
             input_video_bsf: None,
+            subtitle_codecs: &[],
         });
 
         assert!(
