@@ -2217,6 +2217,58 @@ enum EncodeFileResult {
     CancelledCurrent,
     /// User cancelled the entire batch (cancel-all / break 'outer).
     CancelledAll,
+    /// Encode failed and the batch must stop: the hardware encoder failed
+    /// and the software fallback was declined, failed or could not start.
+    FailedStopBatch,
+}
+
+/// Running totals for the batch summary.
+#[derive(Debug, Default, Clone, Copy, PartialEq, Eq)]
+struct BatchCounts {
+    done: u32,
+    failed: u32,
+    skipped: u32,
+}
+
+/// Add one file's result to the totals. Returns true when the batch must
+/// stop after this file.
+fn tally(result: &EncodeFileResult, counts: &mut BatchCounts) -> bool {
+    match result {
+        EncodeFileResult::Done => counts.done += 1,
+        EncodeFileResult::Failed => counts.failed += 1,
+        EncodeFileResult::Skipped => counts.skipped += 1,
+        EncodeFileResult::CancelledCurrent => {}
+        EncodeFileResult::CancelledAll => return true,
+        EncodeFileResult::FailedStopBatch => {
+            counts.failed += 1;
+            return true;
+        }
+    }
+    false
+}
+
+#[cfg(test)]
+mod tally_tests {
+    use super::*;
+
+    #[test]
+    fn every_failure_is_counted_and_stops_are_reported() {
+        let mut c = BatchCounts::default();
+        assert!(!tally(&EncodeFileResult::Done, &mut c));
+        assert!(!tally(&EncodeFileResult::Failed, &mut c));
+        assert!(!tally(&EncodeFileResult::Skipped, &mut c));
+        assert!(!tally(&EncodeFileResult::CancelledCurrent, &mut c));
+        assert!(tally(&EncodeFileResult::FailedStopBatch, &mut c));
+        assert!(tally(&EncodeFileResult::CancelledAll, &mut c));
+        assert_eq!(
+            c,
+            BatchCounts {
+                done: 1,
+                failed: 2,
+                skipped: 1
+            }
+        );
+    }
 }
 
 /// A work unit in the wave-aware encode loop: either a single local file
@@ -3780,17 +3832,14 @@ async fn encode_single_file(
                             }
                             queue[idx].status = QueueItemStatus::Failed;
                             sink.queue_item_updated(idx, "Failed");
-                            // Original code: break 'outer after SW fallback failure.
-                            // Return CancelledAll to trigger the same outer break.
-                            return EncodeFileResult::CancelledAll;
+                            return EncodeFileResult::FailedStopBatch;
                         }
                         Err(e) => {
                             sink.log(&format!("  ERROR: Could not launch fallback: {e}"));
                             write_log(log_writer, &format!("  ERROR: Fallback launch failed: {e}"));
                             queue[idx].status = QueueItemStatus::Failed;
                             sink.queue_item_updated(idx, "Failed");
-                            // Original code: break 'outer after fallback launch failure.
-                            return EncodeFileResult::CancelledAll;
+                            return EncodeFileResult::FailedStopBatch;
                         }
                         Ok(r) => {
                             final_frame_count = Some(r.frame_count);
@@ -3804,8 +3853,7 @@ async fn encode_single_file(
                     }
                     queue[idx].status = QueueItemStatus::Failed;
                     sink.queue_item_updated(idx, "Failed");
-                    // Original code: break 'outer when user declines fallback.
-                    return EncodeFileResult::CancelledAll;
+                    return EncodeFileResult::FailedStopBatch;
                 }
             }
         } else if exit_code != 0 {
@@ -3904,14 +3952,13 @@ pub async fn run_encode_loop(
         .collect();
 
     let total = pending_indices.len();
-    let mut done_count: u32 = 0;
-    let mut fail_count: u32 = 0;
-    let mut skip_count: u32 = 0;
+    let mut counts = BatchCounts::default();
     let save_log = settings.save_log;
     let output_dir = std::path::Path::new(&settings.output_folder);
     let batch_start = std::time::Instant::now();
     let mut file_counter: u32 = 0;
     let mut was_cancelled = false;
+    let mut stopped_by_failure = false;
 
     // ── Folder-mode remote-output staging (politeness) ──
     // When output mode is "folder" and the configured output folder lives on a
@@ -4139,15 +4186,10 @@ pub async fn run_encode_loop(
             )
             .await;
 
-            match result {
-                EncodeFileResult::Done => done_count += 1,
-                EncodeFileResult::Failed => fail_count += 1,
-                EncodeFileResult::Skipped => skip_count += 1,
-                EncodeFileResult::CancelledCurrent => {}
-                EncodeFileResult::CancelledAll => {
-                    was_cancelled = true;
-                    break 'outer;
-                }
+            stopped_by_failure |= matches!(result, EncodeFileResult::FailedStopBatch);
+            if tally(&result, &mut counts) {
+                was_cancelled = true;
+                break 'outer;
             }
         } // end per-file loop
 
@@ -4353,10 +4395,16 @@ pub async fn run_encode_loop(
         batch_duration.as_secs() % 60
     );
 
-    let status_msg = if was_cancelled { "cancelled" } else { "done" };
+    let status_msg = if stopped_by_failure {
+        "stopped (encoder failed)"
+    } else if was_cancelled {
+        "cancelled"
+    } else {
+        "done"
+    };
     let summary = format!(
         "Batch {}. Done: {}, Failed: {}, Skipped: {}. Duration: {}",
-        status_msg, done_count, fail_count, skip_count, dur_string
+        status_msg, counts.done, counts.failed, counts.skipped, dur_string
     );
     sink.log("");
     sink.log(&summary);
@@ -4391,7 +4439,7 @@ pub async fn run_encode_loop(
         }
     }
 
-    sink.batch_finished(done_count, fail_count, skip_count, &dur_string);
+    sink.batch_finished(counts.done, counts.failed, counts.skipped, &dur_string);
 
     // ── Stderr log cleanup ──
     // Drop the shared handle so the file is fully flushed/closed.
@@ -4399,7 +4447,7 @@ pub async fn run_encode_loop(
     // Delete if empty, and enforce the 10-file cap.
     cleanup_stderr_logs(output_dir, stderr_log_filename.as_deref(), 10);
 
-    (done_count, fail_count, skip_count, was_cancelled)
+    (counts.done, counts.failed, counts.skipped, was_cancelled)
 }
 
 // ── Shared helpers ──────────────────────────────────────────────

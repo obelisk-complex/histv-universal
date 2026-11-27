@@ -358,3 +358,32 @@ fn folder_mode_refuses_an_output_that_is_the_source() {
     assert_eq!((done, failed), (0, 1));
     assert_eq!(std::fs::read(&src).unwrap(), vec![b's'; 1000]);
 }
+
+#[test]
+fn hardware_failure_that_stops_the_batch_is_counted_as_failed() {
+    setup();
+    let dir = tempfile::tempdir().unwrap();
+    let out = dir.path().join("out");
+    std::fs::create_dir(&out).unwrap();
+    let mut queue = vec![
+        source(&dir.path().join("STUBSRC-FAIL-hw.mkv")),
+        source(&dir.path().join("STUBSRC-after-hw.mkv")),
+    ];
+
+    let sink = Sink::default();
+    // Control::new declines the software fallback.
+    let ctrl = Control::new(&sink, "yes");
+    let s = settings("folder", &out, "h264_nvenc", "h264");
+    let (done, failed, skipped, stopped) = run(&sink, &ctrl, &mut queue, &s, local_plan(2));
+
+    assert_eq!((done, failed, skipped), (0, 1, 0));
+    assert!(stopped);
+    assert_eq!(queue[0].status, QueueItemStatus::Failed);
+    assert_eq!(queue[1].status, QueueItemStatus::Pending);
+    let logs = sink.logs.lock().unwrap();
+    assert!(
+        logs.iter()
+            .any(|l| l.starts_with("Batch stopped (encoder failed). Done: 0, Failed: 1")),
+        "{logs:?}"
+    );
+}

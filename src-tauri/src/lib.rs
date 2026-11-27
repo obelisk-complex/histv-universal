@@ -702,7 +702,7 @@ mod gui_commands {
         });
 
         tokio::spawn(async move {
-            let (done, failed, skipped, _was_cancelled) = encoder::run_encode_loop(
+            let (done, failed, skipped, was_stopped) = encoder::run_encode_loop(
                 mapping_sink.as_ref(),
                 batch_ctrl.as_ref(),
                 &mut pending_items,
@@ -725,7 +725,9 @@ mod gui_commands {
                     }
                 }
             }
-            let _ = app_for_task.emit("queue-sync-complete", ());
+            // The payload tells the frontend the batch was cancelled or
+            // stopped by an encoder failure, so it must not auto-continue.
+            let _ = app_for_task.emit("queue-sync-complete", was_stopped);
 
             // GUI-specific post-batch actions
             if show_toast {
@@ -736,7 +738,8 @@ mod gui_commands {
                 ));
             }
 
-            if post_action != "None" {
+            // A cancelled or stopped batch did not finish: no shutdown/sleep.
+            if post_action != "None" && !was_stopped {
                 mapping_sink.post_batch(&post_action, post_countdown);
             }
 
