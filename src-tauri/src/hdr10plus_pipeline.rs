@@ -256,22 +256,7 @@ pub async fn inject_hdr10plus(
     // Step 3: Remux the injected bitstream with audio/subs from encoded output
     sink.log("  HDR10+: Remuxing with injected metadata...");
     let remux_output = ffbin::ffmpeg_command()
-        .args([
-            "-y",
-            "-i",
-            &injected_hevc.to_string_lossy(),
-            "-i",
-            &encoded_path.to_string_lossy(),
-            "-map",
-            "0:v:0",
-            "-map",
-            "1:a?",
-            "-map",
-            "1:s?",
-            "-c",
-            "copy",
-            &output_path.to_string_lossy(),
-        ])
+        .args(remux_args(&injected_hevc, encoded_path, output_path))
         .stdout(std::process::Stdio::null())
         .stderr(std::process::Stdio::piped())
         .spawn()
@@ -303,6 +288,43 @@ pub async fn inject_hdr10plus(
 }
 
 // ── Helpers ───────────────────────────────────────────────────────
+
+/// ffmpeg arguments that remux the injected raw HEVC with the audio and
+/// subtitle tracks of the encoded file.
+#[cfg(feature = "dovi")]
+fn remux_args(injected: &Path, encoded: &Path, output: &Path) -> Vec<std::ffi::OsString> {
+    let mut args: Vec<std::ffi::OsString> = vec![
+        "-y".into(),
+        "-i".into(),
+        injected.into(),
+        "-i".into(),
+        encoded.into(),
+        "-map".into(),
+        "0:v:0".into(),
+        "-map".into(),
+        "1:a?".into(),
+        "-map".into(),
+        "1:s?".into(),
+        "-c".into(),
+        "copy".into(),
+    ];
+    let is_mkv = output
+        .extension()
+        .and_then(|ext| ext.to_str())
+        .is_some_and(|ext| ext.eq_ignore_ascii_case("mkv"));
+    if is_mkv {
+        // The two inputs are read in parallel, and a sparse subtitle track
+        // leaves the muxer short of a packet for long stretches. After the
+        // default 10 s wait ffmpeg flushes what it has, writing one input's
+        // packets tens of seconds ahead of the other's. Players with a
+        // bounded read-ahead then stall or drop audio. 0 means wait for
+        // proper interleaving instead.
+        args.push("-max_interleave_delta".into());
+        args.push("0".into());
+    }
+    args.push(output.into());
+    args
+}
 
 /// Whether every picture is decoded in display order (no B-frame reordering).
 fn is_display_ordered(order: &[usize]) -> bool {
@@ -404,6 +426,39 @@ pub async fn inject_hdr10plus(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[cfg(feature = "dovi")]
+    fn has_pair(args: &[std::ffi::OsString], key: &str, value: &str) -> bool {
+        args.windows(2).any(|w| w[0] == key && w[1] == value)
+    }
+
+    #[cfg(feature = "dovi")]
+    #[test]
+    fn mkv_remux_waits_for_sparse_subtitles_when_interleaving() {
+        let args = remux_args(
+            Path::new("injected.h265"),
+            Path::new("encoded.mkv"),
+            Path::new("out.MKV"),
+        );
+        assert!(has_pair(&args, "-max_interleave_delta", "0"), "{args:?}");
+        assert_eq!(args.last().unwrap(), "out.MKV", "output path comes last");
+    }
+
+    #[cfg(feature = "dovi")]
+    #[test]
+    fn mp4_remux_keeps_default_interleaving() {
+        let args = remux_args(
+            Path::new("injected.h265"),
+            Path::new("encoded.mp4"),
+            Path::new("out.mp4"),
+        );
+        assert!(
+            !args.iter().any(|a| a == "-max_interleave_delta"),
+            "{args:?}"
+        );
+        assert!(has_pair(&args, "-map", "1:s?"));
+        assert_eq!(args.last().unwrap(), "out.mp4");
+    }
 
     #[test]
     fn display_ordered_rejects_b_frames() {
