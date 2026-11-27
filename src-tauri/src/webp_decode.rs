@@ -623,7 +623,12 @@ async fn run_pipeline(
             )
         })?;
 
+    // Allocate before spawning so an error here cannot leave children behind.
+    let mut canvas = Canvas::new(padded_w, padded_h)?;
+    canvas.clear(); // WebP spec: canvas starts as transparent black
+
     enc_cmd
+        .kill_on_drop(true)
         .stdin(std::process::Stdio::piped())
         .stdout(std::process::Stdio::null())
         .stderr(std::process::Stdio::piped());
@@ -660,6 +665,7 @@ async fn run_pipeline(
     // from its stdout. A background task feeds stdin while the main loop
     // reads stdout, avoiding pipe deadlocks.
     dec_cmd
+        .kill_on_drop(true)
         .stdin(std::process::Stdio::piped())
         .stdout(std::process::Stdio::piped())
         .stderr(std::process::Stdio::piped());
@@ -686,7 +692,7 @@ async fn run_pipeline(
 
     // Spawn a background task that feeds all frames to the decoder's stdin.
     // This runs concurrently with the stdout reader to avoid deadlock.
-    let writer_handle = tokio::spawn(async move {
+    let mut writer_handle = tokio::spawn(async move {
         let mut stdin = dec_stdin;
         for payload in &frame_payloads {
             if stdin.write_all(payload).await.is_err() {
@@ -698,51 +704,48 @@ async fn run_pipeline(
     });
 
     // ── Compositing loop ──
-    let mut canvas = Canvas::new(padded_w, padded_h)?;
-    canvas.clear(); // WebP spec: canvas starts as transparent black
     let total_frames = frames.len();
     let mut decoded_count: u32 = 0;
-    let mut was_cancelled = false;
+    // Set when the loop stops before the last frame.
+    let mut stop: Option<Stop> = None;
 
-    for (i, frame) in frames.iter().enumerate() {
+    'frames: for (i, frame) in frames.iter().enumerate() {
         // Check for cancellation
-        if batch_control.should_cancel_current() || batch_control.should_cancel_all() {
-            was_cancelled = true;
+        if cancel_requested(batch_control) {
+            stop = Some(Stop::Cancelled);
             break;
         }
 
         // Read decoded RGBA pixels for this frame from the single decoder
         // process. Each frame produces exactly width * height * 4 bytes.
-        let expected_size = (frame.width as usize)
+        let Some(expected_size) = (frame.width as usize)
             .checked_mul(frame.height as usize)
             .and_then(|v| v.checked_mul(4))
-            .ok_or_else(|| {
-                format!(
-                    "Frame {} dimensions too large: {}x{}",
-                    i + 1,
-                    frame.width,
-                    frame.height
-                )
-            })?;
-        let decoded_rgba = {
-            let mut buf = vec![0u8; expected_size];
-            let mut read_so_far = 0;
-            while read_so_far < expected_size {
-                match dec_stdout.read(&mut buf[read_so_far..]).await {
-                    Ok(0) => break, // EOF
-                    Ok(n) => read_so_far += n,
-                    Err(e) => {
-                        return Err(format!("Frame {} decode read failed: {e}", i + 1));
-                    }
-                }
-            }
-            if read_so_far < expected_size {
-                // Pad with zeros if the decoder produced fewer bytes than expected
-                buf.truncate(read_so_far);
-                buf.resize(expected_size, 0);
-            }
-            buf
+        else {
+            stop = Some(Stop::Failed(format!(
+                "Frame {} dimensions too large: {}x{}",
+                i + 1,
+                frame.width,
+                frame.height
+            )));
+            break;
         };
+        let mut decoded_rgba = vec![0u8; expected_size];
+        match until_cancelled(read_full(&mut dec_stdout, &mut decoded_rgba), batch_control).await {
+            None => {
+                stop = Some(Stop::Cancelled);
+                break;
+            }
+            Some(Err(e)) => {
+                stop = Some(Stop::Failed(format!(
+                    "Frame {} decode read failed: {e}",
+                    i + 1
+                )));
+                break;
+            }
+            // A short read leaves the zero-filled remainder in place.
+            Some(Ok(_)) => {}
+        }
 
         // Composite onto canvas
         if !frame.blend {
@@ -769,19 +772,22 @@ async fn run_pipeline(
             // This shouldn't happen with correct padding, but handle it safely
             &canvas_bytes[..canvas_bytes.len().min(frame_byte_size)]
         };
-        let mut pipe_broken = false;
         for _ in 0..repeat_count {
-            if let Err(e) = enc_stdin.write_all(write_bytes).await {
-                sink.log(&format!(
-                    "  WARNING: Encoder pipe closed at frame {}: {e}",
-                    i + 1
-                ));
-                pipe_broken = true;
-                break;
+            match until_cancelled(enc_stdin.write_all(write_bytes), batch_control).await {
+                None => {
+                    stop = Some(Stop::Cancelled);
+                    break 'frames;
+                }
+                Some(Err(e)) => {
+                    sink.log(&format!(
+                        "  WARNING: Encoder pipe closed at frame {}: {e}",
+                        i + 1
+                    ));
+                    stop = Some(Stop::EncoderClosed);
+                    break 'frames;
+                }
+                Some(Ok(())) => {}
             }
-        }
-        if pipe_broken {
-            break;
         }
 
         // Disposal for the *current* frame (applies to the next frame's rendering)
@@ -799,29 +805,109 @@ async fn run_pipeline(
         sink.file_progress(pct, elapsed_secs, total_secs, None);
     }
 
+    // ── Teardown ──
     // Close encoder stdin to signal EOF
     drop(enc_stdin);
 
-    // Ensure the decoder writer task finishes (it may already have)
-    let _ = writer_handle.await;
-
-    // Clean up the decoder process
+    // Never await the feeder while the decoder can still block it: a
+    // decoder whose stdout nobody reads stops reading its stdin, and the
+    // feeder then waits for ever. Stop the decoder first if the loop ended
+    // early, and close its stdout in every case.
+    if stop.is_some() {
+        let _ = decoder.start_kill();
+    }
+    if matches!(stop, Some(Stop::Cancelled | Stop::Failed(_))) {
+        let _ = encoder.start_kill();
+    }
     drop(dec_stdout);
+
+    // Each wait below gives way to a cancel; the kill then lets it finish.
+    if until_cancelled(&mut writer_handle, batch_control)
+        .await
+        .is_none()
+    {
+        stop = Some(Stop::Cancelled);
+        let _ = decoder.start_kill();
+        let _ = encoder.start_kill();
+        let _ = writer_handle.await;
+    }
+
+    if until_cancelled(decoder.wait(), batch_control)
+        .await
+        .is_none()
+    {
+        stop = Some(Stop::Cancelled);
+        let _ = decoder.start_kill();
+        let _ = encoder.start_kill();
+    }
     let _ = decoder.wait().await;
 
     // Wait for encoder to finish
+    if until_cancelled(encoder.wait(), batch_control)
+        .await
+        .is_none()
+    {
+        stop = Some(Stop::Cancelled);
+        let _ = encoder.start_kill();
+    }
     let enc_status = encoder
         .wait()
         .await
         .map_err(|e| format!("Encoder wait failed: {e}"))?;
 
-    let exit_code = enc_status.code().unwrap_or(-1);
-
+    if let Some(Stop::Failed(msg)) = stop {
+        return Err(msg);
+    }
     Ok(TranscodeResult {
-        exit_code,
-        was_cancelled,
+        exit_code: enc_status.code().unwrap_or(-1),
+        was_cancelled: matches!(stop, Some(Stop::Cancelled)),
         frame_count: decoded_count as u64,
     })
+}
+
+/// Why the frame loop of `run_pipeline` stopped early.
+enum Stop {
+    Cancelled,
+    /// The encoder closed its input; its exit code decides the result.
+    EncoderClosed,
+    Failed(String),
+}
+
+fn cancel_requested(control: &dyn BatchControl) -> bool {
+    control.should_cancel_current() || control.should_cancel_all()
+}
+
+/// Await `fut`, checking for a cancel every 100 ms. Returns `None` if the
+/// user cancels first, so a stalled child cannot make cancel wait.
+async fn until_cancelled<F: std::future::Future>(
+    fut: F,
+    control: &dyn BatchControl,
+) -> Option<F::Output> {
+    tokio::pin!(fut);
+    loop {
+        if cancel_requested(control) {
+            return None;
+        }
+        tokio::select! {
+            out = &mut fut => return Some(out),
+            _ = tokio::time::sleep(std::time::Duration::from_millis(100)) => {}
+        }
+    }
+}
+
+/// Read until `buf` is full or the reader reaches EOF; returns the bytes read.
+async fn read_full(
+    r: &mut (impl tokio::io::AsyncRead + Unpin),
+    buf: &mut [u8],
+) -> std::io::Result<usize> {
+    let mut n = 0;
+    while n < buf.len() {
+        match r.read(&mut buf[n..]).await? {
+            0 => break,
+            k => n += k,
+        }
+    }
+    Ok(n)
 }
 
 /// Result from the animated WebP transcode pipeline.
@@ -1124,6 +1210,148 @@ mod tests {
             pixel[2]
         );
         assert_eq!(pixel[3], 255, "alpha should be 255");
+    }
+
+    // ── Pipeline supervision (stub children) ─────────────────────
+
+    /// Drives `run_pipeline` with `sh -c` stubs in place of ffmpeg.
+    #[cfg(unix)]
+    mod pipeline {
+        use super::*;
+        use crate::test_helpers::{CancellableBatchControl, NoopSink};
+        use std::sync::Arc;
+        use std::time::Duration;
+
+        const W: u32 = 64;
+        const H: u32 = 48;
+        const FRAME_BYTES: usize = (W * H * 4) as usize;
+        const FRAMES: usize = 4;
+        /// Big enough that the feeder cannot finish into the pipe buffers
+        /// alone: 4 x 256 KiB against 64 KiB pipes.
+        const PAYLOAD: usize = 256 * 1024;
+        const WATCHDOG: Duration = Duration::from_secs(20);
+
+        /// Scripts `exec` their last command so a kill reaches the process
+        /// that holds the pipes, as it does for ffmpeg.
+        fn sh(script: &str) -> tokio::process::Command {
+            let mut c = tokio::process::Command::new("sh");
+            c.arg("-c").arg(script).kill_on_drop(true);
+            c
+        }
+
+        fn synthetic() -> (WebpInfo, Vec<AnimFrame>) {
+            let frames: Vec<AnimFrame> = (0..FRAMES)
+                .map(|_| AnimFrame {
+                    x_offset: 0,
+                    y_offset: 0,
+                    width: W,
+                    height: H,
+                    duration_ms: 100,
+                    dispose: false,
+                    blend: false,
+                    data: vec![0x55; PAYLOAD],
+                })
+                .collect();
+            let info = WebpInfo {
+                width: W,
+                height: H,
+                frame_count: FRAMES as u32,
+                total_duration_ms: 100 * FRAMES as u32,
+                loop_count: 0,
+                has_alpha: false,
+            };
+            (info, frames)
+        }
+
+        /// Run the pipeline on its own thread and runtime; fail the test
+        /// instead of hanging the suite if it does not return.
+        fn run_watched(
+            enc: tokio::process::Command,
+            dec: tokio::process::Command,
+            control: Arc<CancellableBatchControl>,
+        ) -> Result<TranscodeResult, String> {
+            let (tx, rx) = std::sync::mpsc::channel();
+            std::thread::spawn(move || {
+                let (info, frames) = synthetic();
+                let rt = tokio::runtime::Builder::new_current_thread()
+                    .enable_all()
+                    .build()
+                    .unwrap();
+                let r = rt.block_on(run_pipeline(
+                    &frames, &info, enc, dec, false, &NoopSink, &*control,
+                ));
+                let _ = tx.send(r);
+            });
+            rx.recv_timeout(WATCHDOG)
+                .unwrap_or_else(|_| panic!("pipeline did not return within {WATCHDOG:?}"))
+        }
+
+        /// Decoder stub: swallow all input, then emit `n` frames of zeros.
+        fn decoder_emitting(n: usize) -> tokio::process::Command {
+            sh(&format!(
+                "cat >/dev/null; exec head -c {} /dev/zero",
+                n * FRAME_BYTES
+            ))
+        }
+
+        /// Control: healthy stubs complete, so the harness can pass.
+        #[test]
+        fn healthy_stubs_complete() {
+            let r = run_watched(
+                sh("exec cat >/dev/null"),
+                decoder_emitting(FRAMES),
+                Arc::new(CancellableBatchControl::new()),
+            )
+            .expect("healthy pipeline");
+            assert_eq!(r.exit_code, 0);
+            assert!(!r.was_cancelled);
+            assert_eq!(r.frame_count, FRAMES as u64);
+        }
+
+        /// The encoder exits before reading. The decoder (`cat`, which
+        /// like ffmpeg only reads stdin while its stdout drains) still has
+        /// most of the feed to pass through once we stop reading it.
+        #[test]
+        fn encoder_exit_does_not_hang_on_feeder() {
+            let r = run_watched(
+                sh("exit 1"),
+                sh("exec cat"),
+                Arc::new(CancellableBatchControl::new()),
+            );
+            assert!(
+                !matches!(r, Ok(ref t) if t.exit_code == 0),
+                "a dead encoder must not report success"
+            );
+        }
+
+        /// Cancel with the decoder's output unread and the feed unfinished.
+        #[test]
+        fn cancel_does_not_hang_on_feeder() {
+            let control = Arc::new(CancellableBatchControl::new());
+            control
+                .cancel_current
+                .store(true, std::sync::atomic::Ordering::SeqCst);
+            let r =
+                run_watched(sh("exec cat >/dev/null"), sh("exec cat"), control).expect("cancel");
+            assert!(r.was_cancelled);
+        }
+
+        /// Cancel while a frame write is blocked on an encoder that has
+        /// stopped reading (a stalled encoder, or one stuck on a full
+        /// stderr pipe).
+        #[test]
+        fn cancel_interrupts_blocked_encoder_write() {
+            let control = Arc::new(CancellableBatchControl::new());
+            let flip = Arc::clone(&control);
+            std::thread::spawn(move || {
+                std::thread::sleep(Duration::from_millis(500));
+                flip.cancel_current
+                    .store(true, std::sync::atomic::Ordering::SeqCst);
+            });
+            let r = run_watched(sh("exec sleep 30"), decoder_emitting(FRAMES), control)
+                .expect("cancel");
+            assert!(r.was_cancelled);
+        }
     }
 
     // ── Property-based tests ─────────────────────────────────────
