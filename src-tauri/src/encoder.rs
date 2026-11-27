@@ -4846,7 +4846,17 @@ fn subtitle_args(subtitle_codecs: &[String], mp4: bool) -> (Vec<String>, Vec<Str
             "copy",
         ]
     };
-    (args.into_iter().map(String::from).collect(), Vec::new())
+    let mut args: Vec<String> = args.into_iter().map(String::from).collect();
+    if !mp4 {
+        // Matroska cannot hold MP4 timed text (mov_text): convert it to SRT.
+        // A per-track codec after the general one wins for that track.
+        for (i, codec) in subtitle_codecs.iter().enumerate() {
+            if codec == "mov_text" {
+                args.extend([format!("-c:s:{i}"), "srt".to_string()]);
+            }
+        }
+    }
+    (args, Vec::new())
 }
 
 /// Text subtitle codecs ffmpeg can convert to MP4's mov_text.
@@ -4953,6 +4963,19 @@ mod subtitle_policy_tests {
         let (args, notes) = subtitle_args(&codecs(&["dvb_subtitle"]), true);
         assert!(args.is_empty(), "{args:?}");
         assert_eq!(notes.len(), 1);
+    }
+
+    #[test]
+    fn mkv_converts_mp4_timed_text_and_copies_the_rest() {
+        let subs = codecs(&["subrip", "mov_text"]);
+        let (args, notes) = subtitle_args(&subs, false);
+        assert!(has_pair(&args, "-c:s", "copy"), "{args:?}");
+        assert!(has_pair(&args, "-c:s:1", "srt"), "{args:?}");
+        assert!(!args.iter().any(|a| a == "-c:s:0"), "{args:?}");
+        let general = args.iter().position(|a| a == "-c:s").unwrap();
+        let specific = args.iter().position(|a| a == "-c:s:1").unwrap();
+        assert!(general < specific, "the per-track codec must come last");
+        assert!(notes.is_empty());
     }
 
     #[test]
