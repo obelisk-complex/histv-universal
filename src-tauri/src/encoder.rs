@@ -4810,6 +4810,32 @@ pub async fn probe_crf_viability(
     }
 }
 
+#[cfg(test)]
+mod subtitle_policy_tests {
+    use super::*;
+
+    fn args_for(output_path: &str) -> Vec<String> {
+        assemble_ffmpeg_args(&FfmpegAssemblyParts {
+            input_path: "in.mkv",
+            output_path,
+            video_args: &["-c:v", "libx264"],
+            pix_fmt: "yuv420p",
+            codec_family: "h264",
+            ..Default::default()
+        })
+    }
+
+    #[test]
+    fn mkv_keeps_the_source_subtitle_flags() {
+        let args = args_for("out.mkv");
+        let dispositions: Vec<&[String]> = args
+            .windows(2)
+            .filter(|w| w[0].starts_with("-disposition"))
+            .collect();
+        assert_eq!(dispositions, [["-disposition:s:0", "+0"]], "{args:?}");
+    }
+}
+
 /// Component parts for assembling an ffmpeg command line.
 #[derive(Default)]
 struct FfmpegAssemblyParts<'a> {
@@ -5035,8 +5061,11 @@ fn assemble_ffmpeg_args_for(
                 "0:s?".into(),
                 "-c:s".into(),
                 "copy".into(),
+                // Keep every subtitle track's flags as in the source. Any
+                // -disposition option stops ffmpeg marking the first track
+                // "default" when none is, and "+0" changes no flag.
                 "-disposition:s:0".into(),
-                "default".into(),
+                "+0".into(),
             ]);
         }
     }
@@ -8904,7 +8933,7 @@ mod tests {
                 "-c:s",
                 "copy",
                 "-disposition:s:0",
-                "default",
+                "+0",
                 "out.mkv"
             ])
         );
