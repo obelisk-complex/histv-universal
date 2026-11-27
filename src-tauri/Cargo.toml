@@ -48,6 +48,7 @@ default = ["custom-protocol", "downloader", "dovi"]
 custom-protocol = [
     "tauri/custom-protocol",
     "dep:tauri",
+    "dep:glib",
     "dep:tauri-plugin-dialog",
     "dep:tauri-plugin-notification",
     "dep:tauri-plugin-clipboard-manager",
@@ -62,3 +63,8 @@ dovi = ["dep:dolby_vision", "dep:hdr10plus", "dep:hevc_parser"]
 [dev-dependencies]
 proptest = "1"
 serial_test = "3"
+
+# GTK 3 (Linux only): program name, see set_gtk_program_name in lib.rs. glib is
+# already in the lockfile through gtk, so this adds no new crate.
+[target.'cfg(target_os = "linux")'.dependencies]
+glib = { version = "0.18", optional = true }

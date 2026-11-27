@@ -858,11 +858,31 @@ mod gui_commands {
 
 // ── App entry ───────────────────────────────────────────────────
 
+/// GTK 3 reports `g_get_prgname()` to Wayland compositors as the window's
+/// app id, and tao does not set it, so the id is the executable name
+/// (`histv`). The Flatpak's desktop entry is named and keyed
+/// `com.histv.encoder`, so inside the Flatpak the program name is set to that
+/// identifier. Elsewhere it is left alone: the AppImage's desktop entry
+/// declares `StartupWMClass=histv`. Must run before GTK initialises.
+#[cfg(all(target_os = "linux", feature = "custom-protocol"))]
+fn set_gtk_program_name(flatpak_id: Option<&str>, identifier: &str) {
+    if flatpak_id == Some(identifier) {
+        glib::set_prgname(Some(identifier));
+    }
+}
+
 #[cfg(feature = "custom-protocol")]
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
     use gui_commands::*;
     use tauri::{Emitter, Manager};
+
+    let context = tauri::generate_context!();
+    #[cfg(target_os = "linux")]
+    set_gtk_program_name(
+        std::env::var("FLATPAK_ID").ok().as_deref(),
+        &context.config().identifier,
+    );
 
     let app_state = Arc::new(AppState {
         queue: RwLock::new(Vec::new()),
@@ -985,7 +1005,7 @@ pub fn run() {
 
             Ok(())
         })
-        .run(tauri::generate_context!())
+        .run(context)
         .expect("error while running tauri application");
 }
 
@@ -993,3 +1013,43 @@ pub fn run() {
 // frontend via the beforeunload event combined with checking is_batch_running.
 // Tauri v2's on_window_event with CloseRequested can be added here if the
 // frontend approach proves insufficient on a particular platform.
+
+#[cfg(test)]
+mod desktop_identity_tests {
+    /// The reverse-DNS id every packaging format and the running window must
+    /// agree on.
+    fn config_identifier() -> String {
+        let conf: serde_json::Value =
+            serde_json::from_str(include_str!("../tauri.conf.json")).unwrap();
+        conf["identifier"].as_str().unwrap().to_string()
+    }
+
+    #[test]
+    fn packaging_files_use_the_config_identifier() {
+        let id = config_identifier();
+        let desktop = include_str!("../../com.histv.encoder.desktop");
+        assert!(desktop.contains(&format!("\nStartupWMClass={id}\n")));
+        assert!(desktop.contains(&format!("\nIcon={id}\n")));
+        let metainfo = include_str!("../../com.histv.encoder.metainfo.xml");
+        assert!(metainfo.contains(&format!("<id>{id}</id>")));
+        let flatpak = include_str!("../../com.histv.encoder.yml");
+        assert!(flatpak.starts_with(&format!("id: {id}\n")));
+    }
+
+    #[cfg(all(target_os = "linux", feature = "custom-protocol"))]
+    #[test]
+    fn flatpak_gets_the_identifier_as_wayland_app_id_and_others_are_left_alone() {
+        // GTK 3 reports g_get_prgname() to the compositor as the app id.
+        let id = config_identifier();
+        glib::set_prgname(Some("histv"));
+
+        // AppImage, a terminal run, or a Flatpak with another id: unchanged.
+        super::set_gtk_program_name(None, &id);
+        assert_eq!(glib::prgname().as_deref(), Some("histv"));
+        super::set_gtk_program_name(Some("org.example.other"), &id);
+        assert_eq!(glib::prgname().as_deref(), Some("histv"));
+
+        super::set_gtk_program_name(Some(&id), &id);
+        assert_eq!(glib::prgname().as_deref(), Some(id.as_str()));
+    }
+}

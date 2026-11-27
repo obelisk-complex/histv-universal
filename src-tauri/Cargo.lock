@@ -1965,6 +1965,7 @@ dependencies = [
  "ctrlc",
  "dolby_vision",
  "futures-util",
+ "glib",
  "hdr10plus",
  "hevc_parser",
  "indicatif",
