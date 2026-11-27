@@ -27,7 +27,10 @@ static SETUP: Once = Once::new();
 /// Install the stub ffmpeg and a private staging dir, once per process.
 fn setup() {
     SETUP.call_once(|| {
-        let root = std::env::temp_dir().join(format!("histv-output-safety-{}", std::process::id()));
+        // Cargo's scratch folder for integration tests (inside target/),
+        // emptied at the start of each run so nothing piles up.
+        let root = PathBuf::from(env!("CARGO_TARGET_TMPDIR")).join("output-safety");
+        let _ = std::fs::remove_dir_all(&root);
         let bin = root.join("bin");
         std::fs::create_dir_all(&bin).unwrap();
         let real = which("ffmpeg").unwrap_or_else(|| PathBuf::from("/bin/false"));

@@ -2941,7 +2941,9 @@ async fn encode_single_file(
     // ffmpeg writes to `temp_output_file`, a unique staged file beside
     // `output_file`; `handle_post_encode` moves it into place only once the
     // encode has finished, so a failed or cancelled encode never touches an
-    // existing output.
+    // existing output. Until then the guard removes the staged file on any
+    // early return.
+    let mut staged_guard = crate::output_install::StagedFileGuard::new(temp_output_file.clone());
     // On Windows, prepend the extended-length path prefix when the path
     // exceeds 240 characters to avoid MAX_PATH (260) failures.
     #[cfg(target_os = "windows")]
@@ -3935,6 +3937,9 @@ async fn encode_single_file(
     }
 
     // ── Post-encode processing ──
+    // From here handle_post_encode owns the staged file (it may keep it and
+    // log its path when the install fails).
+    staged_guard.keep();
     let success = handle_post_encode(
         idx,
         queue,

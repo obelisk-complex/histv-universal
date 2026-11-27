@@ -136,6 +136,34 @@ pub fn source_was_replaced(source: &Path, output: &Path) -> bool {
     !source.exists() || is_same_file(source, output)
 }
 
+/// Removes a staged encode when dropped, unless `keep` was called. Held
+/// for the whole encode, so every early return (failure, cancel, launch
+/// error) cleans up the staged file and only that file.
+pub struct StagedFileGuard {
+    path: PathBuf,
+    armed: bool,
+}
+
+impl StagedFileGuard {
+    pub fn new(path: PathBuf) -> Self {
+        Self { path, armed: true }
+    }
+
+    /// Hand the staged file on (to the post-encode install), so dropping
+    /// the guard leaves it in place.
+    pub fn keep(&mut self) {
+        self.armed = false;
+    }
+}
+
+impl Drop for StagedFileGuard {
+    fn drop(&mut self) {
+        if self.armed {
+            let _ = std::fs::remove_file(&self.path);
+        }
+    }
+}
+
 /// Move a finished staged encode onto its final path, replacing any older
 /// output there. On error the staged file and any older output are left
 /// as they were.
@@ -280,6 +308,28 @@ mod tests {
         assert!(source_was_replaced(&out, &out)); // same name as output
         std::fs::write(&src, b"source").unwrap();
         assert!(!source_was_replaced(&src, &out)); // kept beside it
+    }
+
+    #[test]
+    fn staged_file_guard_removes_only_its_own_file_unless_kept() {
+        let dir = tempfile::tempdir().unwrap();
+        let out = dir.path().join("movie.mkv");
+        std::fs::write(&out, b"user output").unwrap();
+        let staged = staged_output_path(&out);
+
+        std::fs::write(&staged, b"partial").unwrap();
+        drop(StagedFileGuard::new(staged.clone()));
+        assert!(!staged.exists());
+        assert_eq!(std::fs::read(&out).unwrap(), b"user output");
+
+        std::fs::write(&staged, b"finished").unwrap();
+        let mut g = StagedFileGuard::new(staged.clone());
+        g.keep();
+        drop(g);
+        assert!(staged.exists());
+
+        // Nothing written yet: dropping is harmless.
+        drop(StagedFileGuard::new(dir.path().join("never-written.mkv")));
     }
 
     #[test]
