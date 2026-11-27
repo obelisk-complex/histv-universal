@@ -479,3 +479,114 @@ fn failed_delivery_is_not_marked_done() {
         .expect("no preserved-at line");
     assert!(read_string(Path::new(kept)).starts_with("ENCODED:"));
 }
+
+/// Like `run`, but the output folder is treated as a remote mount, so
+/// folder-mode encodes of staged files are copied back like a share.
+fn run_remote_output(
+    sink: &Sink,
+    ctrl: &Control,
+    queue: &mut [QueueItem],
+    s: &BatchSettings,
+    plan: Option<Vec<WaveItem>>,
+) -> (u32, u32, u32, bool) {
+    let rt = tokio::runtime::Runtime::new().unwrap();
+    rt.block_on(histv_lib::encoder::run_encode_loop_with_remote_output(
+        sink,
+        ctrl,
+        queue,
+        s,
+        &encoders(),
+        plan,
+        None,
+    ))
+}
+
+#[test]
+fn wave_replace_asks_before_overwriting_an_earlier_files_output() {
+    setup();
+    let dir = tempfile::tempdir().unwrap();
+    let mut queue = vec![
+        source(&dir.path().join("STUBSRC-dup.avi")),
+        source(&dir.path().join("STUBSRC-dup.mp4")),
+    ];
+    let sink = Sink::default();
+    let ctrl = Control::new(&sink, "no");
+    let s = settings("replace", dir.path(), "libx264", "h264");
+    let (done, failed, skipped, _) = run(&sink, &ctrl, &mut queue, &s, wave(2));
+
+    assert_eq!(ctrl.prompts.lock().unwrap().len(), 1);
+    assert_eq!((done, failed, skipped), (1, 0, 1));
+    assert_eq!(queue[1].status, QueueItemStatus::Skipped);
+    // The .avi's encode survives, the .mp4 is untouched.
+    let mkv = read_string(&dir.path().join("STUBSRC-dup.mkv"));
+    assert!(mkv.ends_with("/0_STUBSRC-dup.avi"), "{mkv}");
+    assert_eq!(
+        std::fs::read(dir.path().join("STUBSRC-dup.mp4")).unwrap(),
+        vec![b's'; 1000]
+    );
+    // The declined encode is kept locally and its path logged.
+    let logs = sink.logs.lock().unwrap();
+    let kept = logs
+        .iter()
+        .find_map(|l| l.trim().strip_prefix("Encoded file kept at: "))
+        .expect("no kept-at line");
+    assert!(read_string(Path::new(kept)).ends_with("/1_STUBSRC-dup.mp4"));
+}
+
+#[test]
+fn wave_beside_honours_overwrite_no() {
+    setup();
+    let dir = tempfile::tempdir().unwrap();
+    let mut queue = vec![source(&dir.path().join("STUBSRC-userfile.mkv"))];
+    std::fs::create_dir(dir.path().join("output")).unwrap();
+    let existing = dir.path().join("output").join("STUBSRC-userfile.mkv");
+    std::fs::write(&existing, b"USERFILE").unwrap();
+    let sink = Sink::default();
+    let ctrl = Control::new(&sink, "no");
+    let s = settings("beside", dir.path(), "libx264", "h264");
+    let (done, _, skipped, _) = run(&sink, &ctrl, &mut queue, &s, wave(1));
+
+    assert_eq!(ctrl.prompts.lock().unwrap().len(), 1);
+    assert_eq!((done, skipped), (0, 1));
+    assert_eq!(std::fs::read(&existing).unwrap(), b"USERFILE");
+}
+
+#[test]
+fn wave_folder_mode_refuses_to_deliver_over_the_source() {
+    setup();
+    let dir = tempfile::tempdir().unwrap();
+    let src = dir.path().join("STUBSRC-remote-self.mkv");
+    let mut queue = vec![source(&src)];
+    let sink = Sink::default();
+    let ctrl = Control::new(&sink, "yes");
+    // Remote output folder is the source's own folder.
+    let s = settings("folder", dir.path(), "libx264", "h264");
+    let (done, failed, _, _) = run_remote_output(&sink, &ctrl, &mut queue, &s, wave(1));
+
+    assert_eq!((done, failed), (0, 1));
+    assert!(ctrl.prompts.lock().unwrap().is_empty());
+    assert_eq!(std::fs::read(&src).unwrap(), vec![b's'; 1000]);
+}
+
+#[test]
+fn wave_replace_refuses_to_deliver_over_another_items_source() {
+    setup();
+    let dir = tempfile::tempdir().unwrap();
+    let mut queue = vec![
+        source(&dir.path().join("STUBSRC-other.avi")),
+        source(&dir.path().join("STUBSRC-other.mkv")),
+    ];
+    let sink = Sink::default();
+    let ctrl = Control::new(&sink, "yes");
+    let s = settings("replace", dir.path(), "libx264", "h264");
+    let (done, failed, _, _) = run(&sink, &ctrl, &mut queue, &s, wave(2));
+
+    assert_eq!((done, failed), (1, 1));
+    assert_eq!(queue[0].status, QueueItemStatus::Failed);
+    assert_eq!(
+        std::fs::read(dir.path().join("STUBSRC-other.avi")).unwrap(),
+        vec![b's'; 1000]
+    );
+    let mkv = read_string(&dir.path().join("STUBSRC-other.mkv"));
+    assert!(mkv.ends_with("/1_STUBSRC-other.mkv"), "{mkv}");
+}

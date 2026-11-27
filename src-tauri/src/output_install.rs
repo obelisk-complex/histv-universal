@@ -48,6 +48,8 @@ pub enum ExistingOutput {
     /// The output path is the source file itself, outside replace mode.
     /// Encoding would replace the source, so the file must not be encoded.
     IsSource,
+    /// The output path is the source of another file in the batch.
+    IsOtherSource,
 }
 
 pub fn existing_output_action(
@@ -61,6 +63,20 @@ pub fn existing_output_action(
         (true, true, false) => ExistingOutput::IsSource,
         (true, false, _) => ExistingOutput::Ask,
     }
+}
+
+/// The same decision for delivering a staged remote encode to its real
+/// destination, which also refuses to replace another file's source.
+pub fn delivery_action(
+    dest_exists: bool,
+    dest_is_own_source: bool,
+    dest_is_other_source: bool,
+    replace_mode: bool,
+) -> ExistingOutput {
+    if dest_exists && dest_is_other_source {
+        return ExistingOutput::IsOtherSource;
+    }
+    existing_output_action(dest_exists, dest_is_own_source, replace_mode)
 }
 
 /// True when both paths name the same existing file, including through a
@@ -150,6 +166,17 @@ mod tests {
         assert_eq!(existing_output_action(true, false, true), Ask);
         assert_eq!(existing_output_action(true, true, true), Proceed);
         assert_eq!(existing_output_action(true, true, false), IsSource);
+    }
+
+    #[test]
+    fn delivery_decision_refuses_another_files_source() {
+        use ExistingOutput::*;
+        assert_eq!(delivery_action(false, false, true, true), Proceed);
+        assert_eq!(delivery_action(true, false, true, true), IsOtherSource);
+        assert_eq!(delivery_action(true, true, true, true), IsOtherSource);
+        assert_eq!(delivery_action(true, true, false, true), Proceed);
+        assert_eq!(delivery_action(true, false, false, true), Ask);
+        assert_eq!(delivery_action(true, true, false, false), IsSource);
     }
 
     #[test]

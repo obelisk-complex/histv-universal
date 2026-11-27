@@ -2222,6 +2222,32 @@ enum EncodeFileResult {
     FailedStopBatch,
 }
 
+/// The user's answer to an existing output, after the overwrite policy.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum OverwriteAnswer {
+    Proceed,
+    Skip,
+    Cancel,
+}
+
+/// Apply the overwrite policy to an existing output at `path`: proceed if
+/// "always" was chosen earlier, otherwise ask (the CLI answers from its
+/// --overwrite flag; headless "ask" means skip).
+fn ask_overwrite(batch_control: &dyn BatchControl, path: &str) -> OverwriteAnswer {
+    if batch_control.overwrite_always() {
+        return OverwriteAnswer::Proceed;
+    }
+    match batch_control.overwrite_prompt(path).as_str() {
+        "no" | "skip" => OverwriteAnswer::Skip,
+        "always" => {
+            batch_control.set_overwrite_always();
+            OverwriteAnswer::Proceed
+        }
+        "cancel" => OverwriteAnswer::Cancel,
+        _ => OverwriteAnswer::Proceed, // "yes"
+    }
+}
+
 /// Running totals for the batch summary.
 #[derive(Debug, Default, Clone, Copy, PartialEq, Eq)]
 struct BatchCounts {
@@ -2953,25 +2979,21 @@ async fn encode_single_file(
         sink.queue_item_updated(idx, "Failed");
         return EncodeFileResult::Failed;
     }
-    if existing == crate::output_install::ExistingOutput::Ask && !batch_control.overwrite_always() {
-        let response = batch_control.overwrite_prompt(&final_output_str);
-        match response.as_str() {
-            "no" | "skip" => {
+    if existing == crate::output_install::ExistingOutput::Ask {
+        match ask_overwrite(batch_control, &final_output_str) {
+            OverwriteAnswer::Skip => {
                 sink.log("  Skipped (output exists)");
                 write_log(log_writer, "  Skipped (output exists)");
                 queue[idx].status = QueueItemStatus::Skipped;
                 sink.queue_item_updated(idx, "Skipped");
                 return EncodeFileResult::Skipped;
             }
-            "always" => {
-                batch_control.set_overwrite_always();
-            }
-            "cancel" => {
+            OverwriteAnswer::Cancel => {
                 queue[idx].status = QueueItemStatus::Cancelled;
                 sink.queue_item_updated(idx, "Cancelled");
                 return EncodeFileResult::CancelledAll;
             }
-            _ => {} // "yes" - proceed
+            OverwriteAnswer::Proceed => {}
         }
     }
 
@@ -3936,20 +3958,42 @@ async fn encode_single_file(
     }
 }
 
+/// Outcome of copying a staged remote file's encode to its destination.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum Delivery {
+    /// The output is in place.
+    Delivered,
+    /// A file is already at the destination and the user chose not to
+    /// overwrite it.
+    Declined,
+    /// The user chose Cancel at the overwrite prompt, or the batch was
+    /// already cancelled when a prompt was needed.
+    Cancelled,
+    /// Refused or failed.
+    Failed,
+}
+
 /// Copy a staged remote file's finished encode from its local per-file
 /// folder to its destination: the remote source's folder (replace), an
 /// `output` folder beside the source (beside), or the output folder
-/// (folder). Returns true once the output is in place. On failure the
+/// (folder). The destination gets the same checks as a local output: a
+/// file already there is asked about under the overwrite policy, and the
+/// file's own source (outside Replace mode) or another queued file's
+/// source is never replaced. Whenever the output is not delivered, the
 /// local encode is kept and its path logged.
+#[allow(clippy::too_many_arguments)]
 async fn deliver_staged_output(
     item: &QueueItem,
     original_path: &str,
     out_dir: &std::path::Path,
+    other_sources: &[&std::path::Path],
     settings: &BatchSettings,
     preserve_hdr: bool,
     detected_encoders: &[EncoderInfo],
+    batch_control: &dyn BatchControl,
+    batch_cancelled: bool,
     sink: &dyn EventSink,
-) -> bool {
+) -> Delivery {
     let remote = std::path::Path::new(original_path);
     let remote_dir = remote.parent().unwrap_or(std::path::Path::new("."));
     let base_name = remote.file_stem().unwrap_or_default().to_string_lossy();
@@ -3970,7 +4014,7 @@ async fn deliver_staged_output(
             "  WARNING: expected output {} not found - nothing copied back",
             local_output.display()
         ));
-        return false;
+        return Delivery::Failed;
     }
     let dest_dir = match settings.output_mode.as_str() {
         "replace" => remote_dir.to_path_buf(),
@@ -3978,6 +4022,62 @@ async fn deliver_staged_output(
         _ => std::path::PathBuf::from(&settings.output_folder),
     };
     let dest = dest_dir.join(&file_name);
+    let kept = || {
+        sink.log(&format!(
+            "  Encoded file kept at: {}",
+            local_output.display()
+        ))
+    };
+
+    let is_replace = settings.output_mode == "replace";
+    let action = crate::output_install::delivery_action(
+        dest.exists(),
+        crate::output_install::is_same_file(&dest, remote),
+        other_sources
+            .iter()
+            .any(|p| crate::output_install::is_same_file(&dest, p)),
+        is_replace,
+    );
+    match action {
+        crate::output_install::ExistingOutput::IsSource => {
+            sink.log(&format!(
+                "  ERROR: Not copied back: {} is the source file. Choose a different output folder, or use Replace mode.",
+                dest.display()
+            ));
+            kept();
+            return Delivery::Failed;
+        }
+        crate::output_install::ExistingOutput::IsOtherSource => {
+            sink.log(&format!(
+                "  ERROR: Not copied back: {} is the source of another file in this batch.",
+                dest.display()
+            ));
+            kept();
+            return Delivery::Failed;
+        }
+        crate::output_install::ExistingOutput::Ask => {
+            let answer = if batch_cancelled {
+                OverwriteAnswer::Cancel
+            } else {
+                ask_overwrite(batch_control, &dest.to_string_lossy())
+            };
+            match answer {
+                OverwriteAnswer::Skip => {
+                    sink.log(&format!("  Skipped (output exists): {}", dest.display()));
+                    kept();
+                    return Delivery::Declined;
+                }
+                OverwriteAnswer::Cancel => {
+                    sink.log(&format!("  Cancelled (output exists): {}", dest.display()));
+                    kept();
+                    return Delivery::Cancelled;
+                }
+                OverwriteAnswer::Proceed => {}
+            }
+        }
+        crate::output_install::ExistingOutput::Proceed => {}
+    }
+
     let _ = std::fs::create_dir_all(&dest_dir);
     sink.log(&format!(
         "  Moving staged output to remote: {} → {}",
@@ -3985,7 +4085,7 @@ async fn deliver_staged_output(
         dest.display()
     ));
 
-    let result = if settings.output_mode == "replace" {
+    let result = if is_replace {
         replace_remote_source(&local_output, remote, &dest, &base_name, ext).await
     } else {
         crate::output_install::deliver(&local_output, &dest)
@@ -3997,7 +4097,7 @@ async fn deliver_staged_output(
         Ok(msg) => {
             sink.log(&msg);
             let _ = std::fs::remove_file(&local_output);
-            true
+            Delivery::Delivered
         }
         Err(e) => {
             sink.log(&format!(
@@ -4007,7 +4107,7 @@ async fn deliver_staged_output(
                 "  Encoded file preserved at: {}",
                 local_output.display()
             ));
-            false
+            Delivery::Failed
         }
     }
 }
@@ -4054,6 +4154,55 @@ pub async fn run_encode_loop(
     wave_plan: Option<Vec<WaveItem>>,
     disk_monitor: Option<&crate::disk_monitor::DiskMonitor>,
 ) -> (u32, u32, u32, bool) {
+    run_encode_loop_impl(
+        sink,
+        batch_control,
+        queue,
+        settings,
+        detected_encoders,
+        wave_plan,
+        disk_monitor,
+        false,
+    )
+    .await
+}
+
+/// `run_encode_loop` with the output folder treated as a remote mount, for
+/// tests that stand a local folder in for a network share.
+#[doc(hidden)]
+pub async fn run_encode_loop_with_remote_output(
+    sink: &dyn EventSink,
+    batch_control: &dyn BatchControl,
+    queue: &mut [QueueItem],
+    settings: &BatchSettings,
+    detected_encoders: &[EncoderInfo],
+    wave_plan: Option<Vec<WaveItem>>,
+    disk_monitor: Option<&crate::disk_monitor::DiskMonitor>,
+) -> (u32, u32, u32, bool) {
+    run_encode_loop_impl(
+        sink,
+        batch_control,
+        queue,
+        settings,
+        detected_encoders,
+        wave_plan,
+        disk_monitor,
+        true,
+    )
+    .await
+}
+
+#[allow(clippy::too_many_arguments)]
+async fn run_encode_loop_impl(
+    sink: &dyn EventSink,
+    batch_control: &dyn BatchControl,
+    queue: &mut [QueueItem],
+    settings: &BatchSettings,
+    detected_encoders: &[EncoderInfo],
+    wave_plan: Option<Vec<WaveItem>>,
+    disk_monitor: Option<&crate::disk_monitor::DiskMonitor>,
+    output_is_remote: bool,
+) -> (u32, u32, u32, bool) {
     let qi_str = settings.qp_i.to_string();
     let qp_str = settings.qp_p.to_string();
     let crf_str = settings.crf_val.to_string();
@@ -4086,7 +4235,7 @@ pub async fn run_encode_loop(
     // replace/beside back-copy. Computed once: a single mount lookup.
     let stage_folder_output = settings.output_mode == "folder" && {
         let mut mc = crate::remote::MountCache::new();
-        mc.is_remote(std::path::Path::new(&settings.output_folder))
+        output_is_remote || mc.is_remote(std::path::Path::new(&settings.output_folder))
     };
 
     // ── Incremental log file (#7) ──
@@ -4195,6 +4344,13 @@ pub async fn run_encode_loop(
             })
             .collect()
     };
+
+    // Every queued file's own path, taken before staging rewrites the paths
+    // of remote files: a delivery must never replace another file's source.
+    let source_paths: Vec<std::path::PathBuf> = queue
+        .iter()
+        .map(|q| std::path::PathBuf::from(&q.full_path))
+        .collect();
 
     // Declared outside the loop so cleanup runs even if `break 'outer` exits early.
     let mut wave_staging_contexts: Vec<(usize, StagingContext, String)> = Vec::new();
@@ -4340,25 +4496,45 @@ pub async fn run_encode_loop(
         for (idx, mut ctx, original_path) in wave_staging_contexts.drain(..) {
             if let Some(pos) = awaiting_delivery.iter().position(|(i, _)| *i == idx) {
                 let (_, out_dir) = awaiting_delivery.swap_remove(pos);
-                let delivered = deliver_staged_output(
+                let other_sources: Vec<&std::path::Path> = source_paths
+                    .iter()
+                    .enumerate()
+                    .filter(|(i, _)| *i != idx)
+                    .map(|(_, p)| p.as_path())
+                    .collect();
+                let delivery = deliver_staged_output(
                     &queue[idx],
                     &original_path,
                     &out_dir,
+                    &other_sources,
                     settings,
                     preserve_hdr,
                     detected_encoders,
+                    batch_control,
+                    was_cancelled,
                     sink,
                 )
                 .await;
-                if delivered {
-                    queue[idx].status = QueueItemStatus::Done;
-                    sink.queue_item_updated(idx, "Done");
-                    counts.done += 1;
-                } else {
-                    queue[idx].status = QueueItemStatus::Failed;
-                    sink.queue_item_updated(idx, "Failed");
-                    counts.failed += 1;
-                }
+                let (status, label) = match delivery {
+                    Delivery::Delivered => {
+                        counts.done += 1;
+                        (QueueItemStatus::Done, "Done")
+                    }
+                    Delivery::Declined => {
+                        counts.skipped += 1;
+                        (QueueItemStatus::Skipped, "Skipped")
+                    }
+                    Delivery::Cancelled => {
+                        was_cancelled = true;
+                        (QueueItemStatus::Cancelled, "Cancelled")
+                    }
+                    Delivery::Failed => {
+                        counts.failed += 1;
+                        (QueueItemStatus::Failed, "Failed")
+                    }
+                };
+                queue[idx].status = status;
+                sink.queue_item_updated(idx, label);
             }
 
             // Restore original remote path
