@@ -506,7 +506,7 @@ fn run_remote_output(
 }
 
 #[test]
-fn wave_replace_asks_before_overwriting_an_earlier_files_output() {
+fn wave_replace_refuses_to_overwrite_an_earlier_files_output() {
     setup();
     let dir = tempfile::tempdir().unwrap();
     let mut queue = vec![
@@ -514,13 +514,14 @@ fn wave_replace_asks_before_overwriting_an_earlier_files_output() {
         source(&dir.path().join("STUBSRC-dup.mp4")),
     ];
     let sink = Sink::default();
-    let ctrl = Control::new(&sink, "no");
+    let ctrl = Control::new(&sink, "yes");
     let s = settings("replace", dir.path(), "libx264", "h264");
     let (done, failed, skipped, _) = run(&sink, &ctrl, &mut queue, &s, wave(2));
 
-    assert_eq!(ctrl.prompts.lock().unwrap().len(), 1);
-    assert_eq!((done, failed, skipped), (1, 0, 1));
-    assert_eq!(queue[1].status, QueueItemStatus::Skipped);
+    // dup.mkv is the only copy of dup.avi now: refused without a prompt.
+    assert!(ctrl.prompts.lock().unwrap().is_empty());
+    assert_eq!((done, failed, skipped), (1, 1, 0));
+    assert_eq!(queue[1].status, QueueItemStatus::Failed);
     // The .avi's encode survives, the .mp4 is untouched.
     let mkv = read_string(&dir.path().join("STUBSRC-dup.mkv"));
     assert!(mkv.ends_with("/0_STUBSRC-dup.avi"), "{mkv}");
@@ -528,13 +529,32 @@ fn wave_replace_asks_before_overwriting_an_earlier_files_output() {
         std::fs::read(dir.path().join("STUBSRC-dup.mp4")).unwrap(),
         vec![b's'; 1000]
     );
-    // The declined encode is kept locally and its path logged.
+    // The refused encode is kept locally and its path logged.
     let logs = sink.logs.lock().unwrap();
     let kept = logs
         .iter()
         .find_map(|l| l.trim().strip_prefix("Encoded file kept at: "))
         .expect("no kept-at line");
     assert!(read_string(Path::new(kept)).ends_with("/1_STUBSRC-dup.mp4"));
+}
+
+#[test]
+fn wave_replace_asks_before_overwriting_a_file_from_before_the_batch() {
+    setup();
+    let dir = tempfile::tempdir().unwrap();
+    let mut queue = vec![source(&dir.path().join("STUBSRC-sib.avi"))];
+    std::fs::write(dir.path().join("STUBSRC-sib.mkv"), b"USERFILE").unwrap();
+    let sink = Sink::default();
+    let ctrl = Control::new(&sink, "no");
+    let s = settings("replace", dir.path(), "libx264", "h264");
+    let (done, failed, skipped, _) = run(&sink, &ctrl, &mut queue, &s, wave(1));
+
+    assert_eq!(ctrl.prompts.lock().unwrap().len(), 1);
+    assert_eq!((done, failed, skipped), (0, 0, 1));
+    assert_eq!(
+        std::fs::read(dir.path().join("STUBSRC-sib.mkv")).unwrap(),
+        b"USERFILE"
+    );
 }
 
 #[test]
@@ -668,33 +688,83 @@ fn local_output_never_replaces_another_queued_source() {
     assert_eq!(std::fs::read(&queued_source).unwrap(), vec![b's'; 1000]);
 }
 
-/// Replace mode, [x.mkv, x.avi]: x.mkv is replaced by its own encode first,
-/// so x.mkv is no longer a source and x.avi's output is an ordinary
-/// overwrite question, not a refusal.
-fn replaced_in_place_is_no_longer_a_source(plan: Option<Vec<WaveItem>>, name: &str) {
+/// Replace mode, [x.mkv, x.avi], answer "yes": x.mkv's encode replaces
+/// x.mkv and is then the only copy of that file. x.avi would end up with
+/// the same name, so it is refused whatever the answer, and nothing asks.
+fn keeps_an_encode_that_replaced_its_source(plan: Option<Vec<WaveItem>>, name: &str) {
     setup();
     let dir = tempfile::tempdir().unwrap();
+    let avi = dir.path().join(format!("{name}.avi"));
     let mut queue = vec![
         source(&dir.path().join(format!("{name}.mkv"))),
-        source(&dir.path().join(format!("{name}.avi"))),
+        source(&avi),
     ];
     let sink = Sink::default();
     let ctrl = Control::new(&sink, "yes");
     let s = settings("replace", dir.path(), "libx264", "h264");
     let (done, failed, _, _) = run(&sink, &ctrl, &mut queue, &s, plan);
 
-    assert_eq!((done, failed), (2, 0), "{:?}", sink.logs.lock().unwrap());
-    assert_eq!(ctrl.prompts.lock().unwrap().len(), 1);
+    let logs = sink.logs.lock().unwrap().join("\n");
+    assert_eq!((done, failed), (1, 1), "{logs}");
+    assert!(ctrl.prompts.lock().unwrap().is_empty());
     let mkv = read_string(&dir.path().join(format!("{name}.mkv")));
-    assert!(mkv.ends_with(&format!("{name}.avi")), "{mkv}");
+    assert!(mkv.ends_with(&format!("{name}.mkv")), "{mkv}");
+    assert!(std::fs::read(&avi).unwrap() == vec![b's'; 1000]);
+    assert!(logs.contains("same name"), "{logs}");
 }
 
 #[test]
-fn local_replace_in_place_is_no_longer_a_source() {
-    replaced_in_place_is_no_longer_a_source(local_plan(2), "STUBSRC-inplace-local");
+fn local_replace_keeps_an_encode_that_replaced_its_source() {
+    keeps_an_encode_that_replaced_its_source(local_plan(2), "STUBSRC-inplace-local");
 }
 
 #[test]
-fn wave_replace_in_place_is_no_longer_a_source() {
-    replaced_in_place_is_no_longer_a_source(wave(2), "STUBSRC-inplace-wave");
+fn wave_replace_keeps_an_encode_that_replaced_its_source() {
+    keeps_an_encode_that_replaced_its_source(wave(2), "STUBSRC-inplace-wave");
+}
+
+/// Folder mode, [a/y.avi, b/y.mp4], both to out/y.mkv. With delete_source
+/// the first encode is the only copy of a/y.avi and is never overwritten;
+/// without it the ordinary overwrite question applies.
+fn same_stem_into_one_folder(delete_source: bool, name: &str) -> (u32, u32, usize, String) {
+    setup();
+    let dir = tempfile::tempdir().unwrap();
+    let out = dir.path().join("out");
+    for d in ["a", "b", "out"] {
+        std::fs::create_dir(dir.path().join(d)).unwrap();
+    }
+    let second = dir.path().join("b").join(format!("{name}.mp4"));
+    let mut queue = vec![
+        source(&dir.path().join("a").join(format!("{name}.avi"))),
+        source(&second),
+    ];
+    let sink = Sink::default();
+    let ctrl = Control::new(&sink, "yes");
+    let mut s = settings("folder", &out, "libx264", "h264");
+    s.delete_source = delete_source;
+    let (done, failed, _, _) = run(&sink, &ctrl, &mut queue, &s, local_plan(2));
+    let prompts = ctrl.prompts.lock().unwrap().len();
+    if delete_source {
+        assert!(std::fs::read(&second).unwrap() == vec![b's'; 1000]);
+    }
+    (
+        done,
+        failed,
+        prompts,
+        read_string(&out.join(format!("{name}.mkv"))),
+    )
+}
+
+#[test]
+fn delete_source_keeps_an_encode_that_is_the_only_copy() {
+    let (done, failed, prompts, y) = same_stem_into_one_folder(true, "STUBSRC-stem-del");
+    assert_eq!((done, failed, prompts), (1, 1, 0));
+    assert!(y.ends_with("STUBSRC-stem-del.avi"), "{y}");
+}
+
+#[test]
+fn without_delete_source_a_same_name_output_is_an_overwrite_question() {
+    let (done, failed, prompts, y) = same_stem_into_one_folder(false, "STUBSRC-stem-keep");
+    assert_eq!((done, failed, prompts), (2, 0, 1));
+    assert!(y.ends_with("STUBSRC-stem-keep.mp4"), "{y}");
 }
