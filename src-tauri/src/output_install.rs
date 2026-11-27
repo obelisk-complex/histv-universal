@@ -227,12 +227,29 @@ pub async fn copy_beside(local: &Path, dest: &Path) -> std::io::Result<PathBuf> 
     }
 }
 
+/// Errors with `AlreadyExists` when `dest` was absent when the overwrite
+/// question was settled (`dest_existed` false) and a file has appeared
+/// there since, for example during a long network copy. Run just before
+/// the install, so that file is left alone.
+pub fn check_still_absent(dest: &Path, dest_existed: bool) -> std::io::Result<()> {
+    if !dest_existed && dest.exists() {
+        return Err(std::io::Error::new(
+            std::io::ErrorKind::AlreadyExists,
+            format!(
+                "{} appeared while the encode was being copied and was not replaced",
+                dest.display()
+            ),
+        ));
+    }
+    Ok(())
+}
+
 /// Deliver a finished local encode to `dest` (for example a network share):
-/// copy it beside `dest`, then install it. On error nothing is left at the
-/// destination and the local file is kept.
-pub async fn deliver(local: &Path, dest: &Path) -> std::io::Result<()> {
+/// copy it beside `dest`, then install it (see `check_still_absent`). On
+/// error nothing is left at the destination and the local file is kept.
+pub async fn deliver(local: &Path, dest: &Path, dest_existed: bool) -> std::io::Result<()> {
     let staged = copy_beside(local, dest).await?;
-    if let Err(e) = install(&staged, dest) {
+    if let Err(e) = check_still_absent(dest, dest_existed).and_then(|()| install(&staged, dest)) {
         let _ = std::fs::remove_file(&staged);
         return Err(e);
     }
@@ -413,7 +430,7 @@ mod tests {
         let dest = remote.join("movie.mkv");
         std::fs::write(&dest, b"older").unwrap();
 
-        deliver(&local, &dest).await.unwrap();
+        deliver(&local, &dest, true).await.unwrap();
         assert_eq!(std::fs::read(&dest).unwrap(), b"encoded");
         assert_eq!(std::fs::read_dir(&remote).unwrap().count(), 1);
         assert!(local.exists());
@@ -421,8 +438,26 @@ mod tests {
         // Destination folder gone: the error is reported, the local file
         // is kept and nothing is written.
         let gone = dir.path().join("gone").join("movie.mkv");
-        assert!(deliver(&local, &gone).await.is_err());
+        assert!(deliver(&local, &gone, false).await.is_err());
         assert!(local.exists());
         assert!(!dir.path().join("gone").exists());
+    }
+
+    #[tokio::test]
+    async fn deliver_refuses_a_destination_that_appeared_after_the_check() {
+        let dir = tempfile::tempdir().unwrap();
+        let local = dir.path().join("local.mkv");
+        std::fs::write(&local, b"encoded").unwrap();
+        let remote = dir.path().join("remote");
+        std::fs::create_dir(&remote).unwrap();
+        let dest = remote.join("movie.mkv");
+        // Absent when checked, written by someone else since.
+        std::fs::write(&dest, b"newcomer").unwrap();
+
+        let err = deliver(&local, &dest, false).await.unwrap_err();
+        assert_eq!(err.kind(), std::io::ErrorKind::AlreadyExists);
+        assert_eq!(std::fs::read(&dest).unwrap(), b"newcomer");
+        assert_eq!(std::fs::read_dir(&remote).unwrap().count(), 1);
+        assert!(local.exists());
     }
 }

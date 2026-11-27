@@ -4060,8 +4060,9 @@ async fn deliver_staged_output(
     };
 
     let is_replace = settings.output_mode == "replace";
+    let dest_existed = dest.exists();
     let action = crate::output_install::delivery_action(
-        dest.exists(),
+        dest_existed,
         crate::output_install::is_same_file(&dest, remote),
         is_other_queued_source(&dest, idx, queued_sources),
         is_replace,
@@ -4114,9 +4115,9 @@ async fn deliver_staged_output(
     ));
 
     let result = if is_replace {
-        replace_remote_source(&local_output, remote, &dest).await
+        replace_remote_source(&local_output, remote, &dest, dest_existed).await
     } else {
-        crate::output_install::deliver(&local_output, &dest)
+        crate::output_install::deliver(&local_output, &dest, dest_existed)
             .await
             .map(|()| format!("  Copied output to remote → {}", dest.display()))
             .map_err(|e| e.to_string())
@@ -4156,14 +4157,21 @@ fn is_other_queued_source(
 /// Replace a remote source with its encode: copy the encode beside the
 /// destination, set the source aside as a backup, move the copy into
 /// place, then delete the backup. If the move fails the source is put back.
+/// A file that appeared at `dest` during the copy is left alone (see
+/// `output_install::check_still_absent`).
 async fn replace_remote_source(
     local: &std::path::Path,
     remote: &std::path::Path,
     dest: &std::path::Path,
+    dest_existed: bool,
 ) -> Result<String, String> {
     let staged = crate::output_install::copy_beside(local, dest)
         .await
         .map_err(|e| e.to_string())?;
+    if let Err(e) = crate::output_install::check_still_absent(dest, dest_existed) {
+        let _ = std::fs::remove_file(&staged);
+        return Err(e.to_string());
+    }
     let backup = crate::output_install::backup_path(remote);
     let backed_up = remote.exists() && std::fs::rename(remote, &backup).is_ok();
     if let Err(e) = crate::output_install::install(&staged, dest) {
@@ -7342,6 +7350,25 @@ mod tests {
         cat.stdout(std::process::Stdio::piped());
         let out = output_with_timeout(cat, std::time::Duration::from_secs(5)).await;
         assert!(out.is_some_and(|o| o.status.success()));
+    }
+
+    #[tokio::test]
+    async fn remote_replace_refuses_a_destination_that_appeared_after_the_check() {
+        let dir = tempfile::tempdir().unwrap();
+        let local = dir.path().join("local.mkv");
+        std::fs::write(&local, b"encoded").unwrap();
+        let remote = dir.path().join("movie.avi");
+        std::fs::write(&remote, b"source").unwrap();
+        let dest = dir.path().join("movie.mkv");
+        // Absent when checked, written by someone else since.
+        std::fs::write(&dest, b"newcomer").unwrap();
+
+        assert!(replace_remote_source(&local, &remote, &dest, false)
+            .await
+            .is_err());
+        assert_eq!(std::fs::read(&dest).unwrap(), b"newcomer");
+        assert_eq!(std::fs::read(&remote).unwrap(), b"source");
+        assert_eq!(std::fs::read_dir(dir.path()).unwrap().count(), 3);
     }
 
     /// Runs every CQP arm this machine can encode with the ffmpeg in
