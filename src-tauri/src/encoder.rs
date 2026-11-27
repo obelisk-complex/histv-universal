@@ -5408,6 +5408,38 @@ pub fn cleanup_stderr_logs(
     }
 }
 
+/// The value after `key` in an ffmpeg progress line, such as `123` for
+/// `frame=` in `frame=  123 fps=...`.
+fn progress_field<'a>(line: &'a [u8], key: &[u8]) -> Option<&'a str> {
+    let mut start = line.windows(key.len()).position(|w| w == key)? + key.len();
+    // ffmpeg pads small counters: `frame=    1`.
+    start += line[start..].iter().take_while(|&&b| b == b' ').count();
+    let end = line[start..]
+        .iter()
+        .position(|&b| b == b' ' || b == b'\t')
+        .map(|p| start + p)
+        .unwrap_or(line.len());
+    std::str::from_utf8(&line[start..end]).ok()
+}
+
+#[cfg(test)]
+mod stderr_reader_tests {
+    use super::*;
+
+    #[test]
+    fn frame_count_is_read_through_padding() {
+        let line =
+            b"frame=  123 fps= 24 q=28.0 size=    1024KiB time=00:00:05.12 bitrate=1638.4kbits/s";
+        assert_eq!(progress_field(line, b"frame="), Some("123"));
+        assert_eq!(progress_field(line, b"time="), Some("00:00:05.12"));
+        assert_eq!(
+            progress_field(b"frame=12345 fps=30", b"frame="),
+            Some("12345")
+        );
+        assert_eq!(progress_field(b"size=1kB", b"frame="), None);
+    }
+}
+
 /// Spawn a blocking thread that reads ffmpeg stderr, updates the
 /// progress counters, and appends all output to the shared batch log
 /// file. A separator header is written before the first byte so that
@@ -5463,35 +5495,18 @@ pub fn spawn_stderr_reader(
                     for &byte in &buf[..n] {
                         if byte == b'\r' || byte == b'\n' {
                             if !line_buf.is_empty() {
-                                if let Some(pos) = line_buf.windows(5).position(|w| w == b"time=") {
-                                    let start = pos + 5;
-                                    let end = line_buf[start..]
-                                        .iter()
-                                        .position(|&b| b == b' ' || b == b'\t')
-                                        .map(|p| start + p)
-                                        .unwrap_or(line_buf.len());
-                                    if let Ok(s) = std::str::from_utf8(&line_buf[start..end]) {
-                                        if let Some(secs) = parse_ffmpeg_time(s) {
-                                            progress_secs.store(
-                                                secs.to_bits(),
-                                                std::sync::atomic::Ordering::Relaxed,
-                                            );
-                                        }
-                                    }
-                                }
-                                if let Some(pos) = line_buf.windows(6).position(|w| w == b"frame=")
+                                if let Some(secs) =
+                                    progress_field(&line_buf, b"time=").and_then(parse_ffmpeg_time)
                                 {
-                                    let start = pos + 6;
-                                    let end = line_buf[start..]
-                                        .iter()
-                                        .position(|&b| b == b' ' || b == b'\t')
-                                        .map(|p| start + p)
-                                        .unwrap_or(line_buf.len());
-                                    if let Ok(s) = std::str::from_utf8(&line_buf[start..end]) {
-                                        if let Ok(fc) = s.trim().parse::<u64>() {
-                                            frames.store(fc, std::sync::atomic::Ordering::Relaxed);
-                                        }
-                                    }
+                                    progress_secs.store(
+                                        secs.to_bits(),
+                                        std::sync::atomic::Ordering::Relaxed,
+                                    );
+                                }
+                                if let Some(fc) = progress_field(&line_buf, b"frame=")
+                                    .and_then(|s| s.parse::<u64>().ok())
+                                {
+                                    frames.store(fc, std::sync::atomic::Ordering::Relaxed);
                                 }
                                 line_buf.clear();
                             }
