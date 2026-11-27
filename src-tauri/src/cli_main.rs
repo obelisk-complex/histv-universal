@@ -195,9 +195,10 @@ fn collect_and_probe_files(
 
         match result {
             Ok(pr) => {
-                // Lightweight MKV tag repair: fix stale statistics
-                // so the queue shows the real bitrate from import.
-                let repair = histv_lib::mkv_tags::repair_after_probe(
+                // Show the real bitrate even when the MKV's statistics
+                // tags are stale, without writing to the source. Tag
+                // repair is the explicit --repair-tags command.
+                let repair = histv_lib::mkv_tags::estimate_bitrate_after_probe(
                     &file_path,
                     pr.duration_secs,
                     &pr.audio_streams,

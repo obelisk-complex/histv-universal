@@ -2868,12 +2868,11 @@ async fn encode_single_file(
         }
     }
 
-    // Pre-decision MKV tag repair: fix stale statistics tags on input
-    // files so the encoding decision uses the actual bitrate. This is
-    // lightweight (no I/O beyond a stat + in-place tag write) and runs
-    // automatically before every encode.
+    // Pre-decision bitrate check: derive the MKV's real bitrate from its
+    // current size so the encoding decision ignores stale statistics
+    // tags. Read-only (a stat); the source file is never written.
     let mut item_video_bitrate_mbps = item_video_bitrate_mbps;
-    if let Some(bps) = crate::mkv_tags::repair_after_probe(
+    if let Some(bps) = crate::mkv_tags::estimate_bitrate_after_probe(
         &item_full_path,
         item_duration_secs,
         &queue[idx].probe.audio_streams,
@@ -2881,7 +2880,7 @@ async fn encode_single_file(
         let corrected_mbps = bps as f64 / 1_000_000.0;
         if (corrected_mbps - item_video_bitrate_mbps).abs() > 0.1 {
             sink.log(&format!(
-                "  Tag repair: {:.2}Mbps → {:.2}Mbps",
+                "  Bitrate from file size: {:.2}Mbps → {:.2}Mbps",
                 item_video_bitrate_mbps, corrected_mbps
             ));
             item_video_bitrate_mbps = corrected_mbps;

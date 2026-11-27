@@ -7,10 +7,11 @@
 //!
 //! This module provides two repair tiers:
 //!
-//! **Lightweight (automatic)** - runs before every encoding batch and
-//! after each encode. Computes video BPS and NUMBER_OF_BYTES from the
-//! actual file size minus estimated audio/subtitle contribution, and
-//! patches DURATION from the probed value. Instant on any hardware.
+//! **Lightweight** - runs automatically on each finished encode's output,
+//! and on source files only when the user asks for it. Computes video BPS
+//! and NUMBER_OF_BYTES from the actual file size minus estimated
+//! audio/subtitle contribution, and patches DURATION from the probed
+//! value. Instant on any hardware.
 //!
 //! **Deep (manual)** - scans every packet in the file via ffprobe to
 //! get exact per-stream byte counts and frame counts, then patches all
@@ -488,9 +489,10 @@ fn patch_first_statistics_tag(path: &Path, values: &TagValues) -> Result<u32, St
 /// Lightweight tag repair: computes correct values from file size and
 /// probe data, then patches the video stream's statistics tags in-place.
 ///
-/// Called automatically before every encoding batch and after each
-/// encode. Computation is trivial (arithmetic on file size, duration,
-/// and audio bitrates) - the only I/O is the in-place tag write.
+/// Called by the explicit repair commands and on each finished encode's
+/// own output, never on a source file. Computation is trivial
+/// (arithmetic on file size, duration, and audio bitrates) - the only
+/// I/O is the in-place tag write.
 ///
 /// `frame_count` is the exact number of video frames, if known (e.g.
 /// from ffmpeg's stderr output during encoding). Pass None to skip
@@ -525,13 +527,14 @@ pub fn lightweight_repair(
     Ok((patched, video_bps))
 }
 
-/// Probe-and-repair: checks if a file is MKV with valid duration, then runs
-/// `lightweight_repair` and returns the corrected video bitrate if any tags
-/// were updated. Encapsulates the pattern duplicated across lib.rs, cli_main.rs,
-/// and encoder.rs.
+/// Video bitrate of an MKV derived from its file size, duration and audio
+/// bitrates, the same arithmetic `lightweight_repair` uses, without touching
+/// the file. Import and encode only read the source; rewriting its tags is
+/// left to the explicit repair commands.
 ///
-/// Returns `Some(corrected_video_bps)` if tags were patched, `None` otherwise.
-pub fn repair_after_probe(
+/// Returns `Some(video_bps)` for an MKV with a positive duration, `None`
+/// otherwise.
+pub fn estimate_bitrate_after_probe(
     file_path: &str,
     duration_secs: f64,
     audio_streams: &[crate::queue::AudioStreamInfo],
@@ -548,16 +551,9 @@ pub fn repair_after_probe(
         .iter()
         .map(|s| s.bitrate_kbps as u64 * 1000)
         .sum();
-    match lightweight_repair(
-        std::path::Path::new(file_path),
-        file_size,
-        duration_secs,
-        audio_total_bps,
-        None,
-    ) {
-        Ok((n, bps)) if n > 0 => Some(bps),
-        _ => None,
-    }
+    let audio_bytes = (audio_total_bps as f64 * duration_secs / 8.0) as u64;
+    let video_bytes = file_size.saturating_sub(audio_bytes);
+    Some((video_bytes as f64 * 8.0 / duration_secs) as u64)
 }
 
 /// Deep tag repair: computes exact per-stream byte counts by scanning
@@ -686,7 +682,7 @@ pub async fn deep_repair(
 }
 
 /// Lightweight repair using probe data. Convenience wrapper for the
-/// automatic pre-batch and post-encode repair paths.
+/// explicit "Repair MKV tags" command (GUI) and `--repair-tags` (CLI).
 ///
 /// Returns (patched_count, computed_video_bps).
 pub async fn repair_file_tags(
@@ -865,6 +861,52 @@ mod tests {
         // 1.000000001 seconds (1 nanosecond past 1 second)
         let result = format_mkv_duration(1.000000001);
         assert!(result.starts_with("00:00:01."));
+    }
+
+    // ── import-time bitrate never writes the source ───────────────
+
+    /// Write a 2-second MKV whose video statistics tags are stale (far
+    /// larger than the real values), as a remuxed file often carries.
+    /// Returns None when the system ffmpeg is unavailable.
+    fn stale_tag_mkv(dir: &Path) -> Option<std::path::PathBuf> {
+        let out = dir.join("stale.mkv");
+        let ok = std::process::Command::new("ffmpeg")
+            .args(["-v", "error", "-y", "-f", "lavfi", "-i"])
+            .args(["testsrc2=d=2:r=25:s=160x120", "-c:v", "libx264"])
+            .args(["-preset", "ultrafast"])
+            .args(["-metadata:s:v:0", "BPS=999999999"])
+            .args(["-metadata:s:v:0", "NUMBER_OF_BYTES=99999999999"])
+            .args(["-metadata:s:v:0", "NUMBER_OF_FRAMES=9999999"])
+            .arg(&out)
+            .status()
+            .map(|s| s.success())
+            .unwrap_or(false);
+        ok.then_some(out)
+    }
+
+    #[test]
+    fn import_bitrate_leaves_source_mkv_bytes_unchanged() {
+        let dir = tempfile::tempdir().unwrap();
+        let Some(src) = stale_tag_mkv(dir.path()) else {
+            eprintln!("skipped: ffmpeg not available");
+            return;
+        };
+        // Fixture check: the stale tags must be patchable, otherwise an
+        // unchanged hash would prove nothing.
+        let probe_copy = dir.path().join("copy.mkv");
+        std::fs::copy(&src, &probe_copy).unwrap();
+        let copy_size = std::fs::metadata(&probe_copy).unwrap().len();
+        let (patched, _) = lightweight_repair(&probe_copy, copy_size, 2.0, 0, None).unwrap();
+        assert!(patched > 0, "fixture has no patchable statistics tags");
+
+        let before = std::fs::read(&src).unwrap();
+        let bps = estimate_bitrate_after_probe(src.to_str().unwrap(), 2.0, &[]);
+        assert!(
+            std::fs::read(&src).unwrap() == before,
+            "source MKV was modified"
+        );
+        // The bitrate comes from the file size, not the stale BPS tag.
+        assert_eq!(bps, Some(before.len() as u64 * 8 / 2));
     }
 
     // ── lightweight_repair arithmetic ─────────────────────────────
