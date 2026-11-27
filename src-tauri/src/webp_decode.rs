@@ -473,12 +473,19 @@ fn padded_canvas(info: &WebpInfo) -> (u32, u32) {
 
 /// ffmpeg arguments for the decoder that reads standalone WebP frames
 /// from stdin and writes raw RGBA to stdout.
-fn webp_decoder_args() -> Vec<String> {
+///
+/// Frames of an animated WebP can be smaller than the canvas. ffmpeg
+/// would scale every frame to the first frame's size, so each one is
+/// padded to the full canvas instead, top-left aligned: every decoded
+/// frame is then exactly `width * height * 4` bytes and keeps its pixels.
+fn webp_decoder_args(width: u32, height: u32) -> Vec<String> {
     [
         "-f",
         "webp_pipe",
         "-i",
         "pipe:0",
+        "-vf",
+        &format!("format=rgba,pad={width}:{height}:0:0:color=black@0"),
         "-f",
         "rawvideo",
         "-pix_fmt",
@@ -586,7 +593,7 @@ pub async fn transcode_animated_webp(
     }
 
     let mut dec_cmd = crate::ffmpeg::ffmpeg_command();
-    dec_cmd.args(webp_decoder_args());
+    dec_cmd.args(webp_decoder_args(padded_w, padded_h));
 
     run_pipeline(
         &frames,
@@ -719,22 +726,23 @@ async fn run_pipeline(
             break;
         }
 
-        // Read decoded RGBA pixels for this frame from the single decoder
-        // process. Each frame produces exactly width * height * 4 bytes.
-        let Some(expected_size) = (frame.width as usize)
-            .checked_mul(frame.height as usize)
-            .and_then(|v| v.checked_mul(4))
-        else {
+        if frame.width > padded_w || frame.height > padded_h {
             stop = Some(Stop::Failed(format!(
-                "Frame {} dimensions too large: {}x{}",
+                "Frame {} ({}x{}) is larger than the {}x{} canvas",
                 i + 1,
                 frame.width,
-                frame.height
+                frame.height,
+                info.width,
+                info.height
             )));
             break;
-        };
-        let mut decoded_rgba = vec![0u8; expected_size];
-        match until_cancelled(read_full(&mut dec_stdout, &mut decoded_rgba), batch_control).await {
+        }
+
+        // Read decoded RGBA pixels for this frame from the single decoder
+        // process. Each frame arrives padded to the full canvas, with the
+        // frame's own pixels in its top-left corner.
+        let mut padded_rgba = vec![0u8; frame_byte_size];
+        match until_cancelled(read_full(&mut dec_stdout, &mut padded_rgba), batch_control).await {
             None => {
                 stop = Some(Stop::Cancelled);
                 break;
@@ -746,7 +754,7 @@ async fn run_pipeline(
                 )));
                 break;
             }
-            Some(Ok(n)) if n < expected_size => {
+            Some(Ok(n)) if n < frame_byte_size => {
                 stop = Some(Stop::Failed(format!(
                     "Could not decode frame {} of {}: the decoder stopped early",
                     i + 1,
@@ -756,6 +764,7 @@ async fn run_pipeline(
             }
             Some(Ok(_)) => {}
         }
+        let decoded_rgba = crop_top_left(&padded_rgba, padded_w, frame.width, frame.height);
 
         // Composite onto canvas
         if !frame.blend {
@@ -967,6 +976,17 @@ async fn until_cancelled<F: std::future::Future>(
             _ = tokio::time::sleep(std::time::Duration::from_millis(100)) => {}
         }
     }
+}
+
+/// The `width` x `height` RGBA rectangle in the top-left corner of a frame
+/// `stride_px` pixels wide. The caller ensures it fits.
+fn crop_top_left(rgba: &[u8], stride_px: u32, width: u32, height: u32) -> Vec<u8> {
+    let row = width as usize * 4;
+    rgba.chunks_exact(stride_px as usize * 4)
+        .take(height as usize)
+        .flat_map(|line| &line[..row])
+        .copied()
+        .collect()
 }
 
 /// Read until `buf` is full or the reader reaches EOF; returns the bytes read.
@@ -1347,13 +1367,14 @@ mod tests {
         /// Run the pipeline on its own thread and runtime; fail the test
         /// instead of hanging the suite if it does not return.
         fn run_watched(
+            input: (WebpInfo, Vec<AnimFrame>),
             enc: tokio::process::Command,
             dec: tokio::process::Command,
             control: Arc<CancellableBatchControl>,
         ) -> Result<TranscodeResult, String> {
             let (tx, rx) = std::sync::mpsc::channel();
             std::thread::spawn(move || {
-                let (info, frames) = synthetic();
+                let (info, frames) = input;
                 let rt = tokio::runtime::Builder::new_current_thread()
                     .enable_all()
                     .build()
@@ -1379,6 +1400,7 @@ mod tests {
         #[test]
         fn healthy_stubs_complete() {
             let r = run_watched(
+                synthetic(),
                 sh("exec cat >/dev/null"),
                 decoder_emitting(FRAMES),
                 Arc::new(CancellableBatchControl::new()),
@@ -1395,6 +1417,7 @@ mod tests {
         #[test]
         fn encoder_exit_does_not_hang_on_feeder() {
             let r = run_watched(
+                synthetic(),
                 sh("exit 1"),
                 sh("exec cat"),
                 Arc::new(CancellableBatchControl::new()),
@@ -1412,8 +1435,13 @@ mod tests {
             control
                 .cancel_current
                 .store(true, std::sync::atomic::Ordering::SeqCst);
-            let r =
-                run_watched(sh("exec cat >/dev/null"), sh("exec cat"), control).expect("cancel");
+            let r = run_watched(
+                synthetic(),
+                sh("exec cat >/dev/null"),
+                sh("exec cat"),
+                control,
+            )
+            .expect("cancel");
             assert!(r.was_cancelled);
         }
 
@@ -1429,8 +1457,13 @@ mod tests {
                 flip.cancel_current
                     .store(true, std::sync::atomic::Ordering::SeqCst);
             });
-            let r = run_watched(sh("exec sleep 30"), decoder_emitting(FRAMES), control)
-                .expect("cancel");
+            let r = run_watched(
+                synthetic(),
+                sh("exec sleep 30"),
+                decoder_emitting(FRAMES),
+                control,
+            )
+            .expect("cancel");
             assert!(r.was_cancelled);
         }
 
@@ -1438,6 +1471,7 @@ mod tests {
         #[test]
         fn decoder_failure_is_reported() {
             let r = run_watched(
+                synthetic(),
                 sh("exec cat >/dev/null"),
                 sh("cat >/dev/null; echo 'Invalid data found' >&2; exit 1"),
                 Arc::new(CancellableBatchControl::new()),
@@ -1450,6 +1484,7 @@ mod tests {
         #[test]
         fn decoder_short_output_is_reported() {
             let r = run_watched(
+                synthetic(),
                 sh("exec cat >/dev/null"),
                 decoder_emitting(FRAMES - 1),
                 Arc::new(CancellableBatchControl::new()),
@@ -1461,6 +1496,7 @@ mod tests {
         #[test]
         fn decoder_exit_status_is_checked() {
             let r = run_watched(
+                synthetic(),
                 sh("exec cat >/dev/null"),
                 sh(&format!(
                     "cat >/dev/null; head -c {} /dev/zero; exit 1",
@@ -1472,12 +1508,84 @@ mod tests {
             assert!(e.contains("exit code 1"), "{e}");
         }
 
+        /// Optimised animated WebPs store most frames as small rectangles.
+        /// Fixture, made with ffmpeg's libwebp_anim: a 64x48 blue canvas
+        /// with a 12x12 red square moving right, 10 frames of 100 ms.
+        /// Frames 2-10 are 16 or 18 by 12 pixel rectangles at y=8.
+        #[test]
+        fn sub_rectangle_frames_composite_onto_canvas() {
+            if std::process::Command::new("ffmpeg")
+                .arg("-version")
+                .output()
+                .is_err()
+            {
+                eprintln!("skipped: ffmpeg is not on PATH");
+                return;
+            }
+            let path =
+                Path::new(env!("CARGO_MANIFEST_DIR")).join("tests/fixtures/anim_subrect.webp");
+            let (info, frames) = extract_frames(&path).unwrap();
+            assert_eq!((info.width, info.height, frames.len()), (64, 48, 10));
+            assert!(
+                frames[1..].iter().all(|f| f.width < 64 && f.height < 48),
+                "fixture lost its sub-rectangle frames"
+            );
+
+            let dir = tempfile::tempdir().unwrap();
+            let out = dir.path().join("canvas.rgba");
+            let enc = sh(&format!("exec cat > '{}'", out.display()));
+            let mut dec = tokio::process::Command::new("ffmpeg");
+            dec.args(webp_decoder_args(64, 48)).kill_on_drop(true);
+            let r = run_watched(
+                (info, frames),
+                enc,
+                dec,
+                Arc::new(CancellableBatchControl::new()),
+            )
+            .expect("fixture converts");
+            assert_eq!(r.exit_code, 0);
+
+            // The source frames, as ffmpeg drew them before encoding.
+            const BLUE: [u8; 4] = [0, 0, 254, 255];
+            const RED: [u8; 4] = [253, 0, 0, 255];
+            let raw = std::fs::read(&out).unwrap();
+            // 100 ms frames at 50 fps: each canvas is written 5 times.
+            assert_eq!(raw.len(), 10 * 5 * FRAME_BYTES);
+            for (k, canvas) in raw.chunks_exact(FRAME_BYTES).enumerate() {
+                let n = k / 5;
+                let left = (5 * (n + 1)) & !1;
+                for (p, px) in canvas.chunks_exact(4).enumerate() {
+                    let (x, y) = (p % 64, p / 64);
+                    let red = (8..20).contains(&y) && (left..left + 12).contains(&x);
+                    let want = if red { RED } else { BLUE };
+                    assert_eq!(px, want, "frame {} pixel ({x},{y})", n + 1);
+                }
+            }
+        }
+
+        /// A malformed file whose frame is wider than its canvas fails
+        /// cleanly instead of panicking on the crop.
+        #[test]
+        fn frame_larger_than_canvas_is_an_error() {
+            let (info, mut frames) = synthetic();
+            frames[1].width = W + 2;
+            let r = run_watched(
+                (info, frames),
+                sh("exec cat >/dev/null"),
+                decoder_emitting(FRAMES),
+                Arc::new(CancellableBatchControl::new()),
+            );
+            let e = r.err().expect("oversized frame must be an error");
+            assert!(e.contains("larger than the 64x48 canvas"), "{e}");
+        }
+
         /// An encoder that writes a lot to stderr before reading stdin
         /// (ffmpeg's stats and warnings over a long encode) must not stall
         /// the frame writes.
         #[test]
         fn encoder_stderr_is_drained() {
             let r = run_watched(
+                synthetic(),
                 sh("head -c 1048576 /dev/zero >&2; exec cat >/dev/null"),
                 decoder_emitting(FRAMES),
                 Arc::new(CancellableBatchControl::new()),
