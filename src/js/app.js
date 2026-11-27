@@ -2112,7 +2112,7 @@
         return { cls: 'log-line-error', filter: 'error' };
       if (trimmed.includes('WARNING'))
         return { cls: 'log-line-warn', filter: 'warn' };
-      if (trimmed.startsWith('Done →') || trimmed.startsWith('Remuxed') || trimmed.startsWith('Batch done') || trimmed.startsWith('Batch cancelled'))
+      if (trimmed.startsWith('Done →') || trimmed.startsWith('Remuxed') || trimmed.startsWith('Batch done') || trimmed.startsWith('Batch cancelled') || trimmed.startsWith('Batch stopped'))
         return { cls: 'log-line-result', filter: 'result' };
       if (/^\[\d+\/\d+\]/.test(trimmed))
         return { cls: 'log-line-file', filter: '' };
@@ -3232,14 +3232,16 @@
       // Queue sync complete — the backend syncs queue statuses after
       // batch-finished fires. Re-fetch to pick up the authoritative state,
       // then auto-continue if new files were added during the batch.
-      on('queue-sync-complete', async () => {
+      on('queue-sync-complete', async (event) => {
         await fetchQueue();
         renderQueue();
 
         // Auto-continue: if new files were added during the batch, start another.
         // Check batchWasCancelled BEFORE clearing it so a user cancel actually
-        // prevents auto-continue.
-        if (!batchRunning && !batchWasCancelled) {
+        // prevents auto-continue. The payload is true when the backend
+        // cancelled or stopped the batch (encoder failure, cancel at a prompt).
+        const batchStopped = event && event.payload === true;
+        if (!batchRunning && !batchWasCancelled && !batchStopped) {
           const hasPending = queueData.some(i => (i.status || '').toLowerCase() === 'pending');
           if (hasPending) {
             startBatch(true, true);

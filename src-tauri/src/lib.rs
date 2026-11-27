@@ -10,6 +10,7 @@ pub mod hdr10plus_pipeline;
 pub mod hevc_utils;
 pub mod mkv_tags;
 pub mod mp4_entry;
+pub mod output_install;
 pub mod probe;
 pub mod queue;
 pub mod remote;
@@ -389,12 +390,15 @@ mod gui_commands {
 
         let result = probe::probe_file(&file_path, &sink).await;
 
-        // Lightweight MKV tag repair: fix stale statistics so the queue
-        // shows the real bitrate from import.
+        // Show the real bitrate even when the MKV's statistics tags are
+        // stale, without writing to the source. Tag repair is an explicit
+        // command.
         let repair = match &result {
-            Ok(pr) => {
-                crate::mkv_tags::repair_after_probe(&file_path, pr.duration_secs, &pr.audio_streams)
-            }
+            Ok(pr) => crate::mkv_tags::estimate_bitrate_after_probe(
+                &file_path,
+                pr.duration_secs,
+                &pr.audio_streams,
+            ),
             Err(_) => None,
         };
 
@@ -671,7 +675,7 @@ mod gui_commands {
         });
 
         tokio::spawn(async move {
-            let (done, failed, skipped, _was_cancelled) = encoder::run_encode_loop(
+            let (done, failed, skipped, was_stopped) = encoder::run_encode_loop(
                 mapping_sink.as_ref(),
                 batch_ctrl.as_ref(),
                 &mut pending_items,
@@ -694,7 +698,9 @@ mod gui_commands {
                     }
                 }
             }
-            let _ = app_for_task.emit("queue-sync-complete", ());
+            // The payload tells the frontend the batch was cancelled or
+            // stopped by an encoder failure, so it must not auto-continue.
+            let _ = app_for_task.emit("queue-sync-complete", was_stopped);
 
             // GUI-specific post-batch actions
             if show_toast {
@@ -705,7 +711,8 @@ mod gui_commands {
                 ));
             }
 
-            if post_action != "None" {
+            // A cancelled or stopped batch did not finish: no shutdown/sleep.
+            if post_action != "None" && !was_stopped {
                 mapping_sink.post_batch(&post_action, post_countdown);
             }
 

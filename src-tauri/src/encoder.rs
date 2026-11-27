@@ -2299,6 +2299,84 @@ enum EncodeFileResult {
     CancelledCurrent,
     /// User cancelled the entire batch (cancel-all / break 'outer).
     CancelledAll,
+    /// Encode failed and the batch must stop: the hardware encoder failed
+    /// and the software fallback was declined, failed or could not start.
+    FailedStopBatch,
+}
+
+/// The user's answer to an existing output, after the overwrite policy.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum OverwriteAnswer {
+    Proceed,
+    Skip,
+    Cancel,
+}
+
+/// Apply the overwrite policy to an existing output at `path`: proceed if
+/// "always" was chosen earlier, otherwise ask (the CLI answers from its
+/// --overwrite flag; headless "ask" means skip).
+fn ask_overwrite(batch_control: &dyn BatchControl, path: &str) -> OverwriteAnswer {
+    if batch_control.overwrite_always() {
+        return OverwriteAnswer::Proceed;
+    }
+    match batch_control.overwrite_prompt(path).as_str() {
+        "no" | "skip" => OverwriteAnswer::Skip,
+        "always" => {
+            batch_control.set_overwrite_always();
+            OverwriteAnswer::Proceed
+        }
+        "cancel" => OverwriteAnswer::Cancel,
+        _ => OverwriteAnswer::Proceed, // "yes"
+    }
+}
+
+/// Running totals for the batch summary.
+#[derive(Debug, Default, Clone, Copy, PartialEq, Eq)]
+struct BatchCounts {
+    done: u32,
+    failed: u32,
+    skipped: u32,
+}
+
+/// Add one file's result to the totals. Returns true when the batch must
+/// stop after this file.
+fn tally(result: &EncodeFileResult, counts: &mut BatchCounts) -> bool {
+    match result {
+        EncodeFileResult::Done => counts.done += 1,
+        EncodeFileResult::Failed => counts.failed += 1,
+        EncodeFileResult::Skipped => counts.skipped += 1,
+        EncodeFileResult::CancelledCurrent => {}
+        EncodeFileResult::CancelledAll => return true,
+        EncodeFileResult::FailedStopBatch => {
+            counts.failed += 1;
+            return true;
+        }
+    }
+    false
+}
+
+#[cfg(test)]
+mod tally_tests {
+    use super::*;
+
+    #[test]
+    fn every_failure_is_counted_and_stops_are_reported() {
+        let mut c = BatchCounts::default();
+        assert!(!tally(&EncodeFileResult::Done, &mut c));
+        assert!(!tally(&EncodeFileResult::Failed, &mut c));
+        assert!(!tally(&EncodeFileResult::Skipped, &mut c));
+        assert!(!tally(&EncodeFileResult::CancelledCurrent, &mut c));
+        assert!(tally(&EncodeFileResult::FailedStopBatch, &mut c));
+        assert!(tally(&EncodeFileResult::CancelledAll, &mut c));
+        assert_eq!(
+            c,
+            BatchCounts {
+                done: 1,
+                failed: 2,
+                skipped: 1
+            }
+        );
+    }
 }
 
 /// A work unit in the wave-aware encode loop: either a single local file
@@ -2315,8 +2393,9 @@ struct WaveWork {
 /// Post-encode processing: DV/HDR10+ metadata injection, size check, MKV tag
 /// patching, and source replacement/deletion.
 ///
-/// Returns `true` if the file was completed successfully, `false` on failure.
-/// On failure the queue item is marked as `Failed`.
+/// Returns `true` once the output is in place at `output_file`, `false` on
+/// failure. On failure the queue item is marked as `Failed`; on success the
+/// caller marks it `Done`.
 #[allow(clippy::too_many_arguments)]
 async fn handle_post_encode(
     idx: usize,
@@ -2427,7 +2506,7 @@ async fn handle_post_encode(
     }
 
     // Post-encode size check
-    // In replace mode, ffmpeg wrote to temp_output_file; in other modes temp == final.
+    // ffmpeg wrote to temp_output_file, a staged file beside output_file.
     // Skip for Copy decisions: the output is just a remux of the source, so
     // a "remux source instead" fallback would produce the same file again.
     let is_copy = matches!(decision, EncodeDecision::Copy);
@@ -2598,7 +2677,7 @@ async fn handle_post_encode(
         // Rename source to .bak first so we can recover if the final
         // rename fails (avoids TOCTOU data loss).
         if is_replace_mode && temp_output_file.exists() {
-            let backup = std::path::PathBuf::from(format!("{}.histv-bak", item_full_path));
+            let backup = crate::output_install::backup_path(std::path::Path::new(item_full_path));
             let source_backed_up = match std::fs::rename(item_full_path, &backup) {
                 Ok(_) => true,
                 Err(e) => {
@@ -2608,30 +2687,63 @@ async fn handle_post_encode(
                     false
                 }
             };
-            // Rename temp to final
-            if temp_output_file != output_file {
-                if let Err(e) = std::fs::rename(temp_output_file, output_file) {
-                    let warn = format!("  WARNING: Could not rename temp to final path: {e}");
-                    sink.log(&warn);
-                    write_log(log_writer, &warn);
-                    // Restore the backup so the source is not lost
-                    if source_backed_up {
-                        let _ = std::fs::rename(&backup, item_full_path);
+            // Move the staged encode onto the final path
+            if let Err(e) = crate::output_install::install(temp_output_file, output_file) {
+                let warn = format!("  WARNING: Could not rename temp to final path: {e}");
+                sink.log(&warn);
+                write_log(log_writer, &warn);
+                // Restore the backup so the source is not lost
+                if source_backed_up {
+                    if let Err(re) = std::fs::rename(&backup, item_full_path) {
+                        let msg = format!(
+                            "  ERROR: Could not put the source back ({re}). The original is at {}",
+                            backup.display()
+                        );
+                        sink.log(&msg);
+                        write_log(log_writer, &msg);
                     }
-                } else {
-                    // Success — remove the backup
-                    if source_backed_up {
-                        let _ = std::fs::remove_file(&backup);
-                    }
-                    let msg = format!("  Replaced source → {}", final_output_str);
-                    sink.log(&msg);
-                    write_log(log_writer, &msg);
                 }
-            } else if source_backed_up {
-                // temp_output_file == output_file, just clean up backup
-                let _ = std::fs::remove_file(&backup);
+                let kept = format!(
+                    "  ERROR: Source not replaced. The encoded file is kept at {}",
+                    temp_output_file.display()
+                );
+                sink.log(&kept);
+                write_log(log_writer, &kept);
+                queue[idx].status = QueueItemStatus::Failed;
+                sink.queue_item_updated(idx, "Failed");
+                return false;
+            } else {
+                // Success — remove the backup
+                if source_backed_up {
+                    let _ = std::fs::remove_file(&backup);
+                }
+                let source = std::path::Path::new(item_full_path);
+                let msg = if crate::output_install::source_was_replaced(source, output_file) {
+                    format!("  Replaced source → {}", final_output_str)
+                } else {
+                    format!(
+                        "  WARNING: Encoded to {final_output_str}, but the source could not be removed and is still at {item_full_path}"
+                    )
+                };
+                sink.log(&msg);
+                write_log(log_writer, &msg);
             }
-        } else if settings.delete_source && temp_output_file.exists() {
+        } else if temp_output_file.exists() {
+            // Move the finished encode onto the output path, replacing any
+            // older output there only now that the new one is complete.
+            if let Err(e) = crate::output_install::install(temp_output_file, output_file) {
+                let msg = format!(
+                    "  ERROR: Could not move the encoded file to {final_output_str}: {e}. It is kept at {}",
+                    temp_output_file.display()
+                );
+                sink.log(&msg);
+                write_log(log_writer, &msg);
+                queue[idx].status = QueueItemStatus::Failed;
+                sink.queue_item_updated(idx, "Failed");
+                return false;
+            }
+        }
+        if !is_replace_mode && settings.delete_source && output_file.exists() {
             // Normal delete-source mode
             match std::fs::remove_file(item_full_path) {
                 Ok(_) => {
@@ -2646,8 +2758,6 @@ async fn handle_post_encode(
             }
         }
 
-        queue[idx].status = QueueItemStatus::Done;
-        sink.queue_item_updated(idx, "Done");
         true
     } else {
         sink.log("  ERROR: Output file not found after encode");
@@ -2681,6 +2791,7 @@ async fn encode_single_file(
     sink: &dyn EventSink,
     batch_control: &dyn BatchControl,
     batch_stderr_log: Option<SharedStderrLog>,
+    queued_sources: &[crate::output_install::QueuedSource],
 ) -> EncodeFileResult {
     // Extract read-only data from the queue item. Cloning individual
     // fields avoids a full QueueItem clone (which includes audio_streams
@@ -2853,7 +2964,12 @@ async fn encode_single_file(
             let input_dir = std::path::Path::new(&item_full_path)
                 .parent()
                 .unwrap_or_else(|| std::path::Path::new("."));
-            let out_dir = input_dir.join("output");
+            // A staged remote file writes to its own local folder, which the
+            // wave loop copies back to `output` beside the remote source.
+            let out_dir = match output_dir_override {
+                Some(d) => d.to_path_buf(),
+                None => input_dir.join("output"),
+            };
             if !out_dir.exists() {
                 if let Err(e) = std::fs::create_dir_all(&out_dir) {
                     let err_msg = format!("  ERROR: Could not create output folder: {e}");
@@ -2865,7 +2981,8 @@ async fn encode_single_file(
                 }
             }
             let out = out_dir.join(format!("{}.{}", item_base_name, ext));
-            (out.clone(), out)
+            let staged = crate::output_install::staged_output_path(&out);
+            (out, staged)
         }
         "replace" => {
             // Encode to a temp file in the same directory, then replace the source
@@ -2873,21 +2990,32 @@ async fn encode_single_file(
             let input_dir = input_path
                 .parent()
                 .unwrap_or_else(|| std::path::Path::new("."));
-            let final_path = input_dir.join(format!("{}.{}", item_base_name, ext));
-            let temp_path = input_dir.join(format!("{}.histv-tmp.{}", item_base_name, ext));
+            // A staged remote file writes to its own local folder; the wave
+            // loop then replaces the remote source with it.
+            let out_dir = output_dir_override.unwrap_or(input_dir);
+            let final_path = out_dir.join(format!("{}.{}", item_base_name, ext));
+            let temp_path = crate::output_install::staged_output_path(&final_path);
             (final_path, temp_path)
         }
         _ => {
             // "folder" - default: use the configured output folder. When that
-            // folder is on a remote mount, the wave loop passes a local override
-            // dir so the encode writes locally and is copied back afterwards
-            // (mirrors replace/beside: keeps the network to a single burst).
+            // folder is on a remote mount, the wave loop passes a local
+            // per-file dir so the encode writes locally and is copied back
+            // afterwards (mirrors replace/beside: keeps the network to a
+            // single burst).
             let folder: &std::path::Path = output_dir_override
                 .unwrap_or_else(|| std::path::Path::new(&settings.output_folder));
             let out = folder.join(format!("{}.{}", item_base_name, ext));
-            (out.clone(), out)
+            let staged = crate::output_install::staged_output_path(&out);
+            (out, staged)
         }
     };
+    // ffmpeg writes to `temp_output_file`, a unique staged file beside
+    // `output_file`; `handle_post_encode` moves it into place only once the
+    // encode has finished, so a failed or cancelled encode never touches an
+    // existing output. Until then the guard removes the staged file on any
+    // early return.
+    let mut staged_guard = crate::output_install::StagedFileGuard::new(temp_output_file.clone());
     // On Windows, prepend the extended-length path prefix when the path
     // exceeds 240 characters to avoid MAX_PATH (260) failures.
     #[cfg(target_os = "windows")]
@@ -2922,34 +3050,55 @@ async fn encode_single_file(
         sink.log("  HDR → SDR: tonemapping with Hable curve");
     }
 
-    // Overwrite check - in replace mode, we're replacing the source so
-    // no overwrite prompt is needed. In other modes, check the final output.
-    if !is_replace_mode && output_file.exists() && !batch_control.overwrite_always() {
-        let response = batch_control.overwrite_prompt(&final_output_str);
-        match response.as_str() {
-            "no" | "skip" => {
+    // Overwrite check. Replace mode replacing its own source needs no
+    // prompt, but any other file at the output path does (for example
+    // movie.mkv beside a source movie.avi). Outside replace mode, an output
+    // path that is the source itself is refused, and so, in every mode, is
+    // another queued file's source, whatever the overwrite answer.
+    let existing = crate::output_install::delivery_action(
+        output_file.exists(),
+        crate::output_install::is_same_file(&output_file, std::path::Path::new(&item_full_path)),
+        is_other_queued_source(&output_file, idx, queued_sources),
+        is_replace_mode,
+    );
+    let refusal = match existing {
+        crate::output_install::ExistingOutput::IsSource => Some("  ERROR: The output would replace the source file. Choose a different output folder, or use Replace mode.".to_string()),
+        crate::output_install::ExistingOutput::IsOtherSource => Some(format!(
+            "  ERROR: The output {} is the source of another file in this batch.",
+            output_file.display()
+        )),
+        _ => None,
+    };
+    if let Some(msg) = refusal {
+        sink.log(&msg);
+        write_log(log_writer, &msg);
+        queue[idx].status = QueueItemStatus::Failed;
+        sink.queue_item_updated(idx, "Failed");
+        return EncodeFileResult::Failed;
+    }
+    if existing == crate::output_install::ExistingOutput::Ask {
+        match ask_overwrite(batch_control, &final_output_str) {
+            OverwriteAnswer::Skip => {
                 sink.log("  Skipped (output exists)");
                 write_log(log_writer, "  Skipped (output exists)");
                 queue[idx].status = QueueItemStatus::Skipped;
                 sink.queue_item_updated(idx, "Skipped");
                 return EncodeFileResult::Skipped;
             }
-            "always" => {
-                batch_control.set_overwrite_always();
-            }
-            "cancel" => {
+            OverwriteAnswer::Cancel => {
+                queue[idx].status = QueueItemStatus::Cancelled;
+                sink.queue_item_updated(idx, "Cancelled");
                 return EncodeFileResult::CancelledAll;
             }
-            _ => {} // "yes" - proceed
+            OverwriteAnswer::Proceed => {}
         }
     }
 
-    // Pre-decision MKV tag repair: fix stale statistics tags on input
-    // files so the encoding decision uses the actual bitrate. This is
-    // lightweight (no I/O beyond a stat + in-place tag write) and runs
-    // automatically before every encode.
+    // Pre-decision bitrate check: derive the MKV's real bitrate from its
+    // current size so the encoding decision ignores stale statistics
+    // tags. Read-only (a stat); the source file is never written.
     let mut item_video_bitrate_mbps = item_video_bitrate_mbps;
-    if let Some(bps) = crate::mkv_tags::repair_after_probe(
+    if let Some(bps) = crate::mkv_tags::estimate_bitrate_after_probe(
         &item_full_path,
         item_duration_secs,
         &queue[idx].probe.audio_streams,
@@ -2957,7 +3106,7 @@ async fn encode_single_file(
         let corrected_mbps = bps as f64 / 1_000_000.0;
         if (corrected_mbps - item_video_bitrate_mbps).abs() > 0.1 {
             sink.log(&format!(
-                "  Tag repair: {:.2}Mbps → {:.2}Mbps",
+                "  Bitrate from file size: {:.2}Mbps → {:.2}Mbps",
                 item_video_bitrate_mbps, corrected_mbps
             ));
             item_video_bitrate_mbps = corrected_mbps;
@@ -3816,17 +3965,14 @@ async fn encode_single_file(
                             }
                             queue[idx].status = QueueItemStatus::Failed;
                             sink.queue_item_updated(idx, "Failed");
-                            // Original code: break 'outer after SW fallback failure.
-                            // Return CancelledAll to trigger the same outer break.
-                            return EncodeFileResult::CancelledAll;
+                            return EncodeFileResult::FailedStopBatch;
                         }
                         Err(e) => {
                             sink.log(&format!("  ERROR: Could not launch fallback: {e}"));
                             write_log(log_writer, &format!("  ERROR: Fallback launch failed: {e}"));
                             queue[idx].status = QueueItemStatus::Failed;
                             sink.queue_item_updated(idx, "Failed");
-                            // Original code: break 'outer after fallback launch failure.
-                            return EncodeFileResult::CancelledAll;
+                            return EncodeFileResult::FailedStopBatch;
                         }
                         Ok(r) => {
                             final_frame_count = Some(r.frame_count);
@@ -3840,8 +3986,7 @@ async fn encode_single_file(
                     }
                     queue[idx].status = QueueItemStatus::Failed;
                     sink.queue_item_updated(idx, "Failed");
-                    // Original code: break 'outer when user declines fallback.
-                    return EncodeFileResult::CancelledAll;
+                    return EncodeFileResult::FailedStopBatch;
                 }
             }
         } else if exit_code != 0 {
@@ -3879,6 +4024,9 @@ async fn encode_single_file(
     }
 
     // ── Post-encode processing ──
+    // From here handle_post_encode owns the staged file (it may keep it and
+    // log its path when the install fails).
+    staged_guard.keep();
     let success = handle_post_encode(
         idx,
         queue,
@@ -3904,9 +4052,228 @@ async fn encode_single_file(
     .await;
 
     if success {
+        // A staged remote file is Done only once the wave loop has copied
+        // it back; a local file is in place now.
+        if output_dir_override.is_none() {
+            queue[idx].status = QueueItemStatus::Done;
+            sink.queue_item_updated(idx, "Done");
+        }
         EncodeFileResult::Done
     } else {
         EncodeFileResult::Failed
+    }
+}
+
+/// Outcome of copying a staged remote file's encode to its destination.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum Delivery {
+    /// The output is in place.
+    Delivered,
+    /// A file is already at the destination and the user chose not to
+    /// overwrite it.
+    Declined,
+    /// The user chose Cancel at the overwrite prompt, or the batch was
+    /// already cancelled when a prompt was needed.
+    Cancelled,
+    /// Refused or failed.
+    Failed,
+}
+
+/// Copy a staged remote file's finished encode from its local per-file
+/// folder to its destination: the remote source's folder (replace), an
+/// `output` folder beside the source (beside), or the output folder
+/// (folder). The destination gets the same checks as a local output: a
+/// file already there is asked about under the overwrite policy, and the
+/// file's own source (outside Replace mode) or another queued file's
+/// source is never replaced. Whenever the output is not delivered, the
+/// local encode is kept and its path logged.
+#[allow(clippy::too_many_arguments)]
+async fn deliver_staged_output(
+    idx: usize,
+    item: &QueueItem,
+    original_path: &str,
+    out_dir: &std::path::Path,
+    queued_sources: &[crate::output_install::QueuedSource],
+    settings: &BatchSettings,
+    preserve_hdr: bool,
+    detected_encoders: &[EncoderInfo],
+    batch_control: &dyn BatchControl,
+    batch_cancelled: bool,
+    sink: &dyn EventSink,
+) -> Delivery {
+    let remote = std::path::Path::new(original_path);
+    let remote_dir = remote.parent().unwrap_or(std::path::Path::new("."));
+    let base_name = remote.file_stem().unwrap_or_default().to_string_lossy();
+    // Shared helper: identical extension rule to the encode path (DV
+    // Tier-1 / compatibility mode → MP4).
+    let ext = resolve_output_ext(
+        original_path,
+        &item.probe.video_codec,
+        item.probe.dovi_profile,
+        settings,
+        preserve_hdr,
+        detected_encoders,
+    );
+    let file_name = format!("{}.{}", base_name, ext);
+    let local_output = out_dir.join(&file_name);
+    if !local_output.exists() {
+        sink.log(&format!(
+            "  WARNING: expected output {} not found - nothing copied back",
+            local_output.display()
+        ));
+        return Delivery::Failed;
+    }
+    let dest_dir = match settings.output_mode.as_str() {
+        "replace" => remote_dir.to_path_buf(),
+        "beside" => remote_dir.join("output"),
+        _ => std::path::PathBuf::from(&settings.output_folder),
+    };
+    let dest = dest_dir.join(&file_name);
+    let kept = || {
+        sink.log(&format!(
+            "  Encoded file kept at: {}",
+            local_output.display()
+        ))
+    };
+
+    let is_replace = settings.output_mode == "replace";
+    let dest_existed = dest.exists();
+    let action = crate::output_install::delivery_action(
+        dest_existed,
+        crate::output_install::is_same_file(&dest, remote),
+        is_other_queued_source(&dest, idx, queued_sources),
+        is_replace,
+    );
+    match action {
+        crate::output_install::ExistingOutput::IsSource => {
+            sink.log(&format!(
+                "  ERROR: Not copied back: {} is the source file. Choose a different output folder, or use Replace mode.",
+                dest.display()
+            ));
+            kept();
+            return Delivery::Failed;
+        }
+        crate::output_install::ExistingOutput::IsOtherSource => {
+            sink.log(&format!(
+                "  ERROR: Not copied back: {} is the source of another file in this batch.",
+                dest.display()
+            ));
+            kept();
+            return Delivery::Failed;
+        }
+        crate::output_install::ExistingOutput::Ask => {
+            let answer = if batch_cancelled {
+                OverwriteAnswer::Cancel
+            } else {
+                ask_overwrite(batch_control, &dest.to_string_lossy())
+            };
+            match answer {
+                OverwriteAnswer::Skip => {
+                    sink.log(&format!("  Skipped (output exists): {}", dest.display()));
+                    kept();
+                    return Delivery::Declined;
+                }
+                OverwriteAnswer::Cancel => {
+                    sink.log(&format!("  Cancelled (output exists): {}", dest.display()));
+                    kept();
+                    return Delivery::Cancelled;
+                }
+                OverwriteAnswer::Proceed => {}
+            }
+        }
+        crate::output_install::ExistingOutput::Proceed => {}
+    }
+
+    let _ = std::fs::create_dir_all(&dest_dir);
+    sink.log(&format!(
+        "  Moving staged output to remote: {} → {}",
+        local_output.display(),
+        dest.display()
+    ));
+
+    let result = if is_replace {
+        replace_remote_source(&local_output, remote, &dest, dest_existed).await
+    } else {
+        crate::output_install::deliver(&local_output, &dest, dest_existed)
+            .await
+            .map(|()| format!("  Copied output to remote → {}", dest.display()))
+            .map_err(|e| e.to_string())
+    };
+    match result {
+        Ok(msg) => {
+            sink.log(&msg);
+            let _ = std::fs::remove_file(&local_output);
+            Delivery::Delivered
+        }
+        Err(e) => {
+            sink.log(&format!(
+                "  ERROR: Could not copy output to remote mount: {e}"
+            ));
+            sink.log(&format!(
+                "  Encoded file preserved at: {}",
+                local_output.display()
+            ));
+            Delivery::Failed
+        }
+    }
+}
+
+/// True when `path` is still the original source of a queued file other
+/// than `idx`.
+fn is_other_queued_source(
+    path: &std::path::Path,
+    idx: usize,
+    queued_sources: &[crate::output_install::QueuedSource],
+) -> bool {
+    queued_sources
+        .iter()
+        .enumerate()
+        .any(|(i, s)| i != idx && s.is_at(path))
+}
+
+/// Replace a remote source with its encode: copy the encode beside the
+/// destination, set the source aside as a backup, move the copy into
+/// place, then delete the backup. If the move fails the source is put back.
+/// A file that appeared at `dest` during the copy is left alone (see
+/// `output_install::check_still_absent`).
+async fn replace_remote_source(
+    local: &std::path::Path,
+    remote: &std::path::Path,
+    dest: &std::path::Path,
+    dest_existed: bool,
+) -> Result<String, String> {
+    let staged = crate::output_install::copy_beside(local, dest)
+        .await
+        .map_err(|e| e.to_string())?;
+    if let Err(e) = crate::output_install::check_still_absent(dest, dest_existed) {
+        let _ = std::fs::remove_file(&staged);
+        return Err(e.to_string());
+    }
+    let backup = crate::output_install::backup_path(remote);
+    let backed_up = remote.exists() && std::fs::rename(remote, &backup).is_ok();
+    if let Err(e) = crate::output_install::install(&staged, dest) {
+        let _ = std::fs::remove_file(&staged);
+        if backed_up {
+            if let Err(re) = std::fs::rename(&backup, remote) {
+                return Err(format!(
+                    "could not move the copy into place ({e}), and could not put the source back ({re}). The original is at {}",
+                    backup.display()
+                ));
+            }
+        }
+        return Err(format!("could not move the copy into place: {e}"));
+    }
+    if backed_up {
+        let _ = std::fs::remove_file(&backup);
+    }
+    if crate::output_install::source_was_replaced(remote, dest) {
+        Ok(format!("  Replaced remote source → {}", dest.display()))
+    } else {
+        Ok(format!(
+            "  WARNING: Copied output to remote → {}, but the source could not be removed and is still at {}",
+            dest.display(),
+            remote.display()
+        ))
     }
 }
 
@@ -3922,6 +4289,55 @@ pub async fn run_encode_loop(
     detected_encoders: &[EncoderInfo],
     wave_plan: Option<Vec<WaveItem>>,
     disk_monitor: Option<&crate::disk_monitor::DiskMonitor>,
+) -> (u32, u32, u32, bool) {
+    run_encode_loop_impl(
+        sink,
+        batch_control,
+        queue,
+        settings,
+        detected_encoders,
+        wave_plan,
+        disk_monitor,
+        false,
+    )
+    .await
+}
+
+/// `run_encode_loop` with the output folder treated as a remote mount, for
+/// tests that stand a local folder in for a network share.
+#[doc(hidden)]
+pub async fn run_encode_loop_with_remote_output(
+    sink: &dyn EventSink,
+    batch_control: &dyn BatchControl,
+    queue: &mut [QueueItem],
+    settings: &BatchSettings,
+    detected_encoders: &[EncoderInfo],
+    wave_plan: Option<Vec<WaveItem>>,
+    disk_monitor: Option<&crate::disk_monitor::DiskMonitor>,
+) -> (u32, u32, u32, bool) {
+    run_encode_loop_impl(
+        sink,
+        batch_control,
+        queue,
+        settings,
+        detected_encoders,
+        wave_plan,
+        disk_monitor,
+        true,
+    )
+    .await
+}
+
+#[allow(clippy::too_many_arguments)]
+async fn run_encode_loop_impl(
+    sink: &dyn EventSink,
+    batch_control: &dyn BatchControl,
+    queue: &mut [QueueItem],
+    settings: &BatchSettings,
+    detected_encoders: &[EncoderInfo],
+    wave_plan: Option<Vec<WaveItem>>,
+    disk_monitor: Option<&crate::disk_monitor::DiskMonitor>,
+    output_is_remote: bool,
 ) -> (u32, u32, u32, bool) {
     let qi_str = settings.qp_i.to_string();
     let qp_str = settings.qp_p.to_string();
@@ -3940,14 +4356,13 @@ pub async fn run_encode_loop(
         .collect();
 
     let total = pending_indices.len();
-    let mut done_count: u32 = 0;
-    let mut fail_count: u32 = 0;
-    let mut skip_count: u32 = 0;
+    let mut counts = BatchCounts::default();
     let save_log = settings.save_log;
     let output_dir = std::path::Path::new(&settings.output_folder);
     let batch_start = std::time::Instant::now();
     let mut file_counter: u32 = 0;
     let mut was_cancelled = false;
+    let mut stopped_by_failure = false;
 
     // ── Folder-mode remote-output staging (politeness) ──
     // When output mode is "folder" and the configured output folder lives on a
@@ -3956,7 +4371,7 @@ pub async fn run_encode_loop(
     // replace/beside back-copy. Computed once: a single mount lookup.
     let stage_folder_output = settings.output_mode == "folder" && {
         let mut mc = crate::remote::MountCache::new();
-        mc.is_remote(std::path::Path::new(&settings.output_folder))
+        output_is_remote || mc.is_remote(std::path::Path::new(&settings.output_folder))
     };
 
     // ── Incremental log file (#7) ──
@@ -4066,6 +4481,13 @@ pub async fn run_encode_loop(
             .collect()
     };
 
+    // Every queued file's own path, taken before staging rewrites the paths
+    // of remote files: a delivery must never replace another file's source.
+    let queued_sources: Vec<crate::output_install::QueuedSource> = queue
+        .iter()
+        .map(|q| crate::output_install::QueuedSource::new(q.full_path.clone().into()))
+        .collect();
+
     // Declared outside the loop so cleanup runs even if `break 'outer` exits early.
     let mut wave_staging_contexts: Vec<(usize, StagingContext, String)> = Vec::new();
 
@@ -4114,21 +4536,19 @@ pub async fn run_encode_loop(
             }
         }
 
-        // Local override dir for folder-mode output when the output folder is
-        // remote: the encode writes here, then wave cleanup copies it back to
-        // the remote output folder. None unless this wave stages and the output
-        // folder is remote, so the common path is unchanged.
-        let folder_output_override: Option<std::path::PathBuf> =
-            match (work.staging_dir.as_ref(), stage_folder_output) {
-                (Some(sd), true) => {
-                    let d = sd.join("folder-output");
-                    let _ = tokio::fs::create_dir_all(&d).await;
-                    Some(d)
-                }
-                _ => None,
-            };
+        // Each staged remote file writes its output to its own local folder
+        // (replace and beside modes, and folder mode when the output folder
+        // is remote); the wave cleanup below copies it to its destination.
+        // One folder per file keeps two files with the same name in one wave
+        // apart. A file whose staging failed writes in place as before.
+        let needs_local_output = settings.output_mode != "folder" || stage_folder_output;
+        // Files encoded into a per-file folder, waiting for delivery.
+        let mut awaiting_delivery: Vec<(usize, std::path::PathBuf)> = Vec::new();
+        let mut wave_out_dirs: Vec<std::path::PathBuf> = Vec::new();
 
         // ── Encode each file in this work unit ────────────────
+        // Cancel All leaves this loop with `break`, not `break 'outer`, so
+        // the wave cleanup still delivers the files that already finished.
         for &idx in &work.indices {
             // Pause / cancel check - wait while paused before starting next file
             while batch_control.is_paused() {
@@ -4139,7 +4559,7 @@ pub async fn run_encode_loop(
             }
             if batch_control.should_cancel_all() {
                 was_cancelled = true;
-                break 'outer;
+                break;
             }
             batch_control.clear_cancel_current();
 
@@ -4147,18 +4567,40 @@ pub async fn run_encode_loop(
             if let Some(dm) = disk_monitor {
                 if !dm.check_and_wait(sink, batch_control).await {
                     was_cancelled = true;
-                    break 'outer;
+                    break;
                 }
             }
 
             file_counter += 1;
             sink.batch_progress(file_counter, total);
 
+            let is_staged = wave_staging_contexts.iter().any(|(i, _, _)| *i == idx);
+            let item_out_dir = match work.staging_dir.as_ref() {
+                Some(sd) if needs_local_output && is_staged => {
+                    let d = sd.join(crate::output_install::unique_name("histv-out"));
+                    if let Err(e) = tokio::fs::create_dir_all(&d).await {
+                        let msg = format!(
+                            "  ERROR: Could not create a local output folder in {}: {e}",
+                            sd.display()
+                        );
+                        sink.log(&msg);
+                        write_log(&mut log_writer, &msg);
+                        queue[idx].status = QueueItemStatus::Failed;
+                        sink.queue_item_updated(idx, "Failed");
+                        counts.failed += 1;
+                        continue;
+                    }
+                    wave_out_dirs.push(d.clone());
+                    Some(d)
+                }
+                _ => None,
+            };
+
             let result = encode_single_file(
                 idx,
                 queue,
                 settings,
-                folder_output_override.as_deref(),
+                item_out_dir.as_deref(),
                 detected_encoders,
                 preserve_hdr,
                 cached_ram_gb,
@@ -4172,191 +4614,70 @@ pub async fn run_encode_loop(
                 sink,
                 batch_control,
                 batch_stderr_log.clone(),
+                &queued_sources,
             )
             .await;
 
-            match result {
-                EncodeFileResult::Done => done_count += 1,
-                EncodeFileResult::Failed => fail_count += 1,
-                EncodeFileResult::Skipped => skip_count += 1,
-                EncodeFileResult::CancelledCurrent => {}
-                EncodeFileResult::CancelledAll => {
-                    was_cancelled = true;
-                    break 'outer;
-                }
+            stopped_by_failure |= matches!(result, EncodeFileResult::FailedStopBatch);
+            if let (EncodeFileResult::Done, Some(d)) = (&result, item_out_dir) {
+                // Counted once it has been delivered.
+                awaiting_delivery.push((idx, d));
+            } else if tally(&result, &mut counts) {
+                was_cancelled = true;
+                break;
             }
         } // end per-file loop
 
-        // ── Wave cleanup: restore original paths and clean up staged files ──
-        let is_replace_or_beside =
-            settings.output_mode == "replace" || settings.output_mode == "beside";
+        // ── Wave cleanup: deliver finished outputs, restore original paths
+        // and clean up staged files ──
         for (idx, mut ctx, original_path) in wave_staging_contexts.drain(..) {
-            // Copy output back to remote mount for replace/beside modes
-            if is_replace_or_beside && queue[idx].status == QueueItemStatus::Done {
-                let remote = std::path::Path::new(&original_path);
-                let remote_dir = remote.parent().unwrap_or(std::path::Path::new("."));
-                let base_name = remote.file_stem().unwrap_or_default().to_string_lossy();
-                // Resolve the extension with the shared helper so the back-copy
-                // looks for exactly the file the encode wrote, including the DV
-                // Tier-1 / compatibility-mode MP4 override.
-                let ext = resolve_output_ext(
+            if let Some(pos) = awaiting_delivery.iter().position(|(i, _)| *i == idx) {
+                let (_, out_dir) = awaiting_delivery.swap_remove(pos);
+                let delivery = deliver_staged_output(
+                    idx,
+                    &queue[idx],
                     &original_path,
-                    &queue[idx].probe.video_codec,
-                    queue[idx].probe.dovi_profile,
+                    &out_dir,
+                    &queued_sources,
                     settings,
                     preserve_hdr,
                     detected_encoders,
-                );
-                let is_replace = settings.output_mode == "replace";
-
-                let (local_output, final_remote) = if is_replace {
-                    let staging_dir = work.staging_dir.as_ref().unwrap();
-                    let local = staging_dir.join(format!("{}.{}", base_name, ext));
-                    let remote_dest = remote_dir.join(format!("{}.{}", base_name, ext));
-                    (local, remote_dest)
-                } else {
-                    let staging_dir = work.staging_dir.as_ref().unwrap();
-                    let local = staging_dir
-                        .join("output")
-                        .join(format!("{}.{}", base_name, ext));
-                    let remote_dest_dir = remote_dir.join("output");
-                    let remote_dest = remote_dest_dir.join(format!("{}.{}", base_name, ext));
-                    let _ = std::fs::create_dir_all(&remote_dest_dir);
-                    (local, remote_dest)
+                    batch_control,
+                    was_cancelled,
+                    sink,
+                )
+                .await;
+                let (status, label) = match delivery {
+                    Delivery::Delivered => {
+                        counts.done += 1;
+                        (QueueItemStatus::Done, "Done")
+                    }
+                    Delivery::Declined => {
+                        counts.skipped += 1;
+                        (QueueItemStatus::Skipped, "Skipped")
+                    }
+                    Delivery::Cancelled => {
+                        was_cancelled = true;
+                        (QueueItemStatus::Cancelled, "Cancelled")
+                    }
+                    Delivery::Failed => {
+                        counts.failed += 1;
+                        (QueueItemStatus::Failed, "Failed")
+                    }
                 };
-
-                if local_output.exists() {
-                    sink.log(&format!(
-                        "  Moving staged output to remote: {} → {}",
-                        local_output.display(),
-                        final_remote.display()
-                    ));
-
-                    if is_replace {
-                        let temp_remote =
-                            remote_dir.join(format!("{}.histv-tmp.{}", base_name, ext));
-                        match tokio::fs::copy(&local_output, &temp_remote).await {
-                            Ok(_) => {
-                                // Backup-rename-delete pattern (mirrors local replace mode)
-                                let backup =
-                                    remote_dir.join(format!("{}.histv-bak.{}", base_name, ext));
-                                let backed_up = if remote.exists() {
-                                    std::fs::rename(remote, &backup).is_ok()
-                                } else {
-                                    false
-                                };
-                                if let Err(e) = std::fs::rename(&temp_remote, &final_remote) {
-                                    sink.log(&format!(
-                                        "  WARNING: Could not rename temp to final on remote: {e}"
-                                    ));
-                                    // Restore the backup so the original is not lost
-                                    if backed_up {
-                                        let _ = std::fs::rename(&backup, remote);
-                                    }
-                                } else {
-                                    // Success — remove backup
-                                    if backed_up {
-                                        let _ = std::fs::remove_file(&backup);
-                                    }
-                                    sink.log(&format!(
-                                        "  Replaced remote source → {}",
-                                        final_remote.display()
-                                    ));
-                                }
-                                let _ = std::fs::remove_file(&local_output);
-                            }
-                            Err(e) => {
-                                sink.log(&format!(
-                                    "  ERROR: Could not copy output to remote mount: {e}"
-                                ));
-                                let _ = std::fs::remove_file(&temp_remote);
-                                sink.log(&format!(
-                                    "  Encoded file preserved at: {}",
-                                    local_output.display()
-                                ));
-                            }
-                        }
-                    } else {
-                        match tokio::fs::copy(&local_output, &final_remote).await {
-                            Ok(_) => {
-                                let _ = std::fs::remove_file(&local_output);
-                                sink.log(&format!(
-                                    "  Copied output to remote → {}",
-                                    final_remote.display()
-                                ));
-                            }
-                            Err(e) => {
-                                sink.log(&format!(
-                                    "  ERROR: Could not copy output to remote mount: {e}"
-                                ));
-                                sink.log(&format!(
-                                    "  Encoded file preserved at: {}",
-                                    local_output.display()
-                                ));
-                            }
-                        }
-                    }
-                }
-            }
-
-            // Folder mode: copy the locally-staged output back to the remote
-            // output folder (the encode wrote to folder_output_override). Uses
-            // the same extension-resolution as the beside back-copy above.
-            if let Some(ref local_dir) = folder_output_override {
-                if queue[idx].status == QueueItemStatus::Done {
-                    let remote = std::path::Path::new(&original_path);
-                    // Shared helper: identical extension rule to the encode path
-                    // and the replace/beside back-copy (DV Tier-1 / compat → MP4).
-                    let ext = resolve_output_ext(
-                        &original_path,
-                        &queue[idx].probe.video_codec,
-                        queue[idx].probe.dovi_profile,
-                        settings,
-                        preserve_hdr,
-                        detected_encoders,
-                    );
-                    let base_name = remote.file_stem().unwrap_or_default().to_string_lossy();
-                    let local_output = local_dir.join(format!("{}.{}", base_name, ext));
-                    let remote_dir = std::path::Path::new(&settings.output_folder);
-                    let remote_dest = remote_dir.join(format!("{}.{}", base_name, ext));
-                    if local_output.exists() {
-                        let _ = std::fs::create_dir_all(remote_dir);
-                        sink.log(&format!(
-                            "  Moving staged output to remote: {} → {}",
-                            local_output.display(),
-                            remote_dest.display()
-                        ));
-                        match tokio::fs::copy(&local_output, &remote_dest).await {
-                            Ok(_) => {
-                                let _ = std::fs::remove_file(&local_output);
-                                sink.log(&format!(
-                                    "  Copied output to remote → {}",
-                                    remote_dest.display()
-                                ));
-                            }
-                            Err(e) => {
-                                sink.log(&format!(
-                                    "  ERROR: Could not copy output to remote mount: {e}"
-                                ));
-                                sink.log(&format!(
-                                    "  Encoded file preserved at: {}",
-                                    local_output.display()
-                                ));
-                            }
-                        }
-                    } else {
-                        sink.log(&format!(
-                            "  WARNING: expected output {} not found - remote folder not updated",
-                            local_output.display()
-                        ));
-                    }
-                }
+                queue[idx].status = status;
+                sink.queue_item_updated(idx, label);
             }
 
             // Restore original remote path
             queue[idx].full_path = original_path;
             // Clean up the staged input copy
             ctx.cleanup(sink);
+        }
+        // Remove the per-file output folders; one that still holds an
+        // encode that could not be delivered is kept.
+        for d in wave_out_dirs.drain(..) {
+            let _ = std::fs::remove_dir(&d);
         }
 
         if was_cancelled {
@@ -4371,15 +4692,6 @@ pub async fn run_encode_loop(
         ctx.cleanup(sink);
     }
 
-    // Best-effort: remove the folder-mode output staging dir. Empty on the
-    // success path (outputs are copied back and removed individually); may
-    // hold a partial output after a mid-wave cancel. Covers both.
-    if stage_folder_output {
-        let _ = std::fs::remove_dir_all(
-            crate::staging::resolve_staging_dir(None).join("folder-output"),
-        );
-    }
-
     // Batch completion
     let batch_duration = batch_start.elapsed();
     let dur_string = format!(
@@ -4389,10 +4701,16 @@ pub async fn run_encode_loop(
         batch_duration.as_secs() % 60
     );
 
-    let status_msg = if was_cancelled { "cancelled" } else { "done" };
+    let status_msg = if stopped_by_failure {
+        "stopped (encoder failed)"
+    } else if was_cancelled {
+        "cancelled"
+    } else {
+        "done"
+    };
     let summary = format!(
         "Batch {}. Done: {}, Failed: {}, Skipped: {}. Duration: {}",
-        status_msg, done_count, fail_count, skip_count, dur_string
+        status_msg, counts.done, counts.failed, counts.skipped, dur_string
     );
     sink.log("");
     sink.log(&summary);
@@ -4427,7 +4745,7 @@ pub async fn run_encode_loop(
         }
     }
 
-    sink.batch_finished(done_count, fail_count, skip_count, &dur_string);
+    sink.batch_finished(counts.done, counts.failed, counts.skipped, &dur_string);
 
     // ── Stderr log cleanup ──
     // Drop the shared handle so the file is fully flushed/closed.
@@ -4435,7 +4753,7 @@ pub async fn run_encode_loop(
     // Delete if empty, and enforce the 10-file cap.
     cleanup_stderr_logs(output_dir, stderr_log_filename.as_deref(), 10);
 
-    (done_count, fail_count, skip_count, was_cancelled)
+    (counts.done, counts.failed, counts.skipped, was_cancelled)
 }
 
 // ── Shared helpers ──────────────────────────────────────────────
@@ -7384,6 +7702,25 @@ mod tests {
         cat.stdout(std::process::Stdio::piped());
         let out = output_with_timeout(cat, std::time::Duration::from_secs(5)).await;
         assert!(out.is_some_and(|o| o.status.success()));
+    }
+
+    #[tokio::test]
+    async fn remote_replace_refuses_a_destination_that_appeared_after_the_check() {
+        let dir = tempfile::tempdir().unwrap();
+        let local = dir.path().join("local.mkv");
+        std::fs::write(&local, b"encoded").unwrap();
+        let remote = dir.path().join("movie.avi");
+        std::fs::write(&remote, b"source").unwrap();
+        let dest = dir.path().join("movie.mkv");
+        // Absent when checked, written by someone else since.
+        std::fs::write(&dest, b"newcomer").unwrap();
+
+        assert!(replace_remote_source(&local, &remote, &dest, false)
+            .await
+            .is_err());
+        assert_eq!(std::fs::read(&dest).unwrap(), b"newcomer");
+        assert_eq!(std::fs::read(&remote).unwrap(), b"source");
+        assert_eq!(std::fs::read_dir(dir.path()).unwrap().count(), 3);
     }
 
     /// Runs every CQP arm this machine can encode with the ffmpeg in
