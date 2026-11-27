@@ -2715,7 +2715,7 @@ async fn encode_single_file(
     sink: &dyn EventSink,
     batch_control: &dyn BatchControl,
     batch_stderr_log: Option<SharedStderrLog>,
-    queued_sources: &[crate::output_install::QueuedSource],
+    protected: &crate::output_install::ProtectedPaths,
 ) -> EncodeFileResult {
     // Extract read-only data from the queue item. Cloning individual
     // fields avoids a full QueueItem clone (which includes audio_streams
@@ -2982,13 +2982,18 @@ async fn encode_single_file(
     let existing = crate::output_install::delivery_action(
         output_file.exists(),
         crate::output_install::is_same_file(&output_file, std::path::Path::new(&item_full_path)),
-        is_other_queued_source(&output_file, idx, queued_sources),
+        protected.is_other_source(&output_file, idx),
+        protected.is_sole_copy(&output_file),
         is_replace_mode,
     );
     let refusal = match existing {
         crate::output_install::ExistingOutput::IsSource => Some("  ERROR: The output would replace the source file. Choose a different output folder, or use Replace mode.".to_string()),
         crate::output_install::ExistingOutput::IsOtherSource => Some(format!(
             "  ERROR: The output {} is the source of another file in this batch.",
+            output_file.display()
+        )),
+        crate::output_install::ExistingOutput::IsSoleCopy => Some(format!(
+            "  ERROR: Not encoded: {} is already the encode of another file in this batch, whose original is gone. Two files would end up with the same name.",
             output_file.display()
         )),
         _ => None,
@@ -3973,6 +3978,7 @@ async fn encode_single_file(
         // A staged remote file is Done only once the wave loop has copied
         // it back; a local file is in place now.
         if output_dir_override.is_none() {
+            protected.record_output(std::path::Path::new(&item_full_path), &output_file);
             queue[idx].status = QueueItemStatus::Done;
             sink.queue_item_updated(idx, "Done");
         }
@@ -4011,7 +4017,7 @@ async fn deliver_staged_output(
     item: &QueueItem,
     original_path: &str,
     out_dir: &std::path::Path,
-    queued_sources: &[crate::output_install::QueuedSource],
+    protected: &crate::output_install::ProtectedPaths,
     settings: &BatchSettings,
     preserve_hdr: bool,
     detected_encoders: &[EncoderInfo],
@@ -4059,7 +4065,8 @@ async fn deliver_staged_output(
     let action = crate::output_install::delivery_action(
         dest_existed,
         crate::output_install::is_same_file(&dest, remote),
-        is_other_queued_source(&dest, idx, queued_sources),
+        protected.is_other_source(&dest, idx),
+        protected.is_sole_copy(&dest),
         is_replace,
     );
     match action {
@@ -4074,6 +4081,14 @@ async fn deliver_staged_output(
         crate::output_install::ExistingOutput::IsOtherSource => {
             sink.log(&format!(
                 "  ERROR: Not copied back: {} is the source of another file in this batch.",
+                dest.display()
+            ));
+            kept();
+            return Delivery::Failed;
+        }
+        crate::output_install::ExistingOutput::IsSoleCopy => {
+            sink.log(&format!(
+                "  ERROR: Not copied back: {} is already the encode of another file in this batch, whose original is gone. Two files would end up with the same name.",
                 dest.display()
             ));
             kept();
@@ -4121,6 +4136,7 @@ async fn deliver_staged_output(
         Ok(msg) => {
             sink.log(&msg);
             let _ = std::fs::remove_file(&local_output);
+            protected.record_output(remote, &dest);
             Delivery::Delivered
         }
         Err(e) => {
@@ -4134,19 +4150,6 @@ async fn deliver_staged_output(
             Delivery::Failed
         }
     }
-}
-
-/// True when `path` is still the original source of a queued file other
-/// than `idx`.
-fn is_other_queued_source(
-    path: &std::path::Path,
-    idx: usize,
-    queued_sources: &[crate::output_install::QueuedSource],
-) -> bool {
-    queued_sources
-        .iter()
-        .enumerate()
-        .any(|(i, s)| i != idx && s.is_at(path))
 }
 
 /// Replace a remote source with its encode: copy the encode beside the
@@ -4401,10 +4404,9 @@ async fn run_encode_loop_impl(
 
     // Every queued file's own path, taken before staging rewrites the paths
     // of remote files: a delivery must never replace another file's source.
-    let queued_sources: Vec<crate::output_install::QueuedSource> = queue
-        .iter()
-        .map(|q| crate::output_install::QueuedSource::new(q.full_path.clone().into()))
-        .collect();
+    let protected = crate::output_install::ProtectedPaths::new(
+        queue.iter().map(|q| std::path::PathBuf::from(&q.full_path)),
+    );
 
     // Declared outside the loop so cleanup runs even if `break 'outer` exits early.
     let mut wave_staging_contexts: Vec<(usize, StagingContext, String)> = Vec::new();
@@ -4532,7 +4534,7 @@ async fn run_encode_loop_impl(
                 sink,
                 batch_control,
                 batch_stderr_log.clone(),
-                &queued_sources,
+                &protected,
             )
             .await;
 
@@ -4556,7 +4558,7 @@ async fn run_encode_loop_impl(
                     &queue[idx],
                     &original_path,
                     &out_dir,
-                    &queued_sources,
+                    &protected,
                     settings,
                     preserve_hdr,
                     detected_encoders,

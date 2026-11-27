@@ -80,6 +80,9 @@ pub enum ExistingOutput {
     IsSource,
     /// The output path is the source of another file in the batch.
     IsOtherSource,
+    /// The output path holds an encode this batch put in place of a source
+    /// it removed, the only copy left of that file.
+    IsSoleCopy,
 }
 
 pub fn existing_output_action(
@@ -95,16 +98,20 @@ pub fn existing_output_action(
     }
 }
 
-/// The same decision for delivering a staged remote encode to its real
-/// destination, which also refuses to replace another file's source.
+/// The same decision, which also refuses, whatever the overwrite answer,
+/// to replace another file's source or the only copy of a removed source.
 pub fn delivery_action(
     dest_exists: bool,
     dest_is_own_source: bool,
     dest_is_other_source: bool,
+    dest_is_sole_copy: bool,
     replace_mode: bool,
 ) -> ExistingOutput {
     if dest_exists && dest_is_other_source {
         return ExistingOutput::IsOtherSource;
+    }
+    if dest_exists && dest_is_sole_copy {
+        return ExistingOutput::IsSoleCopy;
     }
     existing_output_action(dest_exists, dest_is_own_source, replace_mode)
 }
@@ -159,7 +166,8 @@ fn file_id(p: &Path) -> Option<(u64, u128)> {
 /// A queued file as it was when the batch started. A path counts as this
 /// source only while the original file is still there: once the batch has
 /// installed an encode at that path (Replace mode, same name), the file
-/// there is that item's output, not its source.
+/// there is that item's output, not its source (`ProtectedPaths` then
+/// guards it as a sole copy).
 pub struct QueuedSource {
     path: PathBuf,
     id: Option<(u64, u128)>,
@@ -173,6 +181,52 @@ impl QueuedSource {
 
     pub fn is_at(&self, p: &Path) -> bool {
         self.id.is_some() && is_same_file(p, &self.path) && file_id(p) == self.id
+    }
+}
+
+/// Paths a batch must never write an output over, whatever the overwrite
+/// answer: the queued files' sources, and every encode the batch has put
+/// in place of a source it removed (Replace mode, delete source), which is
+/// the only copy left of that file.
+pub struct ProtectedPaths {
+    sources: Vec<QueuedSource>,
+    sole_copies: std::sync::Mutex<Vec<PathBuf>>,
+}
+
+impl ProtectedPaths {
+    pub fn new(sources: impl IntoIterator<Item = PathBuf>) -> Self {
+        Self {
+            sources: sources.into_iter().map(QueuedSource::new).collect(),
+            sole_copies: std::sync::Mutex::new(Vec::new()),
+        }
+    }
+
+    /// True when `p` is still the original source of a queued file other
+    /// than the one at `idx`.
+    pub fn is_other_source(&self, p: &Path, idx: usize) -> bool {
+        self.sources
+            .iter()
+            .enumerate()
+            .any(|(i, s)| i != idx && s.is_at(p))
+    }
+
+    /// Record an encode installed at `output` once its `source` is gone or
+    /// replaced by it. Does nothing while the source is still there.
+    pub fn record_output(&self, source: &Path, output: &Path) {
+        if source_was_replaced(source, output) {
+            self.sole_copies
+                .lock()
+                .unwrap_or_else(|e| e.into_inner())
+                .push(output.to_path_buf());
+        }
+    }
+
+    pub fn is_sole_copy(&self, p: &Path) -> bool {
+        self.sole_copies
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .iter()
+            .any(|q| is_same_file(p, q))
     }
 }
 
@@ -330,12 +384,41 @@ mod tests {
     #[test]
     fn delivery_decision_refuses_another_files_source() {
         use ExistingOutput::*;
-        assert_eq!(delivery_action(false, false, true, true), Proceed);
-        assert_eq!(delivery_action(true, false, true, true), IsOtherSource);
-        assert_eq!(delivery_action(true, true, true, true), IsOtherSource);
-        assert_eq!(delivery_action(true, true, false, true), Proceed);
-        assert_eq!(delivery_action(true, false, false, true), Ask);
-        assert_eq!(delivery_action(true, true, false, false), IsSource);
+        assert_eq!(delivery_action(false, false, true, false, true), Proceed);
+        assert_eq!(
+            delivery_action(true, false, true, false, true),
+            IsOtherSource
+        );
+        assert_eq!(
+            delivery_action(true, true, true, false, true),
+            IsOtherSource
+        );
+        assert_eq!(delivery_action(true, true, false, false, true), Proceed);
+        assert_eq!(delivery_action(true, false, false, false, true), Ask);
+        assert_eq!(delivery_action(true, true, false, false, false), IsSource);
+        // The only copy of a removed source is refused in every mode.
+        assert_eq!(delivery_action(true, false, false, true, true), IsSoleCopy);
+        assert_eq!(delivery_action(true, false, false, true, false), IsSoleCopy);
+        assert_eq!(delivery_action(false, false, false, true, false), Proceed);
+    }
+
+    #[test]
+    fn protected_paths_guard_an_encode_only_once_its_source_is_gone() {
+        let dir = tempfile::tempdir().unwrap();
+        let src = dir.path().join("a.avi");
+        let out = dir.path().join("a.mkv");
+        std::fs::write(&src, b"source").unwrap();
+        std::fs::write(&out, b"encoded").unwrap();
+        let p = ProtectedPaths::new([src.clone()]);
+        assert!(p.is_other_source(&src, 1));
+        assert!(!p.is_other_source(&src, 0));
+
+        p.record_output(&src, &out); // source still there
+        assert!(!p.is_sole_copy(&out));
+        std::fs::remove_file(&src).unwrap();
+        p.record_output(&src, &out); // source deleted
+        assert!(p.is_sole_copy(&out));
+        assert!(!p.is_sole_copy(&src));
     }
 
     #[test]
