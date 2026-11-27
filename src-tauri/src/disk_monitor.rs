@@ -35,6 +35,23 @@ pub struct BatchEstimate {
     pub net_change_without_delete: i64,
 }
 
+/// The most a VBR encode should write: the video target bitrate plus the
+/// source's audio bitrate, over the duration. Encoders aim at the target as
+/// an average and hardware ones often fall short, so the file is usually
+/// smaller. `None` without a duration.
+pub fn vbr_budget_bytes(item: &QueueItem, target_bps: u64) -> Option<u64> {
+    if item.probe.duration_secs <= 0.0 {
+        return None;
+    }
+    let audio_bps: u64 = item
+        .probe
+        .audio_streams
+        .iter()
+        .map(|s| s.bitrate_kbps as u64 * 1000)
+        .sum();
+    Some(((target_bps + audio_bps) as f64 * item.probe.duration_secs / 8.0) as u64)
+}
+
 /// Estimate disk-space impact for a single file given its encoding decision.
 pub fn estimate_file(item: &QueueItem, decision: &EncodeDecision) -> FileEstimate {
     let source_bytes = item.source_bytes;
@@ -44,13 +61,9 @@ pub fn estimate_file(item: &QueueItem, decision: &EncodeDecision) -> FileEstimat
             // Remux: output ~= source size
             source_bytes
         }
+        // Can't estimate without duration: assume the source size.
         EncodeDecision::Vbr { target_bps, .. } => {
-            // VBR: estimate from target bitrate * duration
-            if item.probe.duration_secs > 0.0 {
-                ((*target_bps as f64 * item.probe.duration_secs) / 8.0) as u64
-            } else {
-                source_bytes // Can't estimate without duration
-            }
+            vbr_budget_bytes(item, *target_bps).unwrap_or(source_bytes)
         }
         EncodeDecision::Cqp { .. } | EncodeDecision::Crf { .. } => {
             // Quality-based: output is unpredictable. Use source size as
@@ -515,8 +528,27 @@ mod tests {
             peak_bps: 6_000_000,
         };
         let est = estimate_file(&item, &decision);
-        // (4_000_000 * 3600) / 8 = 1_800_000_000
-        assert_eq!(est.estimated_output_bytes, 1_800_000_000);
+        // (4_000_000 + 128_000 audio) * 3600 / 8
+        assert_eq!(est.estimated_output_bytes, 1_857_600_000);
+    }
+
+    #[test]
+    fn test_estimate_file_vbr_counts_audio() {
+        let mut item = item_with_size(2_000_000_000, 3600.0);
+        item.probe.audio_streams = vec![crate::queue::AudioStreamInfo {
+            index: 0,
+            codec: "eac3".into(),
+            bitrate_kbps: 640,
+        }];
+        let decision = EncodeDecision::Vbr {
+            target_bps: 4_000_000,
+            peak_bps: 6_000_000,
+        };
+        // (4_000_000 + 640_000) * 3600 / 8
+        assert_eq!(
+            estimate_file(&item, &decision).estimated_output_bytes,
+            2_088_000_000
+        );
     }
 
     #[test]

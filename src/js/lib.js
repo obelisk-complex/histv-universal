@@ -72,18 +72,20 @@ function computeEstimatedSize(item, settings) {
 
   if (!mbps || mbps <= 0) {
     if (!item.videoCodec) return null;
-    return { bytes: item.sourceBytes, approx: true };
+    return { kind: 'variable' };
   }
 
   const isSameCodec = sourceCodec === resolveFamilyForCodec(sourceCodec, settings);
 
   if (mbps > settings.target * 1.15 || (mbps > settings.target && !isSameCodec)) {
-    const estimatedBytes = (settings.target * 1000000 * item.durationSecs) / 8;
-    return { bytes: Math.round(estimatedBytes), approx: false };
+    if (!(item.durationSecs > 0)) return null;
+    const audioKbps = (item.audioStreams || []).reduce((sum, s) => sum + (s.bitrateKbps || 0), 0);
+    const budget = ((settings.target * 1000000 + audioKbps * 1000) * item.durationSecs) / 8;
+    return { bytes: Math.round(budget), kind: 'budget' };
   } else if (mustEncode) {
-    return { bytes: item.sourceBytes, approx: true };
+    return { kind: 'variable' };
   } else if (mbps > 0) {
-    return { bytes: item.sourceBytes, approx: false };
+    return { bytes: item.sourceBytes, kind: 'copy' };
   }
 
   return null;
@@ -92,8 +94,9 @@ function computeEstimatedSize(item, settings) {
 function formatEstimatedSize(item, settings) {
   const est = computeEstimatedSize(item, settings);
   if (!est) return '-';
+  if (est.kind === 'variable') return 'Variable';
   const formatted = formatBytes(est.bytes);
-  return est.approx ? '~' + formatted : formatted;
+  return est.kind === 'budget' ? '≤ ' + formatted : formatted;
 }
 
 // Codec family the backend encodes a single source to (mirrors the codec_family
