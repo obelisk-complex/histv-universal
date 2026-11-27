@@ -2414,6 +2414,10 @@ async fn handle_post_encode(
                     "copy".into(),
                     "-c:s".into(),
                     "copy".into(),
+                    "-map".into(),
+                    "0:t?".into(),
+                    "-c:t".into(),
+                    "copy".into(),
                 ]);
             }
             remux_args.extend(audio_codec);
@@ -4834,6 +4838,22 @@ mod subtitle_policy_tests {
             .collect();
         assert_eq!(dispositions, [["-disposition:s:0", "+0"]], "{args:?}");
     }
+
+    fn has_pair(args: &[String], key: &str, value: &str) -> bool {
+        args.windows(2).any(|w| w[0] == key && w[1] == value)
+    }
+
+    #[test]
+    fn mkv_keeps_attachments_such_as_fonts() {
+        let args = args_for("out.mkv");
+        assert!(has_pair(&args, "-map", "0:t?"), "{args:?}");
+        assert!(has_pair(&args, "-c:t", "copy"), "{args:?}");
+        let args = args_for("out.mp4");
+        assert!(
+            !args.iter().any(|a| a == "0:t?"),
+            "MP4 has no attachments: {args:?}"
+        );
+    }
 }
 
 /// Component parts for assembling an ffmpeg command line.
@@ -5066,6 +5086,11 @@ fn assemble_ffmpeg_args_for(
                 // "default" when none is, and "+0" changes no flag.
                 "-disposition:s:0".into(),
                 "+0".into(),
+                // Attachments (fonts for styled ASS subtitles).
+                "-map".into(),
+                "0:t?".into(),
+                "-c:t".into(),
+                "copy".into(),
             ]);
         }
     }
@@ -8934,6 +8959,10 @@ mod tests {
                 "copy",
                 "-disposition:s:0",
                 "+0",
+                "-map",
+                "0:t?",
+                "-c:t",
+                "copy",
                 "out.mkv"
             ])
         );
