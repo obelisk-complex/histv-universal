@@ -657,6 +657,8 @@ async fn run_pipeline(
         .stdin
         .take()
         .ok_or_else(|| "Could not open encoder stdin".to_string())?;
+    // An undrained stderr pipe fills over a long encode and blocks ffmpeg.
+    let enc_stderr = drain_stderr(encoder.stderr.take());
 
     // ── Spawn a single decoder process for all frames ──
     // Instead of spawning one ffmpeg process per frame, we use a single
@@ -682,6 +684,7 @@ async fn run_pipeline(
         .stdout
         .take()
         .ok_or_else(|| "Could not open decoder stdout".to_string())?;
+    let dec_stderr = drain_stderr(decoder.stderr.take());
 
     // Prepare the frame payloads for the writer task. Each entry is the
     // standalone-wrapped WebP data to write to the decoder's stdin.
@@ -854,12 +857,21 @@ async fn run_pipeline(
         .wait()
         .await
         .map_err(|e| format!("Encoder wait failed: {e}"))?;
+    // Both children have exited, so their stderr pipes are at EOF.
+    let enc_tail = enc_stderr.await.unwrap_or_default();
+    let _ = dec_stderr.await;
 
+    let exit_code = enc_status.code().unwrap_or(-1);
+    if exit_code != 0 && !matches!(stop, Some(Stop::Cancelled)) {
+        if let Some(line) = last_line(&enc_tail) {
+            sink.log(&format!("  Encoder ffmpeg: {line}"));
+        }
+    }
     if let Some(Stop::Failed(msg)) = stop {
         return Err(msg);
     }
     Ok(TranscodeResult {
-        exit_code: enc_status.code().unwrap_or(-1),
+        exit_code,
         was_cancelled: matches!(stop, Some(Stop::Cancelled)),
         frame_count: decoded_count as u64,
     })
@@ -871,6 +883,44 @@ enum Stop {
     /// The encoder closed its input; its exit code decides the result.
     EncoderClosed,
     Failed(String),
+}
+
+/// Bytes of a child's stderr kept for error messages.
+const STDERR_TAIL: usize = 4096;
+
+/// Read a child's stderr to EOF so the child never blocks on a full pipe.
+/// Resolves to the last `STDERR_TAIL` bytes.
+fn drain_stderr(stderr: Option<tokio::process::ChildStderr>) -> tokio::task::JoinHandle<Vec<u8>> {
+    tokio::spawn(async move {
+        let mut tail = Vec::new();
+        let Some(mut stderr) = stderr else {
+            return tail;
+        };
+        let mut buf = [0u8; 4096];
+        while let Ok(n) = stderr.read(&mut buf).await {
+            if n == 0 {
+                break;
+            }
+            tail.extend_from_slice(&buf[..n]);
+            if tail.len() > 2 * STDERR_TAIL {
+                tail.drain(..tail.len() - STDERR_TAIL);
+            }
+        }
+        if tail.len() > STDERR_TAIL {
+            tail.drain(..tail.len() - STDERR_TAIL);
+        }
+        tail
+    })
+}
+
+/// The last non-empty line of a stderr tail (ffmpeg ends progress lines
+/// with `\r`).
+fn last_line(tail: &[u8]) -> Option<String> {
+    String::from_utf8_lossy(tail)
+        .split(['\n', '\r'])
+        .map(str::trim)
+        .rfind(|l| !l.is_empty())
+        .map(str::to_string)
 }
 
 fn cancel_requested(control: &dyn BatchControl) -> bool {
@@ -1212,6 +1262,13 @@ mod tests {
         assert_eq!(pixel[3], 255, "alpha should be 255");
     }
 
+    #[test]
+    fn last_line_skips_progress_and_blank_lines() {
+        let tail = b"frame=  10 fps=0.0\rframe=  20 fps=9.9\r\nError while encoding\n\n";
+        assert_eq!(last_line(tail).as_deref(), Some("Error while encoding"));
+        assert_eq!(last_line(b"\r\n  \n"), None);
+    }
+
     // ── Pipeline supervision (stub children) ─────────────────────
 
     /// Drives `run_pipeline` with `sh -c` stubs in place of ffmpeg.
@@ -1351,6 +1408,21 @@ mod tests {
             let r = run_watched(sh("exec sleep 30"), decoder_emitting(FRAMES), control)
                 .expect("cancel");
             assert!(r.was_cancelled);
+        }
+
+        /// An encoder that writes a lot to stderr before reading stdin
+        /// (ffmpeg's stats and warnings over a long encode) must not stall
+        /// the frame writes.
+        #[test]
+        fn encoder_stderr_is_drained() {
+            let r = run_watched(
+                sh("head -c 1048576 /dev/zero >&2; exec cat >/dev/null"),
+                decoder_emitting(FRAMES),
+                Arc::new(CancellableBatchControl::new()),
+            )
+            .expect("pipeline with a chatty encoder");
+            assert_eq!(r.exit_code, 0);
+            assert_eq!(r.frame_count, FRAMES as u64);
         }
     }
 
