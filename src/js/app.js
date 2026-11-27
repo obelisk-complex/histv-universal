@@ -1180,6 +1180,8 @@
       const sourceCodec = (item.videoCodec || '').toLowerCase();
       // Codecs that cannot be stream-copied into MKV/MP4
       const isNonCopyable = ['gif', 'apng', 'mjpeg', 'webp'].includes(sourceCodec);
+      // Compatibility mode promises H.264: other codecs are never copied.
+      const mustEncode = isNonCopyable || (settings.compat && sourceCodec !== 'h264');
 
       if (!mbps || mbps <= 0) {
         if (settings.rcMode === 'CRF') {
@@ -1193,7 +1195,7 @@
       if (mbps > settings.target * 1.15 || (mbps > settings.target && !isSameCodec)) {
         const peak = (settings.target * settings.peakMultiplier).toFixed(1).replace(/\.0$/, '');
         return `${settings.target}/${peak}Mbps (VBR)`;
-      } else if (isNonCopyable) {
+      } else if (mustEncode) {
         if (settings.rcMode === 'CRF') {
           return `CRF ${settings.crf}`;
         }
@@ -1209,34 +1211,38 @@
     }
 
 // ── Estimated output size (§2.4.0 Phase 1) ──
-    // Returns { bytes: number, approx: boolean } or null if not estimable.
-    // approx=true means CQP/CRF: prefix display with "~".
+    // Returns { bytes, kind: 'copy' | 'budget' } or { kind: 'variable' },
+    // or null if not estimable. 'budget' is shown as an upper bound (≤).
     function computeEstimatedSize(item, settings) {
       if (!item.sourceBytes || item.sourceBytes <= 0) return null;
 
       const mbps = item.videoBitrateMbps;
       const sourceCodec = (item.videoCodec || '').toLowerCase();
       const isNonCopyable = ['gif', 'apng', 'mjpeg', 'webp'].includes(sourceCodec);
+      // Compatibility mode promises H.264: other codecs are never copied.
+      const mustEncode = isNonCopyable || (settings.compat && sourceCodec !== 'h264');
 
       // Have file size but no probe data yet
       if (!mbps || mbps <= 0) {
         if (!item.videoCodec) return null;
         // Probed but zero bitrate (image sequence) - quality-based encode
-        return { bytes: item.sourceBytes, approx: true };
+        return { kind: 'variable' };
       }
 
       const isSameCodec = sourceCodec === resolveFamilyForCodec(sourceCodec, settings);
 
       if (mbps > settings.target * 1.15 || (mbps > settings.target && !isSameCodec)) {
-        // VBR decision
-        const estimatedBytes = (settings.target * 1000000 * item.durationSecs) / 8;
-        return { bytes: Math.round(estimatedBytes), approx: false };
-      } else if (isNonCopyable) {
-        // CQP/CRF for non-copyable codecs
-        return { bytes: item.sourceBytes, approx: true };
+        // VBR decision: at most the target plus audio, often less
+        if (!(item.durationSecs > 0)) return null;
+        const audioKbps = (item.audioStreams || []).reduce((sum, s) => sum + (s.bitrateKbps || 0), 0);
+        const budget = ((settings.target * 1000000 + audioKbps * 1000) * item.durationSecs) / 8;
+        return { bytes: Math.round(budget), kind: 'budget' };
+      } else if (mustEncode) {
+        // CQP/CRF: the size depends on the picture
+        return { kind: 'variable' };
       } else if (mbps > 0) {
         // Copy decision
-        return { bytes: item.sourceBytes, approx: false };
+        return { bytes: item.sourceBytes, kind: 'copy' };
       }
 
       return null;
@@ -1246,8 +1252,9 @@
     function formatEstimatedSize(item, settings) {
       const est = computeEstimatedSize(item, settings);
       if (!est) return '-';
+      if (est.kind === 'variable') return 'Variable';
       const formatted = formatBytes(est.bytes);
-      return est.approx ? '~' + formatted : formatted;
+      return est.kind === 'budget' ? '≤ ' + formatted : formatted;
     }
 
     // ── Update all target bitrate labels (#11: uses .children not querySelectorAll) ──

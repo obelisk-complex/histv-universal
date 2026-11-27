@@ -392,19 +392,25 @@ fn compute_decisions(
                 },
                 detected_encoders,
             );
-            encoder::decide_encode_strategy(
+            let rc = encoder::RateControlParams {
+                mode: &rate_control_mode,
+                qp_i: args.qp_i,
+                qp_p: args.qp_p,
+                crf_val: args.crf,
+            };
+            let decision = encoder::decide_encode_strategy(
                 item.probe.video_bitrate_mbps,
                 args.bitrate,
                 &item.probe.video_codec,
                 &resolved.codec_family,
-                &encoder::RateControlParams {
-                    mode: &rate_control_mode,
-                    qp_i: args.qp_i,
-                    qp_p: args.qp_p,
-                    crf_val: args.crf,
-                },
+                &rc,
                 args.peak_multiplier,
-            )
+            );
+            if encoder::compat_needs_reencode(args.compat, &item.probe.video_codec) {
+                encoder::reencode_instead_of_copy(decision, &rc)
+            } else {
+                decision
+            }
         })
         .collect()
 }
@@ -1273,32 +1279,21 @@ fn target_bitrate_label(decision: &EncodeDecision) -> String {
     }
 }
 
-/// Estimated output size for a queue item. Returns (bytes, is_approximate).
-/// is_approximate=true for CQP/CRF where exact size cannot be predicted.
-fn estimate_output_size(item: &QueueItem, decision: &EncodeDecision) -> Option<(u64, bool)> {
+/// Estimated output size for the "To (est.)" column: the source size for a
+/// stream copy, at most the target budget for VBR (`vbr_budget_bytes`), and
+/// "Variable" for quality-based encodes, whose size depends on the picture.
+fn format_estimated_size(item: &QueueItem, decision: &EncodeDecision) -> String {
+    use histv_lib::disk_monitor::{format_bytes, vbr_budget_bytes};
     if item.source_bytes == 0 {
-        return None;
+        return "-".to_string();
     }
     match decision {
-        EncodeDecision::Copy => Some((item.source_bytes, false)),
-        EncodeDecision::Vbr { target_bps, .. } => {
-            if item.probe.duration_secs > 0.0 {
-                let bytes = (*target_bps as f64 * item.probe.duration_secs / 8.0) as u64;
-                Some((bytes, false))
-            } else {
-                Some((item.source_bytes, true))
-            }
-        }
-        EncodeDecision::Cqp { .. } | EncodeDecision::Crf { .. } => Some((item.source_bytes, true)),
-    }
-}
-
-/// Format estimated output size for display, matching the GUI's To Size column.
-fn format_estimated_size(item: &QueueItem, decision: &EncodeDecision) -> String {
-    match estimate_output_size(item, decision) {
-        Some((bytes, true)) => format!("~{}", histv_lib::disk_monitor::format_bytes(bytes)),
-        Some((bytes, false)) => histv_lib::disk_monitor::format_bytes(bytes),
-        None => "-".to_string(),
+        EncodeDecision::Copy => format_bytes(item.source_bytes),
+        EncodeDecision::Vbr { target_bps, .. } => match vbr_budget_bytes(item, *target_bps) {
+            Some(bytes) => format!("≤ {}", format_bytes(bytes)),
+            None => "-".to_string(),
+        },
+        EncodeDecision::Cqp { .. } | EncodeDecision::Crf { .. } => "Variable".to_string(),
     }
 }
 
@@ -1521,45 +1516,54 @@ mod tests {
         assert_eq!(source_bitrate_label(&item), "-");
     }
 
-    // ── estimate_output_size ───────────────────────────────────
+    // ── format_estimated_size ──────────────────────────────────
 
     #[test]
     fn test_estimate_copy() {
         let item = make_item("/a.mkv", "hevc", 2.0, 60.0, 15_000_000);
-        let (bytes, approx) = estimate_output_size(&item, &EncodeDecision::Copy).unwrap();
-        assert_eq!(bytes, 15_000_000);
-        assert!(!approx);
+        assert_eq!(
+            format_estimated_size(&item, &EncodeDecision::Copy),
+            "15.0MB"
+        );
     }
 
     #[test]
-    fn test_estimate_vbr() {
-        let item = make_item("/a.mkv", "hevc", 10.0, 100.0, 125_000_000);
-        let (bytes, approx) = estimate_output_size(
-            &item,
-            &EncodeDecision::Vbr {
-                target_bps: 4_000_000,
-                peak_bps: 6_000_000,
-            },
-        )
-        .unwrap();
-        // 4_000_000 * 100 / 8 = 50_000_000
-        assert_eq!(bytes, 50_000_000);
-        assert!(!approx);
+    fn test_estimate_vbr_is_an_upper_bound() {
+        let mut item = make_item("/a.mkv", "hevc", 10.0, 100.0, 125_000_000);
+        item.probe.audio_streams = vec![histv_lib::queue::AudioStreamInfo {
+            index: 0,
+            codec: "aac".into(),
+            bitrate_kbps: 160,
+        }];
+        let vbr = EncodeDecision::Vbr {
+            target_bps: 4_000_000,
+            peak_bps: 6_000_000,
+        };
+        // (4_000_000 + 160_000) * 100 / 8 = 52_000_000
+        assert_eq!(format_estimated_size(&item, &vbr), "≤ 52.0MB");
+        let no_duration = make_item("/a.mkv", "hevc", 10.0, 0.0, 125_000_000);
+        assert_eq!(format_estimated_size(&no_duration, &vbr), "-");
     }
 
     #[test]
-    fn test_estimate_cqp_approximate() {
+    fn test_estimate_quality_based_is_variable() {
         let item = make_item("/a.mkv", "hevc", 10.0, 60.0, 75_000_000);
-        let (bytes, approx) =
-            estimate_output_size(&item, &EncodeDecision::Cqp { qi: 20, qp: 22 }).unwrap();
-        assert_eq!(bytes, 75_000_000); // Uses source_bytes as estimate
-        assert!(approx);
+        assert_eq!(
+            format_estimated_size(&item, &EncodeDecision::Cqp { qi: 20, qp: 22 }),
+            "Variable"
+        );
+        let crf = EncodeDecision::Crf {
+            crf: 20,
+            qi_fallback: 20,
+            qp_fallback: 22,
+        };
+        assert_eq!(format_estimated_size(&item, &crf), "Variable");
     }
 
     #[test]
     fn test_estimate_zero_source() {
         let item = make_item("/a.mkv", "hevc", 10.0, 60.0, 0);
-        assert!(estimate_output_size(&item, &EncodeDecision::Copy).is_none());
+        assert_eq!(format_estimated_size(&item, &EncodeDecision::Copy), "-");
     }
 
     // ── merge_job_into_args ────────────────────────────────────

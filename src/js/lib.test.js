@@ -191,24 +191,31 @@ describe('computeEstimatedSize', () => {
 
   it('returns copy size for below threshold', () => {
     const item = { sourceBytes: 50000000, videoBitrateMbps: 3.0, videoCodec: 'hevc', durationSecs: 60 };
-    const est = computeEstimatedSize(item, baseSettings);
-    assert.equal(est.bytes, 50000000);
-    assert.equal(est.approx, false);
+    assert.deepEqual(computeEstimatedSize(item, baseSettings), { bytes: 50000000, kind: 'copy' });
   });
 
-  it('returns VBR estimate for above threshold', () => {
-    const item = { sourceBytes: 200000000, videoBitrateMbps: 10.0, videoCodec: 'hevc', durationSecs: 100 };
-    const est = computeEstimatedSize(item, baseSettings);
-    // 4Mbps * 100s / 8 = 50MB
-    assert.equal(est.bytes, 50000000);
-    assert.equal(est.approx, false);
+  it('returns the VBR budget, video target plus audio, above threshold', () => {
+    const item = {
+      sourceBytes: 200000000, videoBitrateMbps: 10.0, videoCodec: 'hevc', durationSecs: 100,
+      audioStreams: [{ bitrateKbps: 640 }, { bitrateKbps: 160 }],
+    };
+    // (4Mbps + 0.8Mbps audio) * 100s / 8 = 60MB
+    assert.deepEqual(computeEstimatedSize(item, baseSettings), { bytes: 60000000, kind: 'budget' });
   });
 
-  it('returns approximate for quality mode', () => {
+  it('has no VBR budget without a duration', () => {
+    const item = { sourceBytes: 200000000, videoBitrateMbps: 10.0, videoCodec: 'hevc', durationSecs: 0 };
+    assert.equal(computeEstimatedSize(item, baseSettings), null);
+  });
+
+  it('returns variable for quality mode', () => {
     const item = { sourceBytes: 50000000, videoBitrateMbps: 0, videoCodec: 'hevc', durationSecs: 60 };
-    const est = computeEstimatedSize(item, baseSettings);
-    assert.equal(est.bytes, 50000000);
-    assert.equal(est.approx, true);
+    assert.deepEqual(computeEstimatedSize(item, baseSettings), { kind: 'variable' });
+  });
+
+  it('returns variable for a quality-based encode of a non-copyable source', () => {
+    const item = { sourceBytes: 5000000, videoBitrateMbps: 2.0, videoCodec: 'gif', durationSecs: 10 };
+    assert.deepEqual(computeEstimatedSize(item, baseSettings), { kind: 'variable' });
   });
 });
 
@@ -231,17 +238,19 @@ describe('formatEstimatedSize', () => {
     assert.equal(formatEstimatedSize(item, baseSettings), '-');
   });
 
-  it('formats exact estimate without tilde', () => {
+  it('formats a copy as the source size', () => {
     const item = { sourceBytes: 50000000, videoBitrateMbps: 3.0, videoCodec: 'hevc', durationSecs: 60 };
-    const result = formatEstimatedSize(item, baseSettings);
-    assert.ok(!result.startsWith('~'));
-    assert.match(result, /MB/);
+    assert.equal(formatEstimatedSize(item, baseSettings), '50.0 MB');
   });
 
-  it('formats approximate estimate with tilde', () => {
+  it('formats the VBR budget as an upper bound', () => {
+    const item = { sourceBytes: 200000000, videoBitrateMbps: 10.0, videoCodec: 'hevc', durationSecs: 100 };
+    assert.equal(formatEstimatedSize(item, baseSettings), '≤ 50.0 MB');
+  });
+
+  it('formats a quality-based encode as Variable', () => {
     const item = { sourceBytes: 50000000, videoBitrateMbps: 0, videoCodec: 'hevc', durationSecs: 60 };
-    const result = formatEstimatedSize(item, baseSettings);
-    assert.ok(result.startsWith('~'));
+    assert.equal(formatEstimatedSize(item, baseSettings), 'Variable');
   });
 });
 
@@ -461,12 +470,31 @@ describe('computeEstimatedSize target family', () => {
   const h264 = { sourceBytes: 90000000, videoBitrateMbps: 4.5, videoCodec: 'h264', durationSecs: 160 };
 
   it('uses the source size for an H.264 source within the copy band', () => {
-    assert.deepEqual(computeEstimatedSize(h264, settings), { bytes: 90000000, approx: false });
+    assert.deepEqual(computeEstimatedSize(h264, settings), { bytes: 90000000, kind: 'copy' });
   });
 
   it('estimates a re-encode for a non-H.264 source at the same bitrate', () => {
     const vp9 = { ...h264, videoCodec: 'vp9' };
-    assert.deepEqual(computeEstimatedSize(vp9, settings), { bytes: 80000000, approx: false });
+    assert.deepEqual(computeEstimatedSize(vp9, settings), { bytes: 80000000, kind: 'budget' });
+  });
+});
+
+describe('Compatibility mode always encodes to H.264', () => {
+  const settings = {
+    target: 4, compat: true, preserveAv1: false,
+    rcMode: 'QP', qpI: 20, qpP: 22, crf: 20, peakMultiplier: 1.5,
+  };
+  const small = { sourceBytes: 50000000, videoBitrateMbps: 2.0, durationSecs: 200 };
+
+  it('does not copy a small non-H.264 source', () => {
+    for (const videoCodec of ['hevc', 'av1', 'vp9']) {
+      assert.equal(computeTargetBitrateLabel({ ...small, videoCodec }, settings), 'CQP (20/22)', videoCodec);
+      assert.deepEqual(computeEstimatedSize({ ...small, videoCodec }, settings), { kind: 'variable' }, videoCodec);
+    }
+  });
+
+  it('still copies a small H.264 source', () => {
+    assert.equal(computeTargetBitrateLabel({ ...small, videoCodec: 'h264' }, settings), 'Copy');
   });
 });
 
@@ -577,6 +605,21 @@ describe('app.js inline copies match lib.js', () => {
 
   it('resolveFamilyForCodec is identical', () => {
     assert.equal(extract(app, 'resolveFamilyForCodec'), extract(lib, 'resolveFamilyForCodec'));
+  });
+
+  // app.js has extra comments in these two; compare the code lines only.
+  const code = (src) => src.split('\n').filter((l) => !l.startsWith('//')).join('\n');
+
+  it('computeTargetBitrateLabel is identical', () => {
+    assert.equal(code(extract(app, 'computeTargetBitrateLabel')), code(extract(lib, 'computeTargetBitrateLabel')));
+  });
+
+  it('computeEstimatedSize is identical', () => {
+    assert.equal(code(extract(app, 'computeEstimatedSize')), code(extract(lib, 'computeEstimatedSize')));
+  });
+
+  it('formatEstimatedSize is identical', () => {
+    assert.equal(code(extract(app, 'formatEstimatedSize')), code(extract(lib, 'formatEstimatedSize')));
   });
 
   it('normaliseUiStyle is identical', () => {

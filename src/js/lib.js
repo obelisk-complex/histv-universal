@@ -31,6 +31,8 @@ function computeTargetBitrateLabel(item, settings) {
   const mbps = item.videoBitrateMbps;
   const sourceCodec = (item.videoCodec || '').toLowerCase();
   const isNonCopyable = ['gif', 'apng', 'mjpeg', 'webp'].includes(sourceCodec);
+  // Compatibility mode promises H.264: other codecs are never copied.
+  const mustEncode = isNonCopyable || (settings.compat && sourceCodec !== 'h264');
 
   if (!mbps || mbps <= 0) {
     if (settings.rcMode === 'CRF') {
@@ -44,7 +46,7 @@ function computeTargetBitrateLabel(item, settings) {
   if (mbps > settings.target * 1.15 || (mbps > settings.target && !isSameCodec)) {
     const peak = (settings.target * settings.peakMultiplier).toFixed(1).replace(/\.0$/, '');
     return `${settings.target}/${peak}Mbps (VBR)`;
-  } else if (isNonCopyable) {
+  } else if (mustEncode) {
     if (settings.rcMode === 'CRF') {
       return `CRF ${settings.crf}`;
     }
@@ -65,21 +67,25 @@ function computeEstimatedSize(item, settings) {
   const mbps = item.videoBitrateMbps;
   const sourceCodec = (item.videoCodec || '').toLowerCase();
   const isNonCopyable = ['gif', 'apng', 'mjpeg', 'webp'].includes(sourceCodec);
+  // Compatibility mode promises H.264: other codecs are never copied.
+  const mustEncode = isNonCopyable || (settings.compat && sourceCodec !== 'h264');
 
   if (!mbps || mbps <= 0) {
     if (!item.videoCodec) return null;
-    return { bytes: item.sourceBytes, approx: true };
+    return { kind: 'variable' };
   }
 
   const isSameCodec = sourceCodec === resolveFamilyForCodec(sourceCodec, settings);
 
   if (mbps > settings.target * 1.15 || (mbps > settings.target && !isSameCodec)) {
-    const estimatedBytes = (settings.target * 1000000 * item.durationSecs) / 8;
-    return { bytes: Math.round(estimatedBytes), approx: false };
-  } else if (isNonCopyable) {
-    return { bytes: item.sourceBytes, approx: true };
+    if (!(item.durationSecs > 0)) return null;
+    const audioKbps = (item.audioStreams || []).reduce((sum, s) => sum + (s.bitrateKbps || 0), 0);
+    const budget = ((settings.target * 1000000 + audioKbps * 1000) * item.durationSecs) / 8;
+    return { bytes: Math.round(budget), kind: 'budget' };
+  } else if (mustEncode) {
+    return { kind: 'variable' };
   } else if (mbps > 0) {
-    return { bytes: item.sourceBytes, approx: false };
+    return { bytes: item.sourceBytes, kind: 'copy' };
   }
 
   return null;
@@ -88,8 +94,9 @@ function computeEstimatedSize(item, settings) {
 function formatEstimatedSize(item, settings) {
   const est = computeEstimatedSize(item, settings);
   if (!est) return '-';
+  if (est.kind === 'variable') return 'Variable';
   const formatted = formatBytes(est.bytes);
-  return est.approx ? '~' + formatted : formatted;
+  return est.kind === 'budget' ? '≤ ' + formatted : formatted;
 }
 
 // Codec family the backend encodes a single source to (mirrors the codec_family
