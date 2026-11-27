@@ -2611,51 +2611,46 @@ async fn handle_post_encode(
                     false
                 }
             };
-            // Rename temp to final
-            if temp_output_file != output_file {
-                if let Err(e) = std::fs::rename(temp_output_file, output_file) {
-                    let warn = format!("  WARNING: Could not rename temp to final path: {e}");
-                    sink.log(&warn);
-                    write_log(log_writer, &warn);
-                    // Restore the backup so the source is not lost
-                    if source_backed_up {
-                        if let Err(re) = std::fs::rename(&backup, item_full_path) {
-                            let msg = format!(
-                                "  ERROR: Could not put the source back ({re}). The original is at {}",
-                                backup.display()
-                            );
-                            sink.log(&msg);
-                            write_log(log_writer, &msg);
-                        }
+            // Move the staged encode onto the final path
+            if let Err(e) = crate::output_install::install(temp_output_file, output_file) {
+                let warn = format!("  WARNING: Could not rename temp to final path: {e}");
+                sink.log(&warn);
+                write_log(log_writer, &warn);
+                // Restore the backup so the source is not lost
+                if source_backed_up {
+                    if let Err(re) = std::fs::rename(&backup, item_full_path) {
+                        let msg = format!(
+                            "  ERROR: Could not put the source back ({re}). The original is at {}",
+                            backup.display()
+                        );
+                        sink.log(&msg);
+                        write_log(log_writer, &msg);
                     }
-                    let kept = format!(
-                        "  ERROR: Source not replaced. The encoded file is kept at {}",
-                        temp_output_file.display()
-                    );
-                    sink.log(&kept);
-                    write_log(log_writer, &kept);
-                    queue[idx].status = QueueItemStatus::Failed;
-                    sink.queue_item_updated(idx, "Failed");
-                    return false;
-                } else {
-                    // Success — remove the backup
-                    if source_backed_up {
-                        let _ = std::fs::remove_file(&backup);
-                    }
-                    let source = std::path::Path::new(item_full_path);
-                    let msg = if crate::output_install::source_was_replaced(source, output_file) {
-                        format!("  Replaced source → {}", final_output_str)
-                    } else {
-                        format!(
-                            "  WARNING: Encoded to {final_output_str}, but the source could not be removed and is still at {item_full_path}"
-                        )
-                    };
-                    sink.log(&msg);
-                    write_log(log_writer, &msg);
                 }
-            } else if source_backed_up {
-                // temp_output_file == output_file, just clean up backup
-                let _ = std::fs::remove_file(&backup);
+                let kept = format!(
+                    "  ERROR: Source not replaced. The encoded file is kept at {}",
+                    temp_output_file.display()
+                );
+                sink.log(&kept);
+                write_log(log_writer, &kept);
+                queue[idx].status = QueueItemStatus::Failed;
+                sink.queue_item_updated(idx, "Failed");
+                return false;
+            } else {
+                // Success — remove the backup
+                if source_backed_up {
+                    let _ = std::fs::remove_file(&backup);
+                }
+                let source = std::path::Path::new(item_full_path);
+                let msg = if crate::output_install::source_was_replaced(source, output_file) {
+                    format!("  Replaced source → {}", final_output_str)
+                } else {
+                    format!(
+                        "  WARNING: Encoded to {final_output_str}, but the source could not be removed and is still at {item_full_path}"
+                    )
+                };
+                sink.log(&msg);
+                write_log(log_writer, &msg);
             }
         } else if temp_output_file.exists() {
             // Move the finished encode onto the output path, replacing any
