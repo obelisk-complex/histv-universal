@@ -23,5 +23,10 @@ chmod +x "$work/in.AppImage"
 
 "$here/fix-diricon.sh" "$work/squashfs-root"
 
+# The extracted modes depend on the packager's umask, and files added above
+# are created under it. Make everything readable (and directories and
+# executables traversable) by all, so the image does not depend on it.
+chmod -R a+rX "$work/squashfs-root"
+
 ARCH=x86_64 "$tool" --appimage-extract-and-run "$work/squashfs-root" "$work/out.AppImage" >/dev/null
 mv -f "$work/out.AppImage" "$out"

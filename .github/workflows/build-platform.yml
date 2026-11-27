@@ -316,6 +316,9 @@ jobs:
           # Fix .DirIcon (dangling symlink, see tools/appimage/fix-diricon.sh)
           tools/appimage/fix-diricon.sh squashfs-root
 
+          # Do not depend on the runner's umask (see tools/appimage/repack.sh)
+          chmod -R a+rX squashfs-root
+
           # Repack with the pinned appimagetool fetched above
           ARCH=x86_64 ./appimagetool --appimage-extract-and-run squashfs-root/ artefacts/histv-linux-full.AppImage
 
