@@ -257,6 +257,47 @@ pub fn move_item(queue: &mut Vec<QueueItem>, from: usize, to: usize) {
     queue.insert(to, item);
 }
 
+/// Index of the row whose `full_path` is `path`. Paths are unique in the
+/// queue (`add_paths_to_queue` deduplicates), so this identifies a row
+/// across removals and reorders, unlike an index captured earlier.
+pub fn find_by_path(queue: &[QueueItem], path: &str) -> Option<usize> {
+    queue.iter().position(|item| item.full_path == path)
+}
+
+/// Store a finished probe on the row for `path`. `result` is `None` when the
+/// probe failed. `bitrate_bps` replaces the probed video bitrate (MKV tag
+/// repair). Returns the row's current index, or `None` when the row has been
+/// removed since the probe started, in which case the queue is unchanged.
+pub fn apply_probe(
+    queue: &mut [QueueItem],
+    path: &str,
+    result: Option<&ProbeResult>,
+    bitrate_bps: Option<u64>,
+) -> Option<usize> {
+    let idx = find_by_path(queue, path)?;
+    match result {
+        Some(pr) => {
+            queue[idx].probe = pr.clone();
+            queue[idx].status = QueueItemStatus::Pending;
+            if let Some(bps) = bitrate_bps {
+                queue[idx].probe.video_bitrate_bps = bps as f64;
+                queue[idx].probe.video_bitrate_mbps = bps as f64 / 1_000_000.0;
+            }
+        }
+        None => queue[idx].status = QueueItemStatus::Failed,
+    }
+    Some(idx)
+}
+
+/// Set the video bitrate on the row for `path` (MKV tag repair). Returns the
+/// row's current index, or `None` when the row is gone.
+pub fn apply_bitrate(queue: &mut [QueueItem], path: &str, bitrate_bps: u64) -> Option<usize> {
+    let idx = find_by_path(queue, path)?;
+    queue[idx].probe.video_bitrate_bps = bitrate_bps as f64;
+    queue[idx].probe.video_bitrate_mbps = bitrate_bps as f64 / 1_000_000.0;
+    Some(idx)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -405,5 +446,109 @@ mod tests {
         move_item(&mut queue, 3, 1);
         let names: Vec<&str> = queue.iter().map(|i| i.file_name.as_str()).collect();
         assert_eq!(names, vec!["A", "D", "B", "C"]);
+    }
+
+    fn probed(codec: &str) -> ProbeResult {
+        ProbeResult {
+            video_codec: codec.to_string(),
+            ..ProbeResult::default()
+        }
+    }
+
+    #[test]
+    fn apply_probe_follows_the_path_after_a_removal() {
+        // The probe for "c" starts while "c" is at index 2. Row "a" is
+        // removed before the result arrives, so "c" is now at index 1.
+        let mut q = vec![
+            make_item("a", QueueItemStatus::Pending),
+            make_item("b", QueueItemStatus::Pending),
+            make_item("c", QueueItemStatus::Probing),
+        ];
+        let started_path = q[2].full_path.clone();
+        remove_items(&mut q, &mut [0]);
+
+        let idx = apply_probe(&mut q, &started_path, Some(&probed("hevc")), None);
+
+        assert_eq!(idx, Some(1));
+        assert_eq!(q[1].file_name, "c");
+        assert_eq!(q[1].probe.video_codec, "hevc");
+        assert_eq!(q[1].status, QueueItemStatus::Pending);
+        assert_eq!(q[0].probe.video_codec, "", "row b must be untouched");
+    }
+
+    #[test]
+    fn apply_probe_follows_the_path_after_a_reorder() {
+        let mut q = vec![
+            make_item("a", QueueItemStatus::Probing),
+            make_item("b", QueueItemStatus::Pending),
+        ];
+        let started_path = q[0].full_path.clone();
+        move_item(&mut q, 0, 1);
+
+        let idx = apply_probe(&mut q, &started_path, Some(&probed("av1")), None);
+
+        assert_eq!(idx, Some(1));
+        assert_eq!(q[1].file_name, "a");
+        assert_eq!(q[1].probe.video_codec, "av1");
+        assert_eq!(q[0].probe.video_codec, "");
+    }
+
+    #[test]
+    fn apply_probe_drops_the_result_when_the_row_is_gone() {
+        let mut q = vec![
+            make_item("a", QueueItemStatus::Probing),
+            make_item("b", QueueItemStatus::Pending),
+        ];
+        let started_path = q[0].full_path.clone();
+        remove_items(&mut q, &mut [0]);
+
+        let idx = apply_probe(&mut q, &started_path, Some(&probed("hevc")), None);
+
+        assert_eq!(idx, None);
+        assert_eq!(q.len(), 1);
+        assert_eq!(q[0].file_name, "b");
+        assert_eq!(q[0].probe.video_codec, "", "row b must be untouched");
+        assert_eq!(q[0].status, QueueItemStatus::Pending);
+    }
+
+    #[test]
+    fn apply_probe_failure_marks_only_the_matching_row() {
+        let mut q = vec![
+            make_item("a", QueueItemStatus::Pending),
+            make_item("b", QueueItemStatus::Probing),
+        ];
+        let started_path = q[1].full_path.clone();
+        move_item(&mut q, 1, 0);
+
+        let idx = apply_probe(&mut q, &started_path, None, None);
+
+        assert_eq!(idx, Some(0));
+        assert_eq!(q[0].status, QueueItemStatus::Failed);
+        assert_eq!(q[1].status, QueueItemStatus::Pending);
+    }
+
+    #[test]
+    fn apply_probe_applies_the_repaired_bitrate() {
+        let mut q = vec![make_item("a", QueueItemStatus::Probing)];
+        let path = q[0].full_path.clone();
+
+        apply_probe(&mut q, &path, Some(&probed("h264")), Some(4_000_000));
+
+        assert_eq!(q[0].probe.video_bitrate_bps, 4_000_000.0);
+        assert_eq!(q[0].probe.video_bitrate_mbps, 4.0);
+    }
+
+    #[test]
+    fn apply_bitrate_follows_the_path() {
+        let mut q = vec![
+            make_item("a", QueueItemStatus::Pending),
+            make_item("b", QueueItemStatus::Pending),
+        ];
+        let path = q[1].full_path.clone();
+        remove_items(&mut q, &mut [0]);
+
+        assert_eq!(apply_bitrate(&mut q, &path, 2_500_000), Some(0));
+        assert_eq!(q[0].probe.video_bitrate_mbps, 2.5);
+        assert_eq!(apply_bitrate(&mut q, "/tmp/gone", 1), None);
     }
 }

@@ -374,59 +374,40 @@ mod gui_commands {
     ) -> Result<ProbeResult, String> {
         let sink = tauri_sink::TauriSink::new(app.clone());
 
+        // Read the path and mark the row Probing under one lock. The result
+        // is stored by path, not by `index`: the user can delete or reorder
+        // rows while the probe runs, which would move this row.
         let file_path = {
-            let q = state.queue.read().await;
+            let mut q = state.queue.write().await;
             if index >= q.len() {
                 return Err("Index out of range".to_string());
             }
+            q[index].status = QueueItemStatus::Probing;
             q[index].full_path.clone()
         };
-
-        // Update status to Probing
-        {
-            let mut q = state.queue.write().await;
-            if index < q.len() {
-                q[index].status = QueueItemStatus::Probing;
-            }
-        }
         sink.queue_item_updated(index, "Probing");
 
         let result = probe::probe_file(&file_path, &sink).await;
 
-        // Update the queue item with probe results and capture a snapshot
-        // for the delta event (#3c).
-        let item_snapshot: Option<queue::QueueItem> = {
-            let mut q = state.queue.write().await;
-            if index < q.len() {
-                match &result {
-                    Ok(pr) => {
-                        // Lightweight MKV tag repair: fix stale statistics
-                        // so the queue shows the real bitrate from import.
-                        let repair = crate::mkv_tags::repair_after_probe(
-                            &file_path,
-                            pr.duration_secs,
-                            &pr.audio_streams,
-                        );
-                        q[index].probe = pr.clone();
-                        q[index].status = QueueItemStatus::Pending;
-
-                        if let Some(bps) = repair {
-                            let corrected_mbps = bps as f64 / 1_000_000.0;
-                            q[index].probe.video_bitrate_bps = bps as f64;
-                            q[index].probe.video_bitrate_mbps = corrected_mbps;
-                        }
-                    }
-                    Err(_) => {
-                        q[index].status = QueueItemStatus::Failed;
-                    }
-                }
-                Some(q[index].clone())
-            } else {
-                None
+        // Lightweight MKV tag repair: fix stale statistics so the queue
+        // shows the real bitrate from import.
+        let repair = match &result {
+            Ok(pr) => {
+                crate::mkv_tags::repair_after_probe(&file_path, pr.duration_secs, &pr.audio_streams)
             }
+            Err(_) => None,
         };
-        if let Some(ref item) = item_snapshot {
-            sink.queue_item_probed(index, item);
+
+        // Update the queue item with probe results and capture a snapshot
+        // for the delta event (#3c). A row removed in the meantime drops
+        // the result.
+        let item_snapshot: Option<(usize, queue::QueueItem)> = {
+            let mut q = state.queue.write().await;
+            queue::apply_probe(&mut q, &file_path, result.as_ref().ok(), repair)
+                .map(|i| (i, q[i].clone()))
+        };
+        if let Some((i, ref item)) = item_snapshot {
+            sink.queue_item_probed(i, item);
         }
 
         result
@@ -467,18 +448,13 @@ mod gui_commands {
                         if n == 1 { "" } else { "s" },
                         mbps
                     ));
-                    let item_snapshot: Option<queue::QueueItem> = {
+                    // By path: the row may have moved during the repair.
+                    let item_snapshot: Option<(usize, queue::QueueItem)> = {
                         let mut q = state.queue.write().await;
-                        if index < q.len() {
-                            q[index].probe.video_bitrate_bps = bps as f64;
-                            q[index].probe.video_bitrate_mbps = mbps;
-                            Some(q[index].clone())
-                        } else {
-                            None
-                        }
+                        queue::apply_bitrate(&mut q, &file_path, bps).map(|i| (i, q[i].clone()))
                     };
-                    if let Some(ref item) = item_snapshot {
-                        sink.queue_item_probed(index, item);
+                    if let Some((i, ref item)) = item_snapshot {
+                        sink.queue_item_probed(i, item);
                     }
                     repaired += 1;
                 }
@@ -536,18 +512,13 @@ mod gui_commands {
                         if n == 1 { "" } else { "s" },
                         mbps
                     ));
-                    let item_snapshot: Option<queue::QueueItem> = {
+                    // By path: the row may have moved during the repair.
+                    let item_snapshot: Option<(usize, queue::QueueItem)> = {
                         let mut q = state.queue.write().await;
-                        if index < q.len() {
-                            q[index].probe.video_bitrate_bps = bps as f64;
-                            q[index].probe.video_bitrate_mbps = mbps;
-                            Some(q[index].clone())
-                        } else {
-                            None
-                        }
+                        queue::apply_bitrate(&mut q, &file_path, bps).map(|i| (i, q[i].clone()))
                     };
-                    if let Some(ref item) = item_snapshot {
-                        sink.queue_item_probed(index, item);
+                    if let Some((i, ref item)) = item_snapshot {
+                        sink.queue_item_probed(i, item);
                     }
                     repaired += 1;
                 }
