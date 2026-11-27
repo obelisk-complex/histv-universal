@@ -27,6 +27,15 @@ pub fn unique_name(prefix: &str) -> String {
     format!("{prefix}-{}-{n}", std::process::id())
 }
 
+/// A backup name for `source` in its own folder, used while Replace mode
+/// swaps the source for its encode. Unique, so a backup stranded by an
+/// earlier crash is never overwritten.
+pub fn backup_path(source: &Path) -> PathBuf {
+    let n = STAGE_COUNTER.fetch_add(1, Ordering::Relaxed);
+    let name = source.file_name().unwrap_or_default().to_string_lossy();
+    source.with_file_name(format!("{name}.histv-bak-{}-{n}", std::process::id()))
+}
+
 /// `staged_output_path` with the process id and sequence number given.
 pub fn staged_output_path_with(final_path: &Path, pid: u32, n: u64) -> PathBuf {
     let stem = final_path.file_stem().unwrap_or_default().to_string_lossy();
@@ -153,6 +162,16 @@ mod tests {
         assert_ne!(a, b);
         assert_ne!(a, Path::new("/out/movie.mkv"));
         assert_eq!(a.parent(), Some(Path::new("/out")));
+    }
+
+    #[test]
+    fn backup_paths_are_unique_and_beside_the_source() {
+        let a = backup_path(Path::new("/share/movie.avi"));
+        let b = backup_path(Path::new("/share/movie.avi"));
+        assert_ne!(a, b);
+        assert_eq!(a.parent(), Some(Path::new("/share")));
+        let name = a.file_name().unwrap().to_string_lossy().into_owned();
+        assert!(name.starts_with("movie.avi.histv-bak-"), "{name}");
     }
 
     #[test]

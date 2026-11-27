@@ -2601,7 +2601,7 @@ async fn handle_post_encode(
         // Rename source to .bak first so we can recover if the final
         // rename fails (avoids TOCTOU data loss).
         if is_replace_mode && temp_output_file.exists() {
-            let backup = std::path::PathBuf::from(format!("{}.histv-bak", item_full_path));
+            let backup = crate::output_install::backup_path(std::path::Path::new(item_full_path));
             let source_backed_up = match std::fs::rename(item_full_path, &backup) {
                 Ok(_) => true,
                 Err(e) => {
@@ -2619,7 +2619,14 @@ async fn handle_post_encode(
                     write_log(log_writer, &warn);
                     // Restore the backup so the source is not lost
                     if source_backed_up {
-                        let _ = std::fs::rename(&backup, item_full_path);
+                        if let Err(re) = std::fs::rename(&backup, item_full_path) {
+                            let msg = format!(
+                                "  ERROR: Could not put the source back ({re}). The original is at {}",
+                                backup.display()
+                            );
+                            sink.log(&msg);
+                            write_log(log_writer, &msg);
+                        }
                     }
                     let kept = format!(
                         "  ERROR: Source not replaced. The encoded file is kept at {}",
@@ -4086,7 +4093,7 @@ async fn deliver_staged_output(
     ));
 
     let result = if is_replace {
-        replace_remote_source(&local_output, remote, &dest, &base_name, ext).await
+        replace_remote_source(&local_output, remote, &dest).await
     } else {
         crate::output_install::deliver(&local_output, &dest)
             .await
@@ -4119,20 +4126,22 @@ async fn replace_remote_source(
     local: &std::path::Path,
     remote: &std::path::Path,
     dest: &std::path::Path,
-    base_name: &str,
-    ext: &str,
 ) -> Result<String, String> {
     let staged = crate::output_install::copy_beside(local, dest)
         .await
         .map_err(|e| e.to_string())?;
-    let remote_dir = remote.parent().unwrap_or(std::path::Path::new("."));
-    let backup = remote_dir.join(format!("{}.histv-bak.{}", base_name, ext));
+    let backup = crate::output_install::backup_path(remote);
     let backed_up = remote.exists() && std::fs::rename(remote, &backup).is_ok();
     if let Err(e) = crate::output_install::install(&staged, dest) {
-        if backed_up {
-            let _ = std::fs::rename(&backup, remote);
-        }
         let _ = std::fs::remove_file(&staged);
+        if backed_up {
+            if let Err(re) = std::fs::rename(&backup, remote) {
+                return Err(format!(
+                    "could not move the copy into place ({e}), and could not put the source back ({re}). The original is at {}",
+                    backup.display()
+                ));
+            }
+        }
         return Err(format!("could not move the copy into place: {e}"));
     }
     if backed_up {

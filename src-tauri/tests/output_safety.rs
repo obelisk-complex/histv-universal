@@ -590,3 +590,36 @@ fn wave_replace_refuses_to_deliver_over_another_items_source() {
     let mkv = read_string(&dir.path().join("STUBSRC-other.mkv"));
     assert!(mkv.ends_with("/1_STUBSRC-other.mkv"), "{mkv}");
 }
+
+#[test]
+fn replace_never_overwrites_a_backup_left_by_an_earlier_crash() {
+    setup();
+    let dir = tempfile::tempdir().unwrap();
+    // Local replace: the old fixed backup name was "<source>.histv-bak".
+    let local_src = dir.path().join("STUBSRC-strand-local.mp4");
+    let mut queue = vec![source(&local_src)];
+    let stranded_local = dir.path().join("STUBSRC-strand-local.mp4.histv-bak");
+    std::fs::write(&stranded_local, b"ORIGINAL FROM A CRASH").unwrap();
+    let sink = Sink::default();
+    let ctrl = Control::new(&sink, "yes");
+    let s = settings("replace", dir.path(), "libx264", "h264");
+    let (done, ..) = run(&sink, &ctrl, &mut queue, &s, local_plan(1));
+    assert_eq!(done, 1);
+    assert_eq!(
+        std::fs::read(&stranded_local).unwrap(),
+        b"ORIGINAL FROM A CRASH"
+    );
+
+    // Remote replace: the old fixed backup name was "<stem>.histv-bak.<ext>".
+    let remote = dir.path().join("share");
+    std::fs::create_dir(&remote).unwrap();
+    let mut queue = vec![source(&remote.join("STUBSRC-strand-remote.mp4"))];
+    let stranded_remote = remote.join("STUBSRC-strand-remote.histv-bak.mkv");
+    std::fs::write(&stranded_remote, b"ORIGINAL FROM A CRASH").unwrap();
+    let (done, ..) = run(&sink, &ctrl, &mut queue, &s, wave(1));
+    assert_eq!(done, 1);
+    assert_eq!(
+        std::fs::read(&stranded_remote).unwrap(),
+        b"ORIGINAL FROM A CRASH"
+    );
+}
