@@ -2345,7 +2345,7 @@ async fn handle_post_encode(
     }
 
     // Post-encode size check
-    // In replace mode, ffmpeg wrote to temp_output_file; in other modes temp == final.
+    // ffmpeg wrote to temp_output_file, a staged file beside output_file.
     // Skip for Copy decisions: the output is just a remux of the source, so
     // a "remux source instead" fallback would produce the same file again.
     let is_copy = matches!(decision, EncodeDecision::Copy);
@@ -2542,6 +2542,15 @@ async fn handle_post_encode(
                     if source_backed_up {
                         let _ = std::fs::rename(&backup, item_full_path);
                     }
+                    let kept = format!(
+                        "  ERROR: Source not replaced. The encoded file is kept at {}",
+                        temp_output_file.display()
+                    );
+                    sink.log(&kept);
+                    write_log(log_writer, &kept);
+                    queue[idx].status = QueueItemStatus::Failed;
+                    sink.queue_item_updated(idx, "Failed");
+                    return false;
                 } else {
                     // Success — remove the backup
                     if source_backed_up {
@@ -2555,7 +2564,22 @@ async fn handle_post_encode(
                 // temp_output_file == output_file, just clean up backup
                 let _ = std::fs::remove_file(&backup);
             }
-        } else if settings.delete_source && temp_output_file.exists() {
+        } else if temp_output_file.exists() {
+            // Move the finished encode onto the output path, replacing any
+            // older output there only now that the new one is complete.
+            if let Err(e) = crate::output_install::install(temp_output_file, output_file) {
+                let msg = format!(
+                    "  ERROR: Could not move the encoded file to {final_output_str}: {e}. It is kept at {}",
+                    temp_output_file.display()
+                );
+                sink.log(&msg);
+                write_log(log_writer, &msg);
+                queue[idx].status = QueueItemStatus::Failed;
+                sink.queue_item_updated(idx, "Failed");
+                return false;
+            }
+        }
+        if !is_replace_mode && settings.delete_source && output_file.exists() {
             // Normal delete-source mode
             match std::fs::remove_file(item_full_path) {
                 Ok(_) => {
@@ -2789,7 +2813,8 @@ async fn encode_single_file(
                 }
             }
             let out = out_dir.join(format!("{}.{}", item_base_name, ext));
-            (out.clone(), out)
+            let staged = crate::output_install::staged_output_path(&out);
+            (out, staged)
         }
         "replace" => {
             // Encode to a temp file in the same directory, then replace the source
@@ -2798,7 +2823,7 @@ async fn encode_single_file(
                 .parent()
                 .unwrap_or_else(|| std::path::Path::new("."));
             let final_path = input_dir.join(format!("{}.{}", item_base_name, ext));
-            let temp_path = input_dir.join(format!("{}.histv-tmp.{}", item_base_name, ext));
+            let temp_path = crate::output_install::staged_output_path(&final_path);
             (final_path, temp_path)
         }
         _ => {
@@ -2809,9 +2834,14 @@ async fn encode_single_file(
             let folder: &std::path::Path = output_dir_override
                 .unwrap_or_else(|| std::path::Path::new(&settings.output_folder));
             let out = folder.join(format!("{}.{}", item_base_name, ext));
-            (out.clone(), out)
+            let staged = crate::output_install::staged_output_path(&out);
+            (out, staged)
         }
     };
+    // ffmpeg writes to `temp_output_file`, a unique staged file beside
+    // `output_file`; `handle_post_encode` moves it into place only once the
+    // encode has finished, so a failed or cancelled encode never touches an
+    // existing output.
     // On Windows, prepend the extended-length path prefix when the path
     // exceeds 240 characters to avoid MAX_PATH (260) failures.
     #[cfg(target_os = "windows")]
@@ -2846,9 +2876,24 @@ async fn encode_single_file(
         sink.log("  HDR → SDR: tonemapping with Hable curve");
     }
 
-    // Overwrite check - in replace mode, we're replacing the source so
-    // no overwrite prompt is needed. In other modes, check the final output.
-    if !is_replace_mode && output_file.exists() && !batch_control.overwrite_always() {
+    // Overwrite check. Replace mode replacing its own source needs no
+    // prompt, but any other file at the output path does (for example
+    // movie.mkv beside a source movie.avi). Outside replace mode, an output
+    // path that is the source itself is refused.
+    let existing = crate::output_install::existing_output_action(
+        output_file.exists(),
+        crate::output_install::is_same_file(&output_file, std::path::Path::new(&item_full_path)),
+        is_replace_mode,
+    );
+    if existing == crate::output_install::ExistingOutput::IsSource {
+        let msg = "  ERROR: The output would replace the source file. Choose a different output folder, or use Replace mode.";
+        sink.log(msg);
+        write_log(log_writer, msg);
+        queue[idx].status = QueueItemStatus::Failed;
+        sink.queue_item_updated(idx, "Failed");
+        return EncodeFileResult::Failed;
+    }
+    if existing == crate::output_install::ExistingOutput::Ask && !batch_control.overwrite_always() {
         let response = batch_control.overwrite_prompt(&final_output_str);
         match response.as_str() {
             "no" | "skip" => {
@@ -2862,6 +2907,8 @@ async fn encode_single_file(
                 batch_control.set_overwrite_always();
             }
             "cancel" => {
+                queue[idx].status = QueueItemStatus::Cancelled;
+                sink.queue_item_updated(idx, "Cancelled");
                 return EncodeFileResult::CancelledAll;
             }
             _ => {} // "yes" - proceed

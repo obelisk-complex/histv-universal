@@ -1,0 +1,203 @@
+//! Staged output install.
+//!
+//! ffmpeg never writes to an output's final path. Each encode goes to a
+//! unique staged file in the same folder as its destination, and only a
+//! finished encode is moved onto the final path, by a rename on the same
+//! filesystem. A failed, cancelled or crashed encode therefore leaves any
+//! earlier output exactly as it was, and never leaves a partial file under
+//! the final name.
+
+use std::path::{Path, PathBuf};
+use std::sync::atomic::{AtomicU64, Ordering};
+
+static STAGE_COUNTER: AtomicU64 = AtomicU64::new(0);
+
+/// A staged path beside `final_path` that no other encode in any running
+/// HISTV process uses. It keeps the final extension so ffmpeg picks the
+/// same muxer.
+pub fn staged_output_path(final_path: &Path) -> PathBuf {
+    let n = STAGE_COUNTER.fetch_add(1, Ordering::Relaxed);
+    staged_output_path_with(final_path, std::process::id(), n)
+}
+
+/// `staged_output_path` with the process id and sequence number given.
+pub fn staged_output_path_with(final_path: &Path, pid: u32, n: u64) -> PathBuf {
+    let stem = final_path.file_stem().unwrap_or_default().to_string_lossy();
+    let name = match final_path.extension() {
+        Some(ext) => format!("{stem}.histv-tmp-{pid}-{n}.{}", ext.to_string_lossy()),
+        None => format!("{stem}.histv-tmp-{pid}-{n}"),
+    };
+    final_path.with_file_name(name)
+}
+
+/// What to do about a file already at the output path, decided before the
+/// encode starts.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ExistingOutput {
+    /// Nothing to ask: no file there, or replace mode replacing its own source.
+    Proceed,
+    /// Another file is there: ask before overwriting it.
+    Ask,
+    /// The output path is the source file itself, outside replace mode.
+    /// Encoding would replace the source, so the file must not be encoded.
+    IsSource,
+}
+
+pub fn existing_output_action(
+    output_exists: bool,
+    output_is_source: bool,
+    replace_mode: bool,
+) -> ExistingOutput {
+    match (output_exists, output_is_source, replace_mode) {
+        (false, _, _) => ExistingOutput::Proceed,
+        (true, true, true) => ExistingOutput::Proceed,
+        (true, true, false) => ExistingOutput::IsSource,
+        (true, false, _) => ExistingOutput::Ask,
+    }
+}
+
+/// True when both paths name the same existing file, including through a
+/// symlink, a hard link or another spelling of the same folder. Falls back
+/// to comparing the paths when either file cannot be read.
+pub fn is_same_file(a: &Path, b: &Path) -> bool {
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::MetadataExt;
+        if let (Ok(x), Ok(y)) = (std::fs::metadata(a), std::fs::metadata(b)) {
+            return x.dev() == y.dev() && x.ino() == y.ino();
+        }
+    }
+    #[cfg(not(unix))]
+    {
+        if let (Ok(x), Ok(y)) = (std::fs::canonicalize(a), std::fs::canonicalize(b)) {
+            return x == y;
+        }
+    }
+    a == b
+}
+
+/// Move a finished staged encode onto its final path, replacing any older
+/// output there. On error the staged file and any older output are left
+/// as they were.
+pub fn install(staged: &Path, final_path: &Path) -> std::io::Result<()> {
+    if staged == final_path {
+        return Ok(());
+    }
+    std::fs::rename(staged, final_path)
+}
+
+/// Copy a finished local encode to a staged file beside `dest`, ready for
+/// `install`. Removes the partial copy if the copy fails.
+pub async fn copy_beside(local: &Path, dest: &Path) -> std::io::Result<PathBuf> {
+    let staged = staged_output_path(dest);
+    match tokio::fs::copy(local, &staged).await {
+        Ok(_) => Ok(staged),
+        Err(e) => {
+            let _ = tokio::fs::remove_file(&staged).await;
+            Err(e)
+        }
+    }
+}
+
+/// Deliver a finished local encode to `dest` (for example a network share):
+/// copy it beside `dest`, then install it. On error nothing is left at the
+/// destination and the local file is kept.
+pub async fn deliver(local: &Path, dest: &Path) -> std::io::Result<()> {
+    let staged = copy_beside(local, dest).await?;
+    if let Err(e) = install(&staged, dest) {
+        let _ = std::fs::remove_file(&staged);
+        return Err(e);
+    }
+    Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn staged_path_is_beside_final_and_keeps_extension() {
+        let p = staged_output_path_with(Path::new("/out/My Film.v2.mkv"), 42, 7);
+        assert_eq!(p, Path::new("/out/My Film.v2.histv-tmp-42-7.mkv"));
+        let p = staged_output_path_with(Path::new("/out/noext"), 1, 0);
+        assert_eq!(p, Path::new("/out/noext.histv-tmp-1-0"));
+    }
+
+    #[test]
+    fn staged_paths_never_repeat_for_the_same_destination() {
+        let a = staged_output_path(Path::new("/out/movie.mkv"));
+        let b = staged_output_path(Path::new("/out/movie.mkv"));
+        assert_ne!(a, b);
+        assert_ne!(a, Path::new("/out/movie.mkv"));
+        assert_eq!(a.parent(), Some(Path::new("/out")));
+    }
+
+    #[test]
+    fn existing_output_decision_table() {
+        use ExistingOutput::*;
+        assert_eq!(existing_output_action(false, false, false), Proceed);
+        assert_eq!(existing_output_action(false, false, true), Proceed);
+        assert_eq!(existing_output_action(true, false, false), Ask);
+        // Replace mode: a different file at the output name (movie.mkv
+        // beside source movie.avi) must be asked about, not overwritten.
+        assert_eq!(existing_output_action(true, false, true), Ask);
+        assert_eq!(existing_output_action(true, true, true), Proceed);
+        assert_eq!(existing_output_action(true, true, false), IsSource);
+    }
+
+    #[test]
+    fn same_file_detects_links_and_distinguishes_copies() {
+        let dir = tempfile::tempdir().unwrap();
+        let a = dir.path().join("a.mkv");
+        let b = dir.path().join("b.mkv");
+        std::fs::write(&a, b"x").unwrap();
+        std::fs::write(&b, b"x").unwrap();
+        assert!(is_same_file(&a, &a));
+        assert!(is_same_file(&a, &dir.path().join(".").join("a.mkv")));
+        assert!(!is_same_file(&a, &b));
+        let link = dir.path().join("link.mkv");
+        std::fs::hard_link(&a, &link).unwrap();
+        assert!(is_same_file(&a, &link));
+        let missing = dir.path().join("missing.mkv");
+        assert!(!is_same_file(&a, &missing));
+    }
+
+    #[test]
+    fn install_replaces_old_output_and_failed_install_keeps_it() {
+        let dir = tempfile::tempdir().unwrap();
+        let fin = dir.path().join("out.mkv");
+        std::fs::write(&fin, b"old").unwrap();
+        let staged = staged_output_path(&fin);
+        std::fs::write(&staged, b"new").unwrap();
+        install(&staged, &fin).unwrap();
+        assert_eq!(std::fs::read(&fin).unwrap(), b"new");
+        assert!(!staged.exists());
+
+        // A staged file that is not there: the output stays as it was.
+        assert!(install(&staged, &fin).is_err());
+        assert_eq!(std::fs::read(&fin).unwrap(), b"new");
+    }
+
+    #[tokio::test]
+    async fn deliver_replaces_destination_and_failure_leaves_nothing_behind() {
+        let dir = tempfile::tempdir().unwrap();
+        let local = dir.path().join("local.mkv");
+        std::fs::write(&local, b"encoded").unwrap();
+        let remote = dir.path().join("remote");
+        std::fs::create_dir(&remote).unwrap();
+        let dest = remote.join("movie.mkv");
+        std::fs::write(&dest, b"older").unwrap();
+
+        deliver(&local, &dest).await.unwrap();
+        assert_eq!(std::fs::read(&dest).unwrap(), b"encoded");
+        assert_eq!(std::fs::read_dir(&remote).unwrap().count(), 1);
+        assert!(local.exists());
+
+        // Destination folder gone: the error is reported, the local file
+        // is kept and nothing is written.
+        let gone = dir.path().join("gone").join("movie.mkv");
+        assert!(deliver(&local, &gone).await.is_err());
+        assert!(local.exists());
+        assert!(!dir.path().join("gone").exists());
+    }
+}

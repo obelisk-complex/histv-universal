@@ -10,6 +10,7 @@ pub mod hdr10plus_pipeline;
 pub mod hevc_utils;
 pub mod mkv_tags;
 pub mod mp4_entry;
+pub mod output_install;
 pub mod probe;
 pub mod queue;
 pub mod remote;
