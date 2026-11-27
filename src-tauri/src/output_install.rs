@@ -108,6 +108,13 @@ pub fn is_same_file(a: &Path, b: &Path) -> bool {
     a == b
 }
 
+/// After Replace mode has put the encode at `output`, true when the source
+/// is really gone: removed, or the output now stands at its path. False
+/// when the source could not be moved aside and is still there.
+pub fn source_was_replaced(source: &Path, output: &Path) -> bool {
+    !source.exists() || is_same_file(source, output)
+}
+
 /// Move a finished staged encode onto its final path, replacing any older
 /// output there. On error the staged file and any older output are left
 /// as they were.
@@ -213,6 +220,18 @@ mod tests {
         assert!(is_same_file(&a, &link));
         let missing = dir.path().join("missing.mkv");
         assert!(!is_same_file(&a, &missing));
+    }
+
+    #[test]
+    fn source_counts_as_replaced_only_when_it_is_gone_or_is_the_output() {
+        let dir = tempfile::tempdir().unwrap();
+        let src = dir.path().join("movie.avi");
+        let out = dir.path().join("movie.mkv");
+        std::fs::write(&out, b"encode").unwrap();
+        assert!(source_was_replaced(&src, &out)); // removed
+        assert!(source_was_replaced(&out, &out)); // same name as output
+        std::fs::write(&src, b"source").unwrap();
+        assert!(!source_was_replaced(&src, &out)); // kept beside it
     }
 
     #[test]

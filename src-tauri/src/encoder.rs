@@ -2642,7 +2642,14 @@ async fn handle_post_encode(
                     if source_backed_up {
                         let _ = std::fs::remove_file(&backup);
                     }
-                    let msg = format!("  Replaced source → {}", final_output_str);
+                    let source = std::path::Path::new(item_full_path);
+                    let msg = if crate::output_install::source_was_replaced(source, output_file) {
+                        format!("  Replaced source → {}", final_output_str)
+                    } else {
+                        format!(
+                            "  WARNING: Encoded to {final_output_str}, but the source could not be removed and is still at {item_full_path}"
+                        )
+                    };
                     sink.log(&msg);
                     write_log(log_writer, &msg);
                 }
@@ -4147,7 +4154,15 @@ async fn replace_remote_source(
     if backed_up {
         let _ = std::fs::remove_file(&backup);
     }
-    Ok(format!("  Replaced remote source → {}", dest.display()))
+    if crate::output_install::source_was_replaced(remote, dest) {
+        Ok(format!("  Replaced remote source → {}", dest.display()))
+    } else {
+        Ok(format!(
+            "  WARNING: Copied output to remote → {}, but the source could not be removed and is still at {}",
+            dest.display(),
+            remote.display()
+        ))
+    }
 }
 
 /// Shared encoding loop used by the CLI. Takes trait objects for output and
